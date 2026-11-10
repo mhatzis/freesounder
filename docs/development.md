@@ -2,7 +2,7 @@
 
 Facts below were checked against the named official pages on **10 November 2026, Australia/Melbourne**. Limits and fees change; re-check the source before paying or inviting testers.
 
-**Superseded the same day:** earlier text in this file assumed a household Music Assistant + snapserver box. That is withdrawn. v1 is **player-only** (see [architecture.md](architecture.md) §1, §5 and §7): the control API runs on every player, Snapcast’s `snapserver` runs on the group coordinator, and there is no required server, NAS, PC or Home Assistant host. Hybrid still holds — own the daemon, apps, setup and image; reuse Snapcast and ingress as separate processes. Music Assistant is not in the v1 runtime.
+**Superseded later the same day:** ingress-only v1 (no Music Assistant, no in-app catalogue) is withdrawn, as is any cupboard server box. v1 is **player-only** *and* has a **full in-app catalogue**: Music Assistant runs in official Docker on an elected **4 GB household-host player**; all rooms are snapclients of that host’s built-in snapserver; the app talks to any player, which proxies to MA (see [architecture.md](architecture.md) §1, §5 and §7).
 
 ## Recommendation
 
@@ -87,23 +87,23 @@ Flutter has **no Expo-style over-the-air update** in the framework. A new Dart U
 
 **Recommend Python** for `services/player-daemon`.
 
-The daemon is the product’s control plane: mDNS, group/coordinator election, starting and re-pointing Snapcast, leader-based state replication, and the WebSocket API. Python is still the v1 default because it is fast to iterate, fine on a Pi 4 2GB, and a good fit for talking to Snapcast’s JSON-RPC and for a first-boot setup service. The earlier justification (“match Music Assistant’s client library”) no longer applies, because MA is not in the v1 runtime.
+The daemon is the product’s control plane: mDNS, household-host election, Music Assistant Docker lifecycle on the host, `/data` replication to standbys, `snapclient` pointing at the host, a facade over the host MA WebSocket API, and setup endpoints. Python is the v1 default because it is fast to iterate, matches the official [`music-assistant-client`](https://github.com/music-assistant/client), and is acceptable on a Pi 4 4GB host (member-only images can stay slim).
 
-TypeScript and Go remain good alternatives (Go especially if we later need a smaller static binary on a Zero 2 W). Expose an OpenAPI (or similar) contract so the Flutter `api_client` package does not depend on Python.
+TypeScript and Go remain alternatives (Go if we later want a smaller binary on a Zero 2 W member). Expose an OpenAPI (or similar) contract so the Flutter `api_client` package does not depend on Python.
 
 ## Local development
 
-There is no Music Assistant container in the default dev path. A Compose file should run **two simulated players** on one machine:
+Default Compose path, on one machine:
 
-- each “player” is the Python daemon + `snapserver` (started when that instance is coordinator) + `snapclient` (to a dummy, file, or desktop sink)
-- mDNS may need `network_mode: host` or a documented workaround on the dev machine
-- the Flutter app browses or is pointed at either daemon’s WebSocket
+- one **household-host** profile: official `ghcr.io/music-assistant/server` with **host networking** and a `/data` volume, plus the Python daemon and a `snapclient`
+- one **member** profile: daemon + `snapclient` pointed at the host (dummy, file, or desktop sink)
+- the Flutter app browses mDNS or is pointed at either daemon and exercises **browse/search** against MA through the proxy
 
-Document a single `cp .env.example .env && docker compose up` path. Two real Pis remain the better grouping test, especially for regroup and `snapclient` restart behaviour ([snapcast#527](https://github.com/badaix/snapcast/issues/527)).
+Document `cp .env.example .env && docker compose up`. Two real Pis (one 4 GB host, one member) remain the better test. Ordinary regroup should *not* require snapclient retarget; only host failover should.
 
 ## Next steps
 
-1. **Monorepo layout scaffold** (Apache-2.0 first-party code only; do not vendor GPL sources):
+1. **Monorepo layout scaffold** (Apache-2.0 first-party; do not vendor GPL sources):
 
    ```
    freesounder/
@@ -112,22 +112,22 @@ Document a single `cp .env.example .env && docker compose up` path. Two real Pis
      apps/flutter/             iOS, Android, web client
      packages/design/          tokens, room tile, now-playing, rooms panel
      packages/api_client/      talks only to a player daemon
-     services/player-daemon/   Python API, election, Snapcast control, replication
-     services/setup/           first-boot Wi-Fi/Ethernet, room naming, household pairing
-     images/player/            Pi OS image: daemon + snapserver + snapclient + ALSA
-                               + shairport-sync + Connect sidecar
-     deploy/compose/           two simulated players for local dev
+     services/player-daemon/   election, MA proxy, /data replication
+     services/setup/           first-boot, room naming, household pairing
+     images/player/            Pi OS image: daemon + Docker; MA container
+                               on 4 GB host profile; snapclient + ALSA on every board
+     deploy/compose/           MA host + member snapclient for local dev
    ```
 
-2. **Player daemon first.** Smallest slice: advertise mDNS, elect a coordinator, start `snapserver` there, point `snapclient` at it, play a test stream (file or HTTP) on two sinks, expose WebSocket events for rooms, groups, volume and now-playing. Then: regroup (including the snapclient restart), config-leader replication, and forwarding an API call from a member to the coordinator.
+2. **Player image with MA + daemon.** Official MA Docker on a 4 GB host profile; snapclient on every board; daemon starts MA only when elected host.
 
-3. **Flutter app skeleton** with the rooms-panel shell in architecture.md §2.7, discovering players via mDNS (or a dev URL) and talking to any daemon. Show an honest “Syncing…” state when a group is mid-repoint.
+3. **Household host election.** Prefer Ethernet + most RAM; single writer for `/data`; mDNS name for the current host; then `/data` replication to a standby and failover (snapclients retarget only then).
 
-4. **Player image** with the daemon and the reused processes, plus onboarding for Wi-Fi/Ethernet and a room name. Default SKU in architecture.md is a Pi 4 2GB; the image should degrade to member-only on a Zero 2 W.
+4. **Flutter app on the MA API** (via the daemon facade): rooms-panel shell plus browse/search/queue for the in-app catalogue; discover any player via mDNS; honest outage/Syncing if the host moves.
 
 5. **CI:** GitHub Actions on the Dart app and the Python daemon; add fastlane or Codemagic for TestFlight / Play internal / optional Firebase once accounts exist.
 
-Do not start a from-scratch sync layer, a Music Assistant server, a custom streaming-provider stack, or a React Native rewrite.
+Do not start a from-scratch sync layer, a cupboard MA server, a custom streaming-provider stack, or a React Native rewrite.
 
 ## Sources
 
