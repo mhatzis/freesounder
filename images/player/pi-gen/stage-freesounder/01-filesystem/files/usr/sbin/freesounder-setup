@@ -1,0 +1,107 @@
+#!/bin/bash
+# First-boot and household setup helper for a freesounder player.
+set -euo pipefail
+
+usage() {
+	cat << 'HELP'
+freesounder-setup — configure this player
+
+Usage:
+  freesounder-setup status
+  freesounder-setup set-role host|room|auto
+  freesounder-setup set-host <hostname-or-ip>
+  freesounder-setup set-dac none|dacplus|digiampplus
+  freesounder-setup set-ma-token          # reads the token from stdin (not echoed if tty)
+  freesounder-setup apply                 # regenerate services and restart what we can
+
+Role "auto" (the image default) elects host when RAM is at least 3.5 GiB,
+otherwise room. Music Assistant and the built-in snapserver run only on host.
+Every player runs snapclient and the control API.
+
+Do not put secrets on the command line. set-ma-token reads stdin.
+HELP
+}
+
+need_root() {
+	if [[ "$(id -u)" -ne 0 ]]; then
+		echo "Run as root (sudo freesounder-setup ...)" >&2
+		exit 1
+	fi
+}
+
+cmd=${1:-status}
+case "$cmd" in
+	-h|--help|help) usage; exit 0 ;;
+	status)
+		echo "Hostname:    $(hostname)"
+		echo "Configured:  $(tr -d '[:space:]' < /etc/freesounder/role 2>/dev/null || echo missing)"
+		if [[ -x /usr/lib/freesounder/detect-role ]]; then
+			echo "Effective:   $(/usr/lib/freesounder/detect-role)"
+		fi
+		echo "MA/host:     $(tr -d '[:space:]' < /etc/freesounder/host 2>/dev/null || echo '(unset)')"
+		echo "DAC:         $(tr -d '[:space:]' < /etc/freesounder/dac 2>/dev/null || echo none)"
+		if [[ -f /etc/freesounder/ma-token ]]; then
+			echo "MA token:    present"
+		else
+			echo "MA token:    none"
+		fi
+		echo "MemTotal:    $(awk '/MemTotal:/ {print $2}' /proc/meminfo) KiB"
+		;;
+	set-role)
+		need_root
+		val=${2:-}
+		case "$val" in
+			host|room|auto) printf '%s\n' "$val" > /etc/freesounder/role ;;
+			*) echo "Role must be host, room, or auto" >&2; exit 1 ;;
+		esac
+		"$0" apply
+		;;
+	set-host)
+		need_root
+		val=${2:-}
+		if [[ -z "$val" ]]; then
+			echo "Usage: freesounder-setup set-host <hostname-or-ip>" >&2
+			exit 1
+		fi
+		printf '%s\n' "$val" > /etc/freesounder/host
+		"$0" apply
+		;;
+	set-dac)
+		need_root
+		/usr/lib/freesounder/apply-dac-overlay "${2:-}"
+		;;
+	set-ma-token)
+		need_root
+		if [[ -t 0 ]]; then
+			echo "Paste the Music Assistant long-lived token, then Enter:"
+			stty -echo
+			IFS= read -r token
+			stty echo
+			echo
+		else
+			IFS= read -r token
+		fi
+		if [[ -z "${token}" ]]; then
+			echo "Empty token; not written." >&2
+			exit 1
+		fi
+		umask 077
+		printf '%s\n' "$token" > /etc/freesounder/ma-token
+		chmod 0600 /etc/freesounder/ma-token
+		"$0" apply
+		;;
+	apply)
+		need_root
+		/usr/lib/freesounder/apply-runtime-config
+		systemctl daemon-reload || true
+		# Restart units that exist; ignore failures during first boot imaging.
+		systemctl try-restart snapclient.service 2>/dev/null || true
+		systemctl try-restart freesounder-control-api.service 2>/dev/null || true
+		systemctl try-restart freesounder-music-assistant.service 2>/dev/null || true
+		echo "Effective role: $(cat /run/freesounder/effective-role 2>/dev/null || echo unknown)"
+		;;
+	*)
+		usage
+		exit 1
+		;;
+esac

@@ -1,0 +1,16 @@
+[Unit]
+Description=freesounder control API (Music Assistant facade)
+After=network-online.target freesounder-role.service freesounder-music-assistant.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/freesounder/control-api.env
+WorkingDirectory=/opt/freesounder/control-api
+ExecStart=/opt/freesounder/control-api/.venv/bin/freesounder-control-api
+Restart=on-failure
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

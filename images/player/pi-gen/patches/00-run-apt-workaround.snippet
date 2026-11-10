@@ -1,0 +1,5 @@
+# Build-host apt workaround (not shipped in the final image).
+# On some sandboxed networks, apt SRV lookups for deb.debian.org resolve
+# through a broken intercept (198.18.0.1) that EOFs during TLS, while a
+# direct A-record path works. Disable SRV records and prefer IPv4.
+install -m 644 files/99-freesounder-build-apt "${ROOTFS_DIR}/etc/apt/apt.conf.d/99-freesounder-build-apt"

@@ -1,0 +1,19 @@
+#!/bin/sh
+cat << 'MOTD'
+
+freesounder player
+------------------
+This image has no baked-in password. Create the first user with Raspberry Pi
+Imager (OS customisation) when flashing, or complete the first-boot wizard
+on a keyboard and display.
+
+  sudo freesounder-setup status
+  sudo freesounder-setup set-role auto|host|room
+  sudo freesounder-setup set-host <hostname-or-ip>
+  sudo freesounder-setup set-dac none|dacplus|digiampplus
+
+The household host (default when RAM is 4 GB or more) runs Music Assistant
+and needs the network on first boot to pull ghcr.io/music-assistant/server.
+Rooms run snapclient against the host you set with set-host.
+
+MOTD

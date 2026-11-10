@@ -1,0 +1,52 @@
+#!/bin/bash
+# Set or clear the HiFiBerry DAC+/DigiAMP+ overlay in config.txt.
+# Both official DAC+ and DigiAMP+ use dtoverlay=hifiberry-dacplus.
+set -euo pipefail
+choice=${1:-$(tr -d '[:space:]' < /etc/freesounder/dac 2>/dev/null || echo none)}
+cfg=""
+for candidate in /boot/firmware/config.txt /boot/config.txt; do
+	if [[ -f "$candidate" ]]; then
+		cfg=$candidate
+		break
+	fi
+done
+if [[ -z "$cfg" ]]; then
+	echo "No config.txt found under /boot/firmware or /boot" >&2
+	exit 1
+fi
+
+# Remove any previous freesounder-managed block.
+python3 - "$cfg" << 'PY'
+import pathlib, sys
+p = pathlib.Path(sys.argv[1])
+text = p.read_text()
+start = "# --- freesounder-dac-start ---\n"
+end = "# --- freesounder-dac-end ---\n"
+if start in text and end in text:
+    pre, rest = text.split(start, 1)
+    _, post = rest.split(end, 1)
+    text = pre + post
+p.write_text(text)
+PY
+
+case "$choice" in
+	none|"")
+		printf 'none\n' > /etc/freesounder/dac
+		echo "DAC overlay cleared (onboard / USB audio)."
+		;;
+	dacplus|digiampplus|hifiberry-dacplus)
+		{
+			echo "# --- freesounder-dac-start ---"
+			echo "# Official DAC+ and DigiAMP+ both use hifiberry-dacplus."
+			echo "dtparam=audio=off"
+			echo "dtoverlay=hifiberry-dacplus"
+			echo "# --- freesounder-dac-end ---"
+		} >> "$cfg"
+		printf '%s\n' "$choice" > /etc/freesounder/dac
+		echo "Wrote dtoverlay=hifiberry-dacplus to $cfg (reboot to apply)."
+		;;
+	*)
+		echo "Unknown DAC '$choice' (none, dacplus, digiampplus)" >&2
+		exit 1
+		;;
+esac

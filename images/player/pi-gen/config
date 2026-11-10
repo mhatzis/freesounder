@@ -1,0 +1,26 @@
+# pi-gen config for the freesounder player image.
+# Used with the official pi-gen *arm64* branch (Raspberry Pi OS Lite, 64-bit, Trixie).
+# A single arm64 image is intended to boot on both Raspberry Pi 4 and Pi 5.
+
+IMG_NAME=freesounder
+PI_GEN_RELEASE="freesounder player"
+RELEASE=trixie
+TARGET_HOSTNAME=freesounder
+ENABLE_SSH=1
+ENABLE_CLOUD_INIT=1
+# Do not bake a user password. Create the first user with Raspberry Pi Imager
+# (OS customisation) or the first-boot wizard. FIRST_USER_NAME exists only in
+# the build chroot and is renamed on first boot unless Imager supplies a user.
+FIRST_USER_NAME=pi
+# FIRST_USER_PASS is intentionally unset — the account stays locked until
+# customisation or the wizard sets a password.
+DISABLE_FIRST_BOOT_USER_RENAME=0
+PASSWORDLESS_SUDO=0
+LOCALE_DEFAULT=en_GB.UTF-8
+KEYBOARD_KEYMAP=us
+KEYBOARD_LAYOUT="English (US)"
+TIMEZONE_DEFAULT=UTC
+DEPLOY_COMPRESSION=xz
+COMPRESSION_LEVEL=6
+USE_QEMU=0
+# Only build Lite + the freesounder stage (STAGE_LIST is set by build.sh).

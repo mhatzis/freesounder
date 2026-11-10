@@ -1,0 +1,17 @@
+[Unit]
+Description=Music Assistant (household host only)
+Documentation=https://www.music-assistant.io/installation/
+After=network-online.target docker.service freesounder-role.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/freesounder/run-music-assistant
+# A clean exit 0 means this board is a room player; do not restart.
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=300
+
+[Install]
+WantedBy=multi-user.target

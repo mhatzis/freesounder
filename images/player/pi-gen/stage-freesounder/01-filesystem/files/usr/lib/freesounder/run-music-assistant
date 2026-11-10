@@ -1,0 +1,14 @@
+#!/bin/bash
+set -euo pipefail
+effective=$(/usr/lib/freesounder/detect-role)
+if [[ "$effective" != "host" ]]; then
+	echo "Role is $effective; not starting Music Assistant."
+	exit 0
+fi
+mkdir -p /var/lib/freesounder/ma-data
+# First host boot (and later updates) needs the network to pull the official image.
+# --network host and /data are required by Music Assistant's standalone install docs.
+exec docker run --name music-assistant --rm \
+	--network host \
+	--volume /var/lib/freesounder/ma-data:/data \
+	ghcr.io/music-assistant/server:latest

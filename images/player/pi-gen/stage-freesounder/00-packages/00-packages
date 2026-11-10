@@ -1,0 +1,13 @@
+alsa-utils
+avahi-daemon
+ca-certificates
+curl
+docker.io
+git
+jq
+python3
+python3-pip
+python3-venv
+snapclient
+sudo
+systemd-timesyncd

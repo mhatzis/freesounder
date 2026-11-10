@@ -43,3 +43,8 @@ images/player/work/
 images/player/deploy/
 *.img
 *.img.xz
+
+# Image build artefacts
+images/player/pi-gen/wheels/
+images/player/work/
+images/player/deploy/
