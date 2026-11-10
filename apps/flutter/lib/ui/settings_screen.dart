@@ -156,7 +156,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             contentPadding: EdgeInsets.zero,
             leading: const Icon(Icons.add_circle_outline),
             title: const Text('Add a player'),
-            subtitle: const Text('Find a new Pi on your network and name the room'),
+            subtitle: const Text('Set up a new Pi over Bluetooth, or adopt one already on your network'),
             onTap: () => showAddPlayerSheet(context),
           ),
           if (_busy) ...[

@@ -138,7 +138,7 @@ Do not start a from-scratch sync layer, a cupboard MA server, a custom streaming
 
 ## Player image (flashing)
 
-A 64-bit Lite image for Pi 4 and Pi 5 is built from [images/player](../images/player/README.md) (`pi-gen` arm64 branch, Trixie). Flash it with Raspberry Pi Imager: **Use custom**, then **OS customisation** to set a username, password, unique hostname and Wi-Fi. The image has SSH on and **no default password**. See that README for `freesounder-setup`, DAC overlays, host vs room roles, and build instructions. Early images are alpha and were not boot-tested on real hardware in the first build environment.
+A 64-bit Lite image for Pi 4 and Pi 5 is built from [images/player](../images/player/README.md) (`pi-gen` arm64 branch, Trixie). Flash it with Raspberry Pi Imager: **Use custom**, then **OS customisation** to set a username, password, and a unique hostname. Wi-Fi in Imager is optional — an unprovisioned board advertises over Bluetooth as `FreeSounder-XXXX` and the app can send it a network (Improv Wi-Fi). Ethernet still works if you plug a cable in. The image has SSH on and **no default password**. See that README for `freesounder-setup`, DAC overlays, host vs room roles, and build instructions. Early images are alpha and were not boot-tested on real hardware in the first build environment.
 
 ## Sources
 

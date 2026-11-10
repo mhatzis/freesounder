@@ -46,6 +46,23 @@ class MockHousehold {
   late List<UnclaimedPlayer> unclaimed;
   String activeRoomId = 'kitchen';
 
+  void offerProvisioned({required String id, required String name, String? address}) {
+    if (unclaimed.any((player) => player.id == id) || rooms.any((room) => room.id == id)) {
+      return;
+    }
+    final ip = address ?? '192.168.1.80';
+    unclaimed = [
+      ...unclaimed,
+      UnclaimedPlayer(
+        id: id,
+        name: name,
+        url: 'http://$ip:8090',
+        address: ip,
+        port: 8090,
+      ),
+    ];
+  }
+
   UnclaimedPlayer adopt({required String name, String? id, String? url}) {
     UnclaimedPlayer? found;
     final remaining = <UnclaimedPlayer>[];

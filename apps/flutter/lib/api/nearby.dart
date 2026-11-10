@@ -1,0 +1,209 @@
+import 'dart:async';
+
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../models/player_settings.dart';
+import '../state/playback_store.dart';
+import 'nearby_factory.dart';
+
+/// A FreeSounder player found over BLE (needs Wi-Fi) or already on the LAN.
+class NearbyPlayer {
+  const NearbyPlayer({
+    required this.id,
+    required this.name,
+    required this.needsWifi,
+    this.subtitle,
+    this.unclaimed,
+  });
+
+  final String id;
+  final String name;
+  final bool needsWifi;
+  final String? subtitle;
+  final UnclaimedPlayer? unclaimed;
+}
+
+class WifiCandidate {
+  const WifiCandidate({required this.ssid, required this.rssi, this.auth = 'NO'});
+
+  final String ssid;
+  final int rssi;
+  final String auth;
+
+  bool get isOpen => auth == 'NO' || auth.isEmpty;
+}
+
+class DeviceInfo {
+  const DeviceInfo({
+    this.firmwareName = 'FreeSounder',
+    this.firmwareVersion = '',
+    this.hardware = '',
+    this.deviceName = '',
+    this.playerId = '',
+  });
+
+  final String firmwareName;
+  final String firmwareVersion;
+  final String hardware;
+  final String deviceName;
+  final String playerId;
+}
+
+class ProvisionResult {
+  const ProvisionResult({
+    required this.ok,
+    this.ip,
+    this.redirect,
+    this.reason,
+    this.playerId,
+  });
+
+  final bool ok;
+  final String? ip;
+  final String? redirect;
+  final String? reason;
+  final String? playerId;
+
+  String get message {
+    if (ok) {
+      if (ip != null && ip!.isNotEmpty) {
+        return 'Connected with address $ip';
+      }
+      return 'Connected';
+    }
+    switch (reason) {
+      case 'wrong_password':
+        return 'Wrong password. Check it and try again.';
+      case 'ssid_not_found':
+        return 'That network was not found. Move closer or pick another.';
+      default:
+        return 'Could not join the network. Check the password and try again.';
+    }
+  }
+}
+
+/// BLE (or demo) transport used by the add-player wizard.
+abstract class NearbyTransport {
+  Stream<List<NearbyPlayer>> get players;
+
+  Future<void> startScan();
+
+  Future<void> stopScan();
+
+  Future<void> connect(NearbyPlayer player);
+
+  Future<DeviceInfo> deviceInfo();
+
+  Future<List<WifiCandidate>> scanWifi();
+
+  /// Optional: ask the board to blink its LED. Never plays sound.
+  Future<void> identify();
+
+  Future<ProvisionResult> provision({
+    required String ssid,
+    required String password,
+    String? roomName,
+  });
+
+  Future<void> disconnect();
+
+  /// Best-effort current phone SSID, if the OS allows it.
+  Future<String?> phoneSsid();
+}
+
+/// Demo / test fake: one nearby unprovisioned player and two networks.
+class DemoNearbyTransport implements NearbyTransport {
+  DemoNearbyTransport({this.failReason, this.delay = const Duration(milliseconds: 400)});
+
+  /// When set, [provision] reports this failure instead of success.
+  final String? failReason;
+  final Duration delay;
+
+  static const demoPlayer = NearbyPlayer(
+    id: 'demo-ble-porch',
+    name: 'FreeSounder-A1B2',
+    needsWifi: true,
+    subtitle: 'Needs Wi-Fi (demo)',
+  );
+
+  final _controller = StreamController<List<NearbyPlayer>>.broadcast();
+  var _scanning = false;
+
+  @override
+  Stream<List<NearbyPlayer>> get players => _controller.stream;
+
+  @override
+  Future<void> startScan() async {
+    _scanning = true;
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    if (_scanning) {
+      _controller.add(const [demoPlayer]);
+    }
+  }
+
+  @override
+  Future<void> stopScan() async {
+    _scanning = false;
+  }
+
+  @override
+  Future<void> connect(NearbyPlayer player) async {
+    await Future<void>.delayed(delay);
+  }
+
+  @override
+  Future<DeviceInfo> deviceInfo() async {
+    return const DeviceInfo(
+      firmwareName: 'FreeSounder',
+      firmwareVersion: '0.3.0',
+      hardware: 'demo',
+      deviceName: 'FreeSounder-A1B2',
+      playerId: 'demo-ble-porch',
+    );
+  }
+
+  @override
+  Future<List<WifiCandidate>> scanWifi() async {
+    await Future<void>.delayed(delay);
+    return const [
+      WifiCandidate(ssid: 'Home', rssi: -40, auth: 'WPA2'),
+      WifiCandidate(ssid: 'Cafe', rssi: -70, auth: 'NO'),
+    ];
+  }
+
+  @override
+  Future<void> identify() async {}
+
+  @override
+  Future<ProvisionResult> provision({
+    required String ssid,
+    required String password,
+    String? roomName,
+  }) async {
+    // Do not log [password].
+    await Future<void>.delayed(delay);
+    if (failReason != null) {
+      return ProvisionResult(ok: false, reason: failReason, playerId: 'demo-ble-porch');
+    }
+    return ProvisionResult(
+      ok: true,
+      ip: '192.168.1.80',
+      redirect: 'http://192.168.1.80:8090',
+      playerId: 'demo-ble-porch',
+    );
+  }
+
+  @override
+  Future<void> disconnect() async {}
+
+  @override
+  Future<String?> phoneSsid() async => 'Home';
+}
+
+final nearbyTransportProvider = Provider<NearbyTransport>((ref) {
+  final demo = ref.watch(playbackProvider.select((state) => state.mockMode));
+  if (demo) {
+    return DemoNearbyTransport();
+  }
+  return createPlatformNearbyTransport();
+});

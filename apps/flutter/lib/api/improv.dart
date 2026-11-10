@@ -1,0 +1,89 @@
+/// Improv Wi-Fi BLE framing used by the app-side client.
+library;
+
+import 'dart:convert';
+
+const improvServiceUuid = '00467768-6228-2272-4663-277478268000';
+const improvCurrentStateUuid = '00467768-6228-2272-4663-277478268001';
+const improvErrorStateUuid = '00467768-6228-2272-4663-277478268002';
+const improvRpcCommandUuid = '00467768-6228-2272-4663-277478268003';
+const improvRpcResultUuid = '00467768-6228-2272-4663-277478268004';
+const improvCapabilitiesUuid = '00467768-6228-2272-4663-277478268005';
+const improvServiceDataUuid = '00004677-0000-1000-8000-00805f9b34fb';
+
+const improvCmdWifiSettings = 0x01;
+const improvCmdIdentify = 0x02;
+const improvCmdDeviceInfo = 0x03;
+const improvCmdScanWifi = 0x04;
+const improvCmdHostname = 0x05;
+const improvCmdDeviceName = 0x06;
+
+const improvStateAuthorized = 0x02;
+const improvStateProvisioning = 0x03;
+const improvStateProvisioned = 0x04;
+
+const improvErrorNone = 0x00;
+const improvErrorUnableToConnect = 0x03;
+
+int improvChecksum(List<int> data) => data.fold<int>(0, (a, b) => a + b) & 0xFF;
+
+List<int> encodeImprovRpc(int command, List<int> data) {
+  final body = <int>[command, data.length, ...data];
+  return [...body, improvChecksum(body)];
+}
+
+List<int> encodeImprovStrings(List<String> values) {
+  final data = <int>[];
+  for (final value in values) {
+    final bytes = utf8.encode(value);
+    final slice = bytes.length > 255 ? bytes.sublist(0, 255) : bytes;
+    data.add(slice.length);
+    data.addAll(slice);
+  }
+  return data;
+}
+
+List<int> encodeWifiSettings({required String ssid, required String password}) {
+  final s = utf8.encode(ssid);
+  final p = utf8.encode(password);
+  return [s.length, ...s, p.length, ...p];
+}
+
+({int command, List<int> data})? tryParseImprovRpc(List<int> buffer) {
+  if (buffer.length < 3) {
+    return null;
+  }
+  final length = buffer[1];
+  final frameLen = 3 + length;
+  if (buffer.length < frameLen) {
+    return null;
+  }
+  final frame = buffer.sublist(0, frameLen);
+  if (improvChecksum(frame.sublist(0, frame.length - 1)) != frame.last) {
+    throw const FormatException('invalid Improv checksum');
+  }
+  return (command: frame[0], data: frame.sublist(2, frame.length - 1));
+}
+
+List<String> decodeImprovStrings(List<int> data) {
+  final out = <String>[];
+  var i = 0;
+  while (i < data.length) {
+    final length = data[i];
+    i += 1;
+    if (i + length > data.length) {
+      break;
+    }
+    out.add(utf8.decode(data.sublist(i, i + length), allowMalformed: true));
+    i += length;
+  }
+  return out;
+}
+
+List<String> decodeImprovResult(List<int> frame) {
+  final parsed = tryParseImprovRpc(frame);
+  if (parsed == null) {
+    return const [];
+  }
+  return decodeImprovStrings(parsed.data);
+}

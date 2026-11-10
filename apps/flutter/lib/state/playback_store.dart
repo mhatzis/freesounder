@@ -385,6 +385,18 @@ class PlaybackStore extends Notifier<PlaybackState> {
     await _client?.setVolume(roomId, clamped);
   }
 
+  /// After BLE provisioning in demo mode, surface the player as unclaimed.
+  void rememberProvisionedPlayer({
+    required String id,
+    required String name,
+    String? address,
+  }) {
+    if (!state.mockMode) {
+      return;
+    }
+    _mock.offerProvisioned(id: id, name: name, address: address);
+  }
+
   Future<List<UnclaimedPlayer>> listUnclaimed() async {
     if (state.mockMode) {
       return List.of(_mock.unclaimed);

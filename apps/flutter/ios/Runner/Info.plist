@@ -32,6 +32,12 @@
 	<array>
 		<string>_freesounder._tcp</string>
 	</array>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>FreeSounder uses Bluetooth to find a new player and send it your Wi-Fi name so it can join your system.</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>FreeSounder uses Bluetooth to find a new player and send it your Wi-Fi name so it can join your system.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>FreeSounder can suggest the Wi-Fi your phone is already on when setting up a new player.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>FreeSounder looks for players on your Wi-Fi so it can control music in each room.</string>
 	<key>UIApplicationSceneManifest</key>
