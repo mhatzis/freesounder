@@ -1,0 +1,67 @@
+# Local development stack: Music Assistant + control-api + two simulated rooms.
+#
+# Official Music Assistant docs prefer host networking on a real player. This
+# file uses a bridge network so services can reach each other by name. mDNS
+# provider discovery inside MA may not work in this mode; use it for API and
+# snapclient wiring, not as a substitute for a 4 GB host image.
+#
+# Snapclient audio is written under /audio (a file sink). There is no speaker
+# output from these containers.
+
+name: freesounder-dev
+
+services:
+  music-assistant:
+    image: ghcr.io/music-assistant/server:latest
+    container_name: freesounder-ma
+    restart: unless-stopped
+    volumes:
+      - ma-data:/data
+    ports:
+      - "8095:8095"
+
+  control-api:
+    build:
+      context: ../services/control-api
+    container_name: freesounder-control-api
+    restart: unless-stopped
+    environment:
+      FREESOUNDER_HOST: "0.0.0.0"
+      FREESOUNDER_PORT: "8080"
+      FREESOUNDER_MA_URL: "http://music-assistant:8095"
+      FREESOUNDER_MA_TOKEN: "${FREESOUNDER_MA_TOKEN:-}"
+      FREESOUNDER_MDNS_ENABLED: "false"
+      FREESOUNDER_MDNS_NAME: "freesounder-dev"
+    ports:
+      - "8080:8080"
+    depends_on:
+      - music-assistant
+
+  snapclient-kitchen:
+    build:
+      context: ./snapclient
+    container_name: freesounder-snap-kitchen
+    restart: unless-stopped
+    environment:
+      SNAPHOST: music-assistant
+    volumes:
+      - kitchen-audio:/audio
+    depends_on:
+      - music-assistant
+
+  snapclient-lounge:
+    build:
+      context: ./snapclient
+    container_name: freesounder-snap-lounge
+    restart: unless-stopped
+    environment:
+      SNAPHOST: music-assistant
+    volumes:
+      - lounge-audio:/audio
+    depends_on:
+      - music-assistant
+
+volumes:
+  ma-data:
+  kitchen-audio:
+  lounge-audio:
