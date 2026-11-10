@@ -22,8 +22,9 @@ freesounder should not clone the Sonos app. The product is a **cleaner, rooms-fi
 | AirPlay 2 ingress | **shairport-sync** + NQPTP, audio fed into a Snapcast source. |
 | Spotify | Music Assistant **Soloist** where it works, and/or a **Connect** sidecar (raspotify/librespot). Both have Terms-of-Service caveats. |
 | Discovery | mDNS / Avahi for server findability, AirPlay and Connect. Snapcast clients connect to snapserver on the LAN. |
+| Home Assistant | **Optional, never required.** Default is standalone Music Assistant in Docker. People who already run HA can add the official Music Assistant integration for automations, dashboards and Assist. |
 
-Avoid Bluetooth and PulseAudio/PipeWire hops on synced room players. Do not use PipeWire/ROC or Pulse RTP as the house clock. Do not build on Volumio as the core (multi-room is a Premium feature). Treat Lyrion + squeezelite + piCorePlayer as a mature *alternative* architecture, not the default.
+Avoid Bluetooth and PulseAudio/PipeWire hops on synced room players. Do not use PipeWire/ROC or Pulse RTP as the house clock. Do not build on Volumio as the core (multi-room is a Premium feature). Treat Lyrion + squeezelite + piCorePlayer as a mature *alternative* architecture, not the default. Home Assistant is an optional companion, not part of the required stack.
 
 ---
 
@@ -423,6 +424,22 @@ flowchart TB
 ```
 
 **Phones as synced speakers** are a nice extra, not MVP. Sendspin (preview) can do it in the MA web player and official mobile app. Snapweb works if the tab stays open. Snapdroid is behind. The iOS Snapcast app should not be relied on. Official Spotify and Apple apps remain **ingress** (they push audio in), not freesounder room endpoints.
+
+### 5.1 Home Assistant integration (optional)
+
+Music Assistant is designed to sit beside Home Assistant and is also a complete standalone server. The MA team’s supported installs are the official Home Assistant **app on HAOS**, or a simple **Docker** container with host (or macvlan) networking ([Installation](https://www.music-assistant.io/installation/), [music-assistant/server](https://github.com/music-assistant/server)).
+
+**freesounder’s default is a standalone appliance:** Music Assistant in Docker, no Home Assistant required. People who already run Home Assistant can optionally add the official [Music Assistant integration](https://www.home-assistant.io/integrations/music_assistant/), which auto-discovers a running server or can install the HAOS app during setup. Running MA in Docker *alongside* HA, then pointing the integration at it, keeps music playing if Home Assistant restarts. HA remains optional, never a prerequisite for the Flutter apps or the rooms panel.
+
+**What HA gets.** The official integration requires Music Assistant server 2.4 or later and creates a `media_player` entity for every MA player and group, with now-playing, progress and standard media controls. Temporary sync groups can be managed with Home Assistant’s `media_player.join` and `media_player.unjoin` actions ([MA grouping FAQ](https://www.music-assistant.io/faq/groups/)). Dedicated actions include `music_assistant.play_media`, `music_assistant.get_queue`, `music_assistant.transfer_queue` (queue follow-me), `music_assistant.play_announcement` (the integration documents automatic pause during announcements), `music_assistant.search` and `music_assistant.get_library`. That is enough for automations such as a doorbell announcement, a morning radio alarm, or transferring a queue when a presence sensor trips.
+
+**Voice.** From Home Assistant 2025.6, Assist can play from the MA library with built-in Search and Play sentences once those `media_player` entities are exposed ([MA voice docs](https://www.music-assistant.io/integration/voice/)).
+
+**Snapcast’s own HA integration** ([snapcast](https://www.home-assistant.io/integrations/snapcast/)) still offers volume, grouping, snapshot and latency controls. In a freesounder stack that already goes through Music Assistant, prefer the MA integration and do not also drive grouping from the Snapcast integration, or group state will have two writers.
+
+**Benefits and caveats.** Home Assistant users get rooms, groups and playback with no extra freesounder-specific HA component. The integration is coupled to MA and HA release trains; HA-imported players can appear twice until the original is hidden; and group or queue state must have one authority. Because the Flutter apps should already talk to Music Assistant’s API (or a thin facade on top of it), Home Assistant and the apps will see the same rooms if they both go through MA. Do not keep a second, diverging group model in freesounder. Non-HA users should never be asked to install Home Assistant, and setup copy should not assume it.
+
+**Apps vs dashboards.** The Flutter apps remain the polished daily controller. Home Assistant is for automations, Assist and existing smart-home dashboards. A Lovelace card can be considered later, as a complement, not a replacement.
 
 ---
 
