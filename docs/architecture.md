@@ -578,11 +578,10 @@ freesounder/
     design/              tokens, room tile, now-playing, volume
     api_client/          generated or hand-written API client
   services/
-    player-daemon/       election, MA proxy, /data replication (Apache-2.0)
+    control-api/         election, MA proxy, /data backup/restore (Apache-2.0)
     setup/               mDNS, room naming, network onboarding
   images/player/         Pi OS image: snapclient + ALSA/DAC
-  deploy/
-    compose/             MA (host profile) + two snapclient players for local dev
+  dev/                   MA (host profile) + two snapclient players for local dev
   third_party/README.md  runbooks only; no vendored GPL sources
 ```
 

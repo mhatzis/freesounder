@@ -1,0 +1,45 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# Flutter / Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+coverage/
+*.iml
+ios/Pods/
+ios/.symlinks/
+android/.gradle/
+android/local.properties
+linux/flutter/ephemeral/
+macos/Flutter/ephemeral/
+windows/flutter/ephemeral/
+
+# Tooling / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
+*.log
+.env
+.env.local
+
+# Images / SD artefacts
+images/player/work/
+images/player/deploy/
+*.img
+*.img.xz

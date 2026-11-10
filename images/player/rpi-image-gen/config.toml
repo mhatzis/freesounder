@@ -1,0 +1,15 @@
+# Stub configuration for raspberrypi/rpi-image-gen.
+# This is a plan, not a tested image recipe. Fill in layer names against the
+# rpi-image-gen release used when we first build the player image.
+
+name = "freesounder-player"
+# 64-bit lite baseline; host profile adds Docker + Music Assistant.
+architecture = "arm64"
+
+[freesounder]
+host_default_board = "pi4-4gb"
+control_api = true
+snapclient = true
+music_assistant_image = "ghcr.io/music-assistant/server"
+# First beta: document backup/restore of this volume; no automatic failover.
+ma_data_path = "/var/lib/freesounder/ma-data"
