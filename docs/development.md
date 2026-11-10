@@ -4,6 +4,12 @@ Facts below were checked against the named official pages on **10 November 2026,
 
 **Superseded later the same day:** ingress-only v1 (no Music Assistant, no in-app catalogue) is withdrawn, as is any cupboard server box. v1 is **player-only** *and* has a **full in-app catalogue**: Music Assistant runs in official Docker on an elected **4 GB household-host player**; all rooms are snapclients of that host’s built-in snapserver; the app talks to any player, which proxies to MA (see [architecture.md](architecture.md) §1, §5 and §7).
 
+**Decided 10 November 2026, Australia/Melbourne** (also recorded in architecture.md §10):
+
+- Default household host is a **Pi 4 4GB** player (Pi 5 4GB when lead time is acceptable). One 4 GB host per home; cheaper boards may be members.
+- First public beta uses **backup and restore** of Music Assistant’s `/data`. No automatic host failover or live `/data` replication in that beta.
+- **Both** Spotify paths are supported and **user-selectable**: Music Assistant **Soloist** and **go-librespot** Connect, with ToS and account-limit disclosures in the app.
+
 ## Recommendation
 
 **Stay on Flutter.** Do not switch the client to React Native to get Expo EAS Update. That would throw away the shared Flutter design system already decided for iOS, Android and web.
@@ -87,7 +93,7 @@ Flutter has **no Expo-style over-the-air update** in the framework. A new Dart U
 
 **Recommend Python** for `services/player-daemon`.
 
-The daemon is the product’s control plane: mDNS, household-host election, Music Assistant Docker lifecycle on the host, `/data` replication to standbys, `snapclient` pointing at the host, a facade over the host MA WebSocket API, and setup endpoints. Python is the v1 default because it is fast to iterate, matches the official [`music-assistant-client`](https://github.com/music-assistant/client), and is acceptable on a Pi 4 4GB host (member-only images can stay slim).
+The control API is the product’s control plane: mDNS, household-host election, Music Assistant Docker lifecycle on the host, first-beta `/data` backup/restore (live replication and automatic failover come later), `snapclient` pointing at the host, a facade over the host MA WebSocket API, and setup endpoints. Python is the v1 default because it is fast to iterate, matches the official [`music-assistant-client`](https://github.com/music-assistant/client), and is acceptable on a Pi 4 4GB host (member-only images can stay slim).
 
 TypeScript and Go remain alternatives (Go if we later want a smaller binary on a Zero 2 W member). Expose an OpenAPI (or similar) contract so the Flutter `api_client` package does not depend on Python.
 
@@ -112,20 +118,20 @@ Document `cp .env.example .env && docker compose up`. Two real Pis (one 4 GB hos
      apps/flutter/             iOS, Android, web client
      packages/design/          tokens, room tile, now-playing, rooms panel
      packages/api_client/      talks only to a player daemon
-     services/player-daemon/   election, MA proxy, /data replication
+     services/control-api/     election, MA proxy, /data backup/restore
      services/setup/           first-boot, room naming, household pairing
      images/player/            Pi OS image: daemon + Docker; MA container
                                on 4 GB host profile; snapclient + ALSA on every board
-     deploy/compose/           MA host + member snapclient for local dev
+     dev/                      docker-compose: MA host + member snapclients
    ```
 
 2. **Player image with MA + daemon.** Official MA Docker on a 4 GB host profile; snapclient on every board; daemon starts MA only when elected host.
 
-3. **Household host election.** Prefer Ethernet + most RAM; single writer for `/data`; mDNS name for the current host; then `/data` replication to a standby and failover (snapclients retarget only then).
+3. **Household host election.** Prefer Ethernet + most RAM; single writer for `/data`; mDNS name for the current host. First beta: documented backup/restore of `/data`. Automatic standby replication and failover come later.
 
 4. **Flutter app on the MA API** (via the daemon facade): rooms-panel shell plus browse/search/queue for the in-app catalogue; discover any player via mDNS; honest outage/Syncing if the host moves.
 
-5. **CI:** GitHub Actions on the Dart app and the Python daemon; add fastlane or Codemagic for TestFlight / Play internal / optional Firebase once accounts exist.
+5. **CI:** GitHub Actions on the Dart app and the Python control-api; add fastlane or Codemagic for TestFlight / Play internal / optional Firebase once accounts exist.
 
 Do not start a from-scratch sync layer, a cupboard MA server, a custom streaming-provider stack, or a React Native rewrite.
 

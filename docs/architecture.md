@@ -30,7 +30,7 @@ The hybrid principle is unchanged: reuse mature programs as separate processes; 
 | Sync layer | **MA’s built-in Snapcast server** on the household host (default in the [Snapcast provider](https://www.music-assistant.io/player-support/snapcast/)). Groups are MA Sync Groups, which move clients between groups/streams on **one** snapserver — no `snapclient` host change on ordinary regroup. Built-in server is **48 kHz / 16-bit**. Sendspin remains a technical preview. |
 | Ingress | **MA Spotify Connect** and **MA AirPlay Receiver** plugins on the host, exposing each MA player (or group) in the official Spotify and Apple AirPlay pickers ([Spotify Connect plugin](https://www.music-assistant.io/plugins/spotify-connect/), [AirPlay Receiver](https://www.music-assistant.io/plugins/airplay-receiver/) — the latter still early). Advertisements come from the household host, not each Pi’s IP; audio still plays in the chosen room via Snapcast. Do not also run a second shairport-sync/librespot stack on every member in v1 (duplicate devices, conflicting NQPTP). |
 | Discovery | **mDNS / DNS-SD**: every player, plus a stable name for the current household host (so apps and Home Assistant do not depend on a raw DHCP IP). |
-| Shared state | Room/household setup in the daemon; library, tokens, queues and MA settings in MA’s `/data` on the host, **replicated to standbys**. |
+| Shared state | Room/household setup in the daemon; library, tokens, queues and MA settings in MA’s `/data` on the host. **First beta: backup and restore of `/data`** (no live replication, no automatic failover). |
 | Home Assistant | **Optional.** Point the official [`music_assistant`](https://www.home-assistant.io/integrations/music_assistant/) integration at the household host (mDNS/URL). Do not install MA as an HAOS app on a separate HA box as the *required* path. Note the failover/address caveat in §5. |
 | Hardware | **At least one Pi 4 4GB or Pi 5 4GB** (Ethernet preferred) per home as host-capable. Other rooms may be cheaper snapclient members. See §6. |
 | What we build vs reuse | **Hybrid.** Own the daemon/facade, Flutter apps, setup and player image. Reuse Music Assistant (Docker), its built-in snapserver, and `snapclient` as separate processes. See §7. |
@@ -393,7 +393,7 @@ An open-source project can use official APIs, official Connect-style partner pro
 
 - **Path A — Music Assistant Soloist.** Official playback engine for screenless devices, downloaded from Spotify during setup. MA documents lossless up to **24-bit / 44.1 kHz**, one player at a time per account, works with accounts created since December 2024. Setup needs a personal API key and pairing. [MA Spotify docs](https://www.music-assistant.io/music-providers/spotify/): Spotify’s terms **do not clearly allow** using Soloist this way; use at your own risk. MA may not distribute Soloist itself.
 - **Path B — Connect receiver** (raspotify/librespot) so the official Spotify app can target a room, with audio fed into Snapcast. Typically Ogg Vorbis up to 320 kbps. **Premium required.** Often **fails on newer accounts** (librespot README warning; MA “Key Error” notes).
-- **Recommendation:** Treat Soloist as the in-app catalogue path where the user accepts the ToS warning; keep Connect as handoff from the official Spotify app. Do not rely on librespot alone. Disclose this in the app before the user signs in.
+- **Decision (10 November 2026):** support **both**, **user-selectable**: Soloist for in-app catalogue play (ToS warning required) and go-librespot Connect for handoff from the official Spotify app (disclose the post-2024 account limits). Do not rely on either path alone.
 
 ### Apple Music
 
@@ -529,7 +529,7 @@ DAC, PSU and case notes from the earlier research still apply (official DAC+ **3
 | **Member — ultra-budget** | Little Bird Zero 2 W (34.99) + 12.5W PSU (13.79) + Adafruit USB DAC (10.50) + microSD (32.18) + slim case (5.05) | **96.51** | Wi-Fi only member or single-room client. |
 | **Pi 5 + DAC2 Pro** (earlier premium comparison) | 178.42 + 21.07 + 16.90 + 32.18 + HiFiBerry DAC2 Pro 94.10 | **342.67** | Still valid as a “nice” kit; not required. Lead time on the 4GB board. |
 
-A second 4 GB kit as a **standby host** is optional for MVP and recommended if you care about failover without restoring a backup by hand.
+A second 4 GB kit as a **standby host** is **not** in the first public beta. That beta uses **backup and restore** of MA `/data`. Automatic replication and failover remain later work.
 
 ---
 
@@ -545,7 +545,7 @@ A second 4 GB kit as a **standby host** is optional for MVP and recommended if y
 
 **Reuse, unmodified, as separate programs:** official Music Assistant container (library, providers, queues, built-in snapserver, Connect and AirPlay Receiver plugins) and `snapclient`. Do not fork MA or link it in-process.
 
-**MVP:** one 4 GB host running MA + built-in snapserver; all rooms as snapclients; daemon election + proxy; Flutter app on the facade. A second 4 GB standby and `/data` replication can follow immediately after first sound.
+**MVP:** one 4 GB host (default **Pi 4 4GB**) running MA + built-in snapserver; all rooms as snapclients; daemon election + proxy; Flutter app on the facade. First beta: **backup/restore** of `/data`, not automatic failover. Both Spotify paths (Soloist and go-librespot Connect) are user-selectable.
 
 The facade remains the escape hatch (later Sendspin or another sync layer, or even a different library engine) without changing the apps.
 
@@ -591,19 +591,19 @@ freesounder/
 ## 10. Open questions and decisions
 
 1. ~~Central server vs player-only vs ingress-only catalogue.~~ **Decided later on 10 November 2026:** player-only **and** a full in-app catalogue, with Music Assistant on an elected 4 GB household host.
-2. Confirm **Pi 4 4GB** as the default in-stock host, with Pi 5 4GB when lead time is acceptable, and the rule **one 4 GB host per home, cheaper members allowed**.
-3. Whether a **second 4 GB standby** (and `/data` replication) is required for the first public beta, or a backup/restore story is enough at first.
-4. **Spotify policy** on the MA Connect plugin: Soloist (official engine, ToS grey) vs go-librespot. Disclose in the app.
+2. ~~Default host SKU.~~ **Decided 10 November 2026:** default household host is the **Pi 4 4GB** kit (in stock at Core Electronics when priced). Pi 5 4GB remains an option when lead time is acceptable. Rule: **one 4 GB host per home, cheaper members allowed**.
+3. ~~Standby vs backup for first beta.~~ **Decided 10 November 2026:** the first public beta uses **backup and restore** of Music Assistant’s `/data`. There is **no automatic host failover** and no live `/data` replication in that beta. Automatic standby remains a later design.
+4. ~~Spotify engine.~~ **Decided 10 November 2026:** support **both** paths, **user-selectable**: Music Assistant **Soloist** (in-app catalogue; ToS grey) and **go-librespot** Connect (handoff from the official Spotify app; accounts created around December 2024 and later often fail). Disclose both in the app before sign-in.
 5. Whether MA’s **early AirPlay Receiver** plugin (about 5 s delay, limited) is acceptable, or we need a host-side shairport-sync fallback in v1.
-6. Hide “household host” in the everyday UI; show a plain outage/Syncing state during failover.
+6. Hide “household host” in the everyday UI; show a plain outage/Syncing state if the host is unreachable.
 
 ---
 
 ## 11. Phased build plan
 
-Status as of 10 November 2026, Australia/Melbourne: **design only**; no product code in the repo yet. This is a plan, not a live tracker.
+Status as of 10 November 2026, Australia/Melbourne: architecture decisions locked as in §10; product code is starting in this repository. This phased list is a plan, not a live tracker.
 
-1. **MVP — two players, no cupboard server, in-app catalogue, groups, volume, web client.** One 4 GB player elected as household host running official MA Docker + built-in snapserver; both rooms as snapclients; Python daemon (election, proxy, later `/data` replication); Flutter web rooms panel plus browse/search against MA; honest outage/Syncing state if the host fails over.
+1. **MVP — two players, no cupboard server, in-app catalogue, groups, volume, web client.** One 4 GB player elected as household host running official MA Docker + built-in snapserver; both rooms as snapclients; Python control-api (election, proxy; first beta: `/data` backup/restore); Flutter web rooms panel plus browse/search against MA; honest outage/Syncing state if the host fails over.
 2. **Phase 2 — native iOS and Android** from the same Flutter app. Accessibility audit, onboarding and add-speaker flow, lock-screen controls.
 3. **Phase 3 — ingress polish.** MA Spotify Connect and AirPlay Receiver plugins (or documented fallback); ToS disclosures; radio and local files already in the catalogue; document Apple Music and Tidal limits honestly.
 4. **Phase 4 — polish and extras.** Sleep timer and alarms without regressions; optional Sendspin phone playback; ESP32/Esparagus experiments; optional Home Assistant; store listings only when features and accessibility are at parity.
