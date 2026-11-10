@@ -1,6 +1,8 @@
 # freesounder — development, beta distribution, and next steps
 
-Facts below were checked against the named official pages on **10 November 2026, Australia/Melbourne**. Limits and fees change; re-check the source before paying or inviting testers. This note assumes the **hybrid v1 stack already decided** on that date (see [architecture.md](architecture.md) §1 and §7): we own the Flutter apps, the control API facade, setup/onboarding, and the player image, and we reuse Music Assistant, Snapcast and ingress daemons as unmodified separate processes.
+Facts below were checked against the named official pages on **10 November 2026, Australia/Melbourne**. Limits and fees change; re-check the source before paying or inviting testers.
+
+**Superseded the same day:** earlier text in this file assumed a household Music Assistant + snapserver box. That is withdrawn. v1 is **player-only** (see [architecture.md](architecture.md) §1, §5 and §7): the control API runs on every player, Snapcast’s `snapserver` runs on the group coordinator, and there is no required server, NAS, PC or Home Assistant host. Hybrid still holds — own the daemon, apps, setup and image; reuse Snapcast and ingress as separate processes. Music Assistant is not in the v1 runtime.
 
 ## Recommendation
 
@@ -81,23 +83,23 @@ Flutter has **no Expo-style over-the-air update** in the framework. A new Dart U
 
 **Expo is React Native-only.** [EAS Update](https://docs.expo.dev/eas-update/introduction/) would give a first-party OTA story, but only if we abandoned Flutter. The cost is the already-decided shared Flutter design system, plus rewriting the rooms panel and clients. That trade is not worth it for v1.
 
-## Control API language (decision for the facade)
+## Player daemon language
 
-**Recommend Python** for `services/control-api`.
+**Recommend Python** for `services/player-daemon`.
 
-Music Assistant is itself Python, and there is an official client, [`music-assistant-client`](https://github.com/music-assistant/client) ([PyPI](https://pypi.org/project/music-assistant-client/)), that speaks the server WebSocket API. A thin facade that owns freesounder’s room/group contract can sit on that client (or the same protocol) without re-implementing auth, events and player commands. The setup service can share Python packaging and the same Docker base if useful.
+The daemon is the product’s control plane: mDNS, group/coordinator election, starting and re-pointing Snapcast, leader-based state replication, and the WebSocket API. Python is still the v1 default because it is fast to iterate, fine on a Pi 4 2GB, and a good fit for talking to Snapcast’s JSON-RPC and for a first-boot setup service. The earlier justification (“match Music Assistant’s client library”) no longer applies, because MA is not in the v1 runtime.
 
-TypeScript and Go remain good *alternatives*: TypeScript if we want one JSON-schema toolchain aimed at the Flutter client; Go if we want a single static binary. For v1, the integration risk is the Music Assistant protocol, not process footprint, so Python is the lower-risk default. Expose an OpenAPI (or similar) contract so the Flutter `api_client` package does not depend on Python.
+TypeScript and Go remain good alternatives (Go especially if we later need a smaller static binary on a Zero 2 W). Expose an OpenAPI (or similar) contract so the Flutter `api_client` package does not depend on Python.
 
 ## Local development
 
-A `docker-compose` (or Compose) file under the repo should run, on one machine:
+There is no Music Assistant container in the default dev path. A Compose file should run **two simulated players** on one machine:
 
-- **Music Assistant** (official container, host or macvlan-style networking as in [MA installation](https://www.music-assistant.io/installation/))
-- **snapserver**
-- one or two **snapclient** instances (to ALSA, a dummy/file sink, or a desktop output) so grouping can be exercised without two Pis
+- each “player” is the Python daemon + `snapserver` (started when that instance is coordinator) + `snapclient` (to a dummy, file, or desktop sink)
+- mDNS may need `network_mode: host` or a documented workaround on the dev machine
+- the Flutter app browses or is pointed at either daemon’s WebSocket
 
-The control API and Flutter app run on the host (or in additional services) and point at that stack. Document a single `cp .env.example .env && docker compose up` path.
+Document a single `cp .env.example .env && docker compose up` path. Two real Pis remain the better grouping test, especially for regroup and `snapclient` restart behaviour ([snapcast#527](https://github.com/badaix/snapcast/issues/527)).
 
 ## Next steps
 
@@ -109,22 +111,23 @@ The control API and Flutter app run on the host (or in additional services) and 
      docs/                     architecture.md, development.md, …
      apps/flutter/             iOS, Android, web client
      packages/design/          tokens, room tile, now-playing, rooms panel
-     packages/api_client/      talks only to the facade
-     services/control-api/     Python facade over Music Assistant
-     services/setup/           mDNS discovery, room naming, network onboarding
-     images/player/            Pi OS image: snapclient + ALSA/DAC
-     deploy/compose/           MA + snapserver + snapclient for local dev
+     packages/api_client/      talks only to a player daemon
+     services/player-daemon/   Python API, election, Snapcast control, replication
+     services/setup/           first-boot Wi-Fi/Ethernet, room naming, household pairing
+     images/player/            Pi OS image: daemon + snapserver + snapclient + ALSA
+                               + shairport-sync + Connect sidecar
+     deploy/compose/           two simulated players for local dev
    ```
 
-2. **Flutter app skeleton** with the rooms-panel shell already specified in architecture.md §2.7: persistent mini-player + room chip, bottom-sheet detents on a phone width, trailing rail from ~900 px, one rooms-and-playback store, optimistic UI stubs.
+2. **Player daemon first.** Smallest slice: advertise mDNS, elect a coordinator, start `snapserver` there, point `snapclient` at it, play a test stream (file or HTTP) on two sinks, expose WebSocket events for rooms, groups, volume and now-playing. Then: regroup (including the snapclient restart), config-leader replication, and forwarding an API call from a member to the coordinator.
 
-3. **Control API facade** in Python over Music Assistant (see above). First slice: list rooms/players, set the active control target, join/leave a group, member and group volume, now-playing, and a WebSocket event stream the app can subscribe to.
+3. **Flutter app skeleton** with the rooms-panel shell in architecture.md §2.7, discovering players via mDNS (or a dev URL) and talking to any daemon. Show an honest “Syncing…” state when a group is mid-repoint.
 
-4. **Local dev via docker-compose:** Music Assistant + snapserver + snapclient, plus a README that brings the facade and the Flutter app up against that stack.
+4. **Player image** with the daemon and the reused processes, plus onboarding for Wi-Fi/Ethernet and a room name. Default SKU in architecture.md is a Pi 4 2GB; the image should degrade to member-only on a Zero 2 W.
 
-5. **CI:** GitHub Actions workflow that analyses and tests the Dart app and the Python facade on every pull request; add fastlane (or Codemagic) signed TestFlight / Play internal / optional Firebase uploads once the developer accounts and signing secrets exist.
+5. **CI:** GitHub Actions on the Dart app and the Python daemon; add fastlane or Codemagic for TestFlight / Play internal / optional Firebase once accounts exist.
 
-Do not start a from-scratch sync layer, a custom streaming-provider stack, or a React Native rewrite.
+Do not start a from-scratch sync layer, a Music Assistant server, a custom streaming-provider stack, or a React Native rewrite.
 
 ## Sources
 

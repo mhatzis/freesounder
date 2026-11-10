@@ -1,6 +1,6 @@
 # freesounder – Architecture Research & Recommended Stack
 
-Research snapshot as of **10 November 2026, Australia/Melbourne**. GitHub star counts and release metadata were looked up from the GitHub API on that date unless another source is named. Timestamps originally in UTC are converted to Australia/Melbourne (UTC+11). Prices are GST-inclusive AUD from named retailers fetched the same day. Numbers are cited, not invented.
+Research snapshot as of **10 November 2026, Australia/Melbourne**, revised the same day for a **player-only** (no separate server) architecture. GitHub star counts and release metadata were looked up from the GitHub API on that date unless another source is named. Timestamps originally in UTC are converted to Australia/Melbourne (UTC+11). Hardware prices are GST-inclusive AUD from named retailers fetched earlier that day and are reused here where still valid. Numbers are cited, not invented.
 
 **Public repo:** [https://github.com/mhatzis/freesounder](https://github.com/mhatzis/freesounder) (Apache License 2.0).
 
@@ -10,22 +10,29 @@ A companion Page with the same findings is here: [freesounder – Architecture R
 
 ## 1. Recommendation
 
-freesounder should not clone the Sonos app. The product is a **cleaner, rooms-first redesign** of multi-room control: very clear now-playing, a rooms panel reachable from every screen, one-tap per-room and group volume, and grouping that takes a couple of seconds.
+freesounder should not clone the Sonos *app*. It should follow the Sonos *system* shape: **no separate server box**. Everything that must stay on for music runs on the room players (Raspberry Pi images) and in the Flutter mobile/web app. There is no required NAS, PC, Home Assistant host or Music Assistant server.
 
-**Recommended stack**
+**Superseded (10 November 2026, Australia/Melbourne):** the earlier recommendation of a dedicated Music Assistant + snapserver host, with rooms running only `snapclient`, is withdrawn. That design is documented below only as historical context. The hybrid *principle* is unchanged: reuse mature programs as separate processes, and own the control API, apps, setup and player image.
+
+**Recommended stack (player-only, locked for v1)**
 
 | Layer | Choice |
 |---|---|
-| Control apps (iOS, Android, web) | **Flutter**, one custom design system, including a **global rooms panel** (mini-player + room chip → bottom sheet on phones, right-hand rail on desktop). Do not ship Music Assistant, Iris, Snapweb, Volumio or Lyrion UIs as the product face. |
-| Server / library / streaming sources | **Music Assistant** (Apache-2.0), unmodified, separate process. Talk to its WebSocket API through a thin freesounder facade that owns the room/group contract (**decided for v1** — see §7). |
-| Sync layer | **Snapcast** (GPL-3.0), unmodified, separate process. `snapclient` on each room, **ALSA** to a DAC, **Ethernet** where possible. |
-| AirPlay 2 ingress | **shairport-sync** + NQPTP, audio fed into a Snapcast source. |
-| Spotify | Music Assistant **Soloist** where it works, and/or a **Connect** sidecar (raspotify/librespot). Both have Terms-of-Service caveats. |
-| Discovery | mDNS / Avahi for server findability, AirPlay and Connect. Snapcast clients connect to snapserver on the LAN. |
-| Home Assistant | **Optional, never required.** Default is standalone Music Assistant in Docker. People who already run HA can add the official Music Assistant integration for automations, dashboards and Assist. |
-| What we build vs reuse | **Decided 10 November 2026 (Australia/Melbourne): hybrid, locked for v1.** Own the control API facade, Flutter apps, setup/onboarding and a snapclient player image. Reuse Snapcast, Music Assistant and ingress daemons as unmodified separate processes. See §7 and [development.md](development.md). |
+| System shape | **Sonos-style.** Every player ships the same image. In each group, one player is the **coordinator** (group leader): it fetches or receives the stream and runs `snapserver` so members stay in sync. Any capable player can become coordinator. A standalone room is a group of one. The app talks to **any** player; that player forwards group-transport commands to the coordinator. |
+| Control apps (iOS, Android, web) | **Flutter**, one custom design system, including the **global rooms panel** already specified in §2.7. Do not ship Music Assistant, Iris, Snapweb, Volumio or Lyrion UIs as the product face. |
+| Player daemon / control API | A thin **freesounder daemon on every player** (Python for v1). It owns discovery, group membership, state replication, and the WebSocket API the apps speak. It starts, stops and re-points Snapcast and ingress processes. |
+| Sync layer (MVP) | **Snapcast**, unmodified, as separate processes: `snapserver` on the current coordinator (plus a local `snapclient` to that server for the coordinator’s own speakers), `snapclient` on members pointed at the coordinator. See §5. |
+| AirPlay 2 ingress | **shairport-sync** + NQPTP **on every player**. Apple’s own AirPlay 2 grouping can sync several of our players when the user groups them in iOS. For *freesounder* groups, AirPlay audio arriving at a player should make that player the coordinator and be fed into its `snapserver`. |
+| Spotify | **Connect receiver on every player** (raspotify / librespot; go-librespot is GPL-3.0 and must stay a sidecar). The official Spotify app picks a room. If that room is in a freesounder group, that player becomes coordinator and tees audio into Snapcast. Soloist / in-app Spotify browse is **not** in v1 (it wanted a Music Assistant server). ToS caveats remain. |
+| Other sources | Coordinator fetches **internet radio and simple HTTP(S) streams**. Optional **local files** from a USB stick, a user-provided network share (a NAS here is only file storage, not a freesounder server), or audio the phone casts to a player. **No official Tidal Connect** path to ship (partner-only). |
+| Discovery | **mDNS / DNS-SD** for freesounder players (and Avahi for AirPlay / Connect advertisements). The app browses the LAN and can use any player as the entry point. |
+| Shared state | **Simple leader-based replication** for MVP: room names, groups, favourites and settings are written by a household config leader and copied to every player. Not a CRDT for v1. |
+| Home Assistant | **Optional, never required.** A future freesounder HA integration should talk to our player API. Do not assume a Music Assistant or always-on snapserver host. |
+| What we build vs reuse | **Hybrid, restated for the player-only model (10 November 2026).** Own the daemon/API, Flutter apps, setup/onboarding and the player image. Reuse Snapcast, shairport-sync and a Spotify Connect sidecar as unmodified separate processes. Music Assistant is **not** part of the v1 runtime. See §7 and [development.md](development.md). |
 
-Avoid Bluetooth and PulseAudio/PipeWire hops on synced room players. Do not use PipeWire/ROC or Pulse RTP as the house clock. Do not build on Volumio as the core (multi-room is a Premium feature). Treat Lyrion + squeezelite + piCorePlayer as a mature *alternative* architecture, not the default. Home Assistant is an optional companion, not part of the required stack. For hardware, prefer a cheap Ethernet Pi 4 1GB or a Wi-Fi Pi Zero 2 W room kit over a Pi 5 (see §6). For software, **v1 is locked (10 November 2026)** to that hybrid split: build only the apps, API facade, setup and player image; reuse the rest (see §7). Beta distribution and the next engineering steps are in [docs/development.md](development.md).
+Avoid Bluetooth and PulseAudio/PipeWire hops on synced room players. Do not use PipeWire/ROC or Pulse RTP as the house clock. Do not build on Volumio as the core. Prefer **Ethernet on any player that may be a coordinator**. Beta distribution is still in [docs/development.md](development.md).
+
+**User decision still open:** v1 in-app music is **ingress-first** (Spotify app, AirPlay, radio, files, phone cast). A rich in-app catalogue like Music Assistant’s providers needs either a heavy process on a 4 GB-class player or a later from-scratch / official-API browse layer. See §10.
 
 ---
 
@@ -300,7 +307,9 @@ The panel is a reason to treat the Flutter client as a real-time control surface
 - **Maintenance:** [snapcast/snapcast](https://github.com/snapcast/snapcast) **8,056** stars. **v0.35.0** published 11 March 2026, 1:35 am Australia/Melbourne. Last push 3 November 2026, 6:55 pm Australia/Melbourne. Actively maintained; one main author.
 - **Weaknesses:** The 1 s default buffer is audible on play/pause/skip. Pause is awkward (MA implements stop/resume). Bluetooth and PulseAudio/PipeWire output can drift ([discussion #1487](https://github.com/snapcast/snapcast/discussions/1487)). MA: do not use Snapcast **0.30.0** with Music Assistant; 0.28.0 is 64-bit only.
 
-### 3.2 Music Assistant — recommended server
+### 3.2 Music Assistant — not part of the v1 runtime
+
+Still an excellent library/provider engine, but it is designed as an always-on **server** ([installation guide](https://www.music-assistant.io/installation/): 2 GB RAM minimum, 4 GB+ if anything else shares the box, Pi 4 or newer). That conflicts with a player-only house, so it is **not in the v1 image**. It remains a possible later experiment on a 4 GB-class player, or a source of ideas — not an in-process library we fork.
 
 - **Role:** Combined library, queues, streaming providers, player grouping, WebSocket API, optional Home Assistant. Built-in or external Snapcast; Sendspin is its own sync preview.
 - **Sync / grouping:** Can drive Snapcast groups. [Sendspin](https://www.music-assistant.io/player-support/sendspin/) aims to keep rooms close enough to avoid an echo; **no numeric accuracy published**; status **technical preview**. 2.10 redesigned the player bar around select, group and volume. Per-player delay 0–5000 ms where supported.
@@ -373,6 +382,8 @@ These are useful images to learn from, **not** engines to fork as the product UI
 
 ## 4. Streaming services — realistic paths
 
+In the player-only model, streams are received or fetched **on a player** (usually the group coordinator), not on a household server. v1 is **ingress-first** for commercial catalogues (official Spotify / Apple apps push audio in) plus radio, files and phone-cast in our app.
+
 An open-source project can use official APIs, official Connect-style partner programs, or unofficial reverse-engineered clients. The last group can break or be blocked at any time and may conflict with a service’s terms. freesounder should label unofficial paths clearly, never ship ripped or decrypted files, and prefer official engines when they exist.
 
 ### Spotify
@@ -408,161 +419,162 @@ An open-source project can use official APIs, official Connect-style partner pro
 
 ## 5. Reference architecture
 
-One server (a Pi 5, a mini PC, or later a NAS) runs Music Assistant, snapserver, shairport-sync and optional Spotify ingress, **each as its own process**. Each room runs snapclient to a DAC or amp over ALSA, on Ethernet if at all possible. Flutter apps talk to a documented control API (Music Assistant’s WebSocket API first; a thin freesounder facade if the rooms model needs it).
+There is **no always-on freesounder server**. Each room runs the same player image. The Flutter app discovers players on the LAN and opens a WebSocket to any one of them.
+
+### 5.1 How Sonos does this (public reference)
+
+Classic Sonos is a collection of identical players on the LAN, not a required server appliance:
+
+- **Discovery and topology are local.** Players expose UPnP services (historically discovered with SSDP). The `ZoneGroupTopology` service’s `GetZoneGroupState` returns the household’s groups, and each group names a **coordinator** ([community documentation of the service](https://sonos.svrooij.io/services/zone-group-topology.html); [SoCo topology docs](https://github.com/SoCo/SoCo/blob/v0.30.3/doc/advanced/topology.rst)).
+- **A group always has a coordinator.** Sonos’s own Control API models a household of groups of players; every player is in a group, even a standalone room (a group of size 1), and each group has a `coordinatorId` ([Sonos Discover](https://docs.sonos.com/docs/discover)).
+- **The coordinator is the audio and control leader** for that group. Community and staff descriptions: the coordinator is the player others are grouped to; it “sync[s] the data and then send[s] it to every speaker in the group”; a **wired** coordinator is preferred because it reduces wireless hops ([Sonos Community thread, staff reply](https://en.community.sonos.com/controllers-music-services-228995/sonos-group-coordinator-question-6803946)).
+- **Coordination can move.** `AVTransport` includes `DelegateGroupCoordinationTo` and `BecomeCoordinatorOfStandaloneGroup` ([SoCo UPnP function list](https://github.com/SoCo/SoCo/wiki/Sonos-UPnP-services-and-functions)). If the coordinator is removed from the group, Sonos promotes another member and playback continues (same community thread; SoCo mailing-list notes).
+- The later **cloud** Control API (`api.ws.sonos.com`) is a partner/control plane on top of households. It is not the reason the speakers work offline on the LAN. freesounder should copy the *local* model, not a cloud account gateway.
+
+We do not implement Sonos’s UPnP stack. We copy the roles: identical players, elected coordinator, app talks to any player, topology visible from any node.
+
+### 5.2 Sync layer on the players
+
+**MVP choice: Snapcast, with `snapserver` on the group coordinator.**
+
+- The coordinator runs `snapserver` and a local `snapclient` (so its own DAC plays the same timed stream).
+- Members run `snapclient` pointed at that coordinator (`snapclient` takes a server host / URL; current docs deprecate `--host`/`--port` in favour of a URL such as `tcp://192.168.1.1:1704`, then the client process must be running against that server).
+- On regroup, the freesounder daemon elects a coordinator (prefer Ethernet, then RAM/CPU, then a stable tie-break), starts `snapserver` there if needed, and **re-points member `snapclient`s**.
+
+**Known limitation (cite, do not over-claim):** Snapcast’s author stated in 2020 that changing the target server is **not possible without restarting** `snapclient` ([snapcast#527](https://github.com/badaix/snapcast/issues/527)). Community tools work around this by restarting the client (for example [snapclient-switcher](https://github.com/gilsdav/snapclient-switcher)). This pass did not find an official later API that retargets a live client. **MVP will restart or replace the `snapclient` process** when the coordinator changes. Combined with Snapcast’s default **1000 ms** end-to-end buffer, a regroup will not feel instantaneous — likely a short gap or “Syncing” state, which the rooms panel must show honestly. Prefer starting `snapserver` on every *capable* player and leaving it idle when the player is only a member, so promotion does not include a cold server start.
+
+**Alternatives, not MVP:**
+
+- **Sendspin** is Music Assistant’s newer sync protocol, still labelled a **technical preview** on [MA’s Sendspin page](https://www.music-assistant.io/player-support/sendspin/). The [specification](https://www.sendspin-audio.com/build/spec/) is a **server/client** WebSocket protocol, not a player mesh. Using it without a household MA server would mean running a Sendspin server on the coordinator — plausible later, not a v1 dependency.
+- **PipeWire / ROC** remain the wrong house clock (see §3.5).
+- **A small own sync protocol** stays the escape hatch behind the facade if Snapcast regroups stay too ugly.
+
+### 5.3 Sources without a server
+
+| Source | v1 path | Notes |
+|---|---|---|
+| Spotify | Connect receiver **on each player**; official Spotify app picks the room. If grouped, that player becomes coordinator and audio is teed into `snapserver`. | Unofficial clients; ToS risk; newer accounts may fail on librespot. Do not rely on Music Assistant Soloist in v1. |
+| Apple Music / iOS audio | **AirPlay 2** via shairport-sync + NQPTP on each player. Apple can group several AirPlay 2 endpoints itself (“Audio synchronised with other AirPlay 2 devices,” [AIRPLAY2.md](https://github.com/mikebrady/shairport-sync/blob/master/AIRPLAY2.md)). For freesounder groups, feed the receiving player into Snapcast and elect it coordinator. | MusicKit in-app browse is not v1. shairport-sync docs recommend Pi-class hardware and exclusive use of UDP 319/320 for NQPTP (one NQPTP per host). |
+| Tidal | No official Connect receiver we can ship. Tidal documents Connect as **device-partner only** ([developer.tidal.com/documentation/connect](https://developer.tidal.com/documentation/connect)). | Do not ship unofficial binaries or extracted device certificates. |
+| Radio / HTTP(S) | Coordinator fetches the stream and writes it into Snapcast. | Fits the Sonos “leader pulls, members follow” shape. |
+| Local library | Optional SMB/NFS/USB **mounted on the coordinator** (or a share path all capable players can reach). A NAS is storage, not a required freesounder node. Phone / app file or audio cast into a player is also in scope. | Indexing a huge library on a 2 GB Pi will be limited; keep v1 simple (browse a folder, not a second MA). |
+| Qobuz / Deezer in-app | Not v1 without a provider engine. | Revisit only with official APIs or a later optional heavy player. |
+
+### 5.4 Shared state without a server
+
+**MVP: simple leader-based replication, not a CRDT.**
+
+- Each player persists its own identity, room name, volume and output device.
+- Household data (group membership, favourites, settings, library share path) is a versioned JSON document. One player is the **config leader** (prefer a wired, coordinator-capable node; may be the same as an audio coordinator or a longer-lived elected node).
+- Members subscribe (WebSocket between daemons) and **replace** their copy when the leader’s generation increases. The app can read the same document from any player.
+- If the config leader disappears, a capable survivor with the highest generation (then the usual tie-break) takes over and continues the sequence. Last writer on the *current* leader wins; concurrent edits from two apps are not formally merged in v1.
+- Favourites and names must survive a power cycle: write through to flash on the leader, then to members.
+
+This is enough for a household of a few Pis. CRDTs can wait until we have evidence of conflict pain.
+
+### 5.5 Control API on every player
+
+- The daemon advertises `_freesounder._tcp` (name TBD) over mDNS.
+- Any player answers the same HTTP/WebSocket API (rooms, groups, volume, now-playing, events).
+- Transport and grouping commands that belong to a group are **forwarded to that group’s coordinator**; the called player still streams events so the app need not reconnect.
+- If the player the app is connected to goes away, the app reconnects to any other discovered player (same as “the Sonos app talks to a remaining speaker”).
 
 ```mermaid
 flowchart TB
-  apps[freesounder Flutter apps<br/>iOS / Android / web] --> api[Control API]
-  api --> ma[Music Assistant]
-  lib[Local library / NAS] --> ma
-  ma --> snap[snapserver]
-  air[shairport-sync<br/>AirPlay 2 ingress] --> snap
-  spot[Spotify Soloist or Connect] --> ma
-  spot -.-> snap
-  snap --> r1[snapclient room A<br/>Pi + DAC, ALSA]
-  snap --> r2[snapclient room B<br/>Pi + DAC, ALSA]
-  ma -.-> phone[Optional Sendspin / Snapweb]
+  apps[freesounder Flutter apps<br/>iOS / Android / web] -->|mDNS then WebSocket| p1[Player A daemon]
+  apps -->|or any other player| p2[Player B daemon]
+  p1 <-->|replicate state| p2
+  p3[Player C daemon] <--> p1
+  subgraph group1[Group: Kitchen + Living]
+    coord[Coordinator A<br/>snapserver + local snapclient<br/>optional AirPlay / Connect ingress]
+    mem[Member B<br/>snapclient to A]
+    coord --> dacA[ALSA DAC]
+    mem --> dacB[ALSA DAC]
+  end
+  p1 --> coord
+  p2 --> mem
+  spot[Official Spotify app] -->|Connect| coord
+  apple[iPhone AirPlay 2] -->|shairport-sync| coord
+  radio[Radio / HTTP / files] --> coord
 ```
 
-**Phones as synced speakers** are a nice extra, not MVP. Sendspin (preview) can do it in the MA web player and official mobile app. Snapweb works if the tab stays open. Snapdroid is behind. The iOS Snapcast app should not be relied on. Official Spotify and Apple apps remain **ingress** (they push audio in), not freesounder room endpoints.
+### 5.6 Home Assistant integration (optional)
 
-### 5.1 Home Assistant integration (optional)
+Home Assistant is still **optional and never required**. There is no Music Assistant server in the default v1 house, so the official [`music_assistant`](https://www.home-assistant.io/integrations/music_assistant/) integration is **not** the freesounder path.
 
-Music Assistant is designed to sit beside Home Assistant and is also a complete standalone server. The MA team’s supported installs are the official Home Assistant **app on HAOS**, or a simple **Docker** container with host (or macvlan) networking ([Installation](https://www.music-assistant.io/installation/), [music-assistant/server](https://github.com/music-assistant/server)).
+Preferred later path: a small **freesounder HA integration** (or MQTT/REST published by a player) that discovers players via mDNS and talks to our API for media_player entities, join/unjoin, volume and announcements.
 
-**freesounder’s default is a standalone appliance:** Music Assistant in Docker, no Home Assistant required. People who already run Home Assistant can optionally add the official [Music Assistant integration](https://www.home-assistant.io/integrations/music_assistant/), which auto-discovers a running server or can install the HAOS app during setup. Running MA in Docker *alongside* HA, then pointing the integration at it, keeps music playing if Home Assistant restarts. HA remains optional, never a prerequisite for the Flutter apps or the rooms panel.
-
-**What HA gets.** The official integration requires Music Assistant server 2.4 or later and creates a `media_player` entity for every MA player and group, with now-playing, progress and standard media controls. Temporary sync groups can be managed with Home Assistant’s `media_player.join` and `media_player.unjoin` actions ([MA grouping FAQ](https://www.music-assistant.io/faq/groups/)). Dedicated actions include `music_assistant.play_media`, `music_assistant.get_queue`, `music_assistant.transfer_queue` (queue follow-me), `music_assistant.play_announcement` (the integration documents automatic pause during announcements), `music_assistant.search` and `music_assistant.get_library`. That is enough for automations such as a doorbell announcement, a morning radio alarm, or transferring a queue when a presence sensor trips.
-
-**Voice.** From Home Assistant 2025.6, Assist can play from the MA library with built-in Search and Play sentences once those `media_player` entities are exposed ([MA voice docs](https://www.music-assistant.io/integration/voice/)).
-
-**Snapcast’s own HA integration** ([snapcast](https://www.home-assistant.io/integrations/snapcast/)) still offers volume, grouping, snapshot and latency controls. In a freesounder stack that already goes through Music Assistant, prefer the MA integration and do not also drive grouping from the Snapcast integration, or group state will have two writers.
-
-**Benefits and caveats.** Home Assistant users get rooms, groups and playback with no extra freesounder-specific HA component. The integration is coupled to MA and HA release trains; HA-imported players can appear twice until the original is hidden; and group or queue state must have one authority. Because the Flutter apps should already talk to Music Assistant’s API (or a thin facade on top of it), Home Assistant and the apps will see the same rooms if they both go through MA. Do not keep a second, diverging group model in freesounder. Non-HA users should never be asked to install Home Assistant, and setup copy should not assume it.
-
-**Apps vs dashboards.** The Flutter apps remain the polished daily controller. Home Assistant is for automations, Assist and existing smart-home dashboards. A Lovelace card can be considered later, as a complement, not a replacement.
+Interim, without a custom integration: HA can already see **AirPlay** and sometimes **Spotify Connect** endpoints, or a Snapcast server — but Snapcast’s own HA integration assumes a *stable* snapserver host, which is a poor fit when the coordinator moves. Do not dual-write groups from HA and from the app. Non-HA users are never asked to install HA. The Flutter apps remain the daily controller.
 
 ---
 
-## 6. Hardware — cheapest practical builds
+## 6. Hardware — cheapest practical players (no server box)
 
-Prices below are **AUD, GST inclusive**, from named Australian retailers, fetched on **10 November 2026, Australia/Melbourne**, unless noted. Shipping is not included. Stock moves quickly; do not treat this as a live cart. Speakers, RCA cables and passive-speaker wire are not in the totals unless a row says so. Official US dollar list prices are noted only as an international comparison — Australian street prices are higher once GST and distribution are included.
+Prices below are **AUD, GST inclusive**, from named Australian retailers, fetched on **10 November 2026, Australia/Melbourne**, and reused here as still valid unless a row says otherwise. Shipping is not included. Speakers and cables are not in the totals. Stock moves quickly.
 
-The goal is the **cheapest kit that still runs the recommended stack**: `snapclient` to an ALSA DAC (or a cheap USB DAC) in each room, Music Assistant on a server, **Ethernet preferred**. A Pi 5 + DAC2 Pro kit is kept only as a premium comparison (~A$343).
+There is **no Music Assistant / snapserver appliance to buy**. Every kit is a room player. A player that may become **group coordinator** needs more headroom than a member-only `snapclient`.
 
-### 6.1 Room-player boards
+Music Assistant’s published minimums (64-bit OS, **2 GB RAM minimum**, **4 GB+ if anything else shares the box**, **Pi 4 or newer** for an SBC — [installation guide](https://www.music-assistant.io/installation/)) are why MA is **not** in the default player image. A coordinator already runs our daemon, `snapserver`, `snapclient`, and typically shairport-sync + a Connect sidecar. That is “anything else.” A Pi Zero 2 W (512 MB) is clearly not an MA host and should not be a house coordinator.
 
-| Board | AUD inc GST | Network | Notes | Source (10 Nov 2026) |
-|---|---:|---|---|---|
-| Raspberry Pi Zero 2 W | 34.99 (Little Bird, 24 in Sydney stock). Core Electronics lists 28.50 but **out of stock**; with pre-soldered headers 34.20 and a 60–90 day lead time. | **Wi-Fi only** (2.4 GHz). USB-Ethernet is possible but awkward: the Zero has one USB OTG port, so a dongle fights with a USB DAC, and a Gigabit USB adapter was 35.80 at Core Electronics — almost the price of the board. | Quad-core Cortex-A53 @ 1 GHz, 512 MB RAM. Plenty for `snapclient` decoding default **FLAC** (Snapcast’s own guidance is that FLAC is modest CPU and modest bandwidth; PCM is heavier on the network). Boards without headers need soldering for an I2S HAT. | [Little Bird](https://littlebirdcompany.myshopify.com/products/raspberry-pi-zero-2-w-1), [Core Zero 2 W](https://core-electronics.com.au/raspberry-pi-zero-2-w-wireless.html), [headers](https://core-electronics.com.au/raspberry-pi-zero-2-w-wireless-soldered-male-headers.html), [Simplecom USB NIC](https://core-electronics.com.au/simplecom-nu302-usb3-gigabit-ethernet-adapter.html) |
-| Raspberry Pi 3 Model A+ | 46.34 | Wi-Fi (no Ethernet jack) | 1 GB RAM, more headroom than a Zero, still no built-in Ethernet. | [Core Electronics](https://core-electronics.com.au/raspberry-pi/boards.html) (listed 10 Nov 2026; confirm stock on the product page before buying) |
-| Raspberry Pi 3 Model B+ | 64.79, in stock | Ethernet (USB 2.0, up to ~300 Mbps — enough for FLAC) plus Wi-Fi | Same 64.79-class price as a Pi 4 1GB, but slower CPU and slower Ethernet. Fine as a player, **not** a Music Assistant server (MA asks for a Pi 4 or newer). | [Core Electronics](https://core-electronics.com.au/raspberry-pi-3-model-b-plus.html) |
-| Raspberry Pi 4 Model B 1GB | 64.88, in stock, limit 1 per customer | **True Gigabit Ethernet** plus dual-band Wi-Fi | Best new-board value for a wired room player. 1.5 GHz Cortex-A72. **Do not use as the MA server** — MA requires a **minimum of 2 GB RAM**. | [Core Electronics](https://core-electronics.com.au/raspberry-pi-4-model-b-1gb.html) |
-| Raspberry Pi 4 Model B 2GB | 109.33, in stock, temporary 1-per-customer limit | Gigabit Ethernet | Comfortable player; meets MA’s 2 GB RAM minimum if you also want this box to be the server (tight if Home Assistant shares it; MA recommends 4 GB+ in that case). | [Core Electronics](https://core-electronics.com.au/raspberry-pi-4-model-b-2gb.html) |
-| Raspberry Pi 5 2GB / 4GB / 8GB | 125.52 (2GB, 30–45 day lead) / 178.42 (4GB, 25–35 day lead) / 283.85 (8GB, listed available) | Gigabit Ethernet | More than a snapclient needs. Use for a combined server + first room, not as the default player. | [Pi 5 boards](https://core-electronics.com.au/raspberry-pi/raspberry-pi-5-boards-kits-and-accessories/raspberry-pi-5-boards.html) |
+This pass did not measure RSS for our (not-yet-written) daemon. Snapcast is widely run on small ARM boards; shairport-sync’s AirPlay 2 notes recommend “the power of a Raspberry Pi B, or better.” Until we measure, treat the following as **design minima**, not lab results.
 
-**Used Pis.** A used Pi 4 can undercut 64.88, but this pass did not record a firm eBay AU sold-price sample — check current listings rather than assuming a number. **Orange Pi, Radxa and Libre Computer** can be cheaper internationally; this pass did not find a clearly in-stock, cheaper, well-supported AU alternative with documented `snapclient` + I2S/ALSA support. Prefer Raspberry Pi for the official player image until someone in the project has verified a specific board.
-
-**CPU headroom.** Default Snapcast **FLAC** is the right codec for these boards: less bandwidth than PCM, easy to decode. Historical Snapcast discussion found FLAC more reliable than PCM or Vorbis on small ARM boards. Prefer ALSA to a local DAC; avoid Bluetooth and Pulse/PipeWire hops (see earlier Snapcast notes). Wired Ethernet is still the more predictable path for sync; Wi-Fi on a Zero 2 W can work in a quiet network but is the first thing to blame if you hear dropouts.
-
-### 6.2 DACs, amps and speakers
-
-**Use existing powered speakers or a stereo** wherever you can. A line-level DAC into a cupboard stereo or a pair of active monitors is the cheapest *good* sound, because you are not buying speakers or an amp.
-
-| DAC / amp | AUD inc GST | Volume / quality | Source (10 Nov 2026) |
-|---|---:|---|---|
-| Adafruit USB Audio Adapter (ADA1475) | 10.50, listed available | USB class-compliant; typically **software / USB mixer** volume. Adafruit describes it as better than the Pi’s onboard jack, not a hi-fi HAT. On a Zero 2 W it occupies the only USB port. | [Core Electronics audio list](https://core-electronics.com.au/raspberry-pi/audio.html) |
-| Official Raspberry Pi DAC+ (PCM5122, RCA + headphone) | 31.40, in stock | Full-size HAT for Pi 1 B+ and later (including Pi 4 / 5). The PCM5122 supports **hardware (ALSA mixer) volume**. This is the best cheap “proper HAT” in this pass. | [Core Electronics](https://core-electronics.com.au/raspberry-pi-dac.html) |
-| Official Raspberry Pi DAC Pro (PCM5242) | 39.50, listed available | A step up; headphone amp and balanced output. Still far cheaper than a HiFiBerry DAC2 Pro. | [Core Electronics audio list](https://core-electronics.com.au/raspberry-pi/audio.html) |
-| Official Raspberry Pi Codec Zero | 32.60, listed available | Zero-sized I/O codec (DA7212), not only a line-out DAC. Useful on a Zero 2 W if you have headers. | Same audio list |
-| HiFiBerry DAC+ Zero | 42.70, listed available | Zero form factor. Costs more than the official DAC+. Like other “light/zero” boards, check whether yours exposes a hardware mixer; **Snapcast software volume is fine** if it does not. | Same audio list |
-| HiFiBerry DAC2 Pro | 94.10, in stock | Hardware volume, RCA, headphone — premium, not the budget pick. | [Core Electronics](https://core-electronics.com.au/hifiberry-dac2-pro.html) |
-| Generic GY-PCM5102 I2S module | 9.95 listed at Tempero Systems (Gold Coast), “10 in stock” on the product page. A direct fetch of that page timed out, so **confirm the price before buying**. | Cheap PCM5102A boards usually have **no hardware volume**. Need jumper wiring (and often soldering). Quality varies by clone. | [Tempero Systems](https://temperosystems.com.au/products/gy-pcm5102-i2s-dac-audio-decoder-board-pcm5102a-hi-fi-stereo-audio-module/) |
-| Official Raspberry Pi DigiAMP+ (TAS5756M, 2×35 W into **passive** speakers) | 51.30, listed available | Amp + DAC in one HAT. Confirm whether your Pi PSU is enough — many amp HATs want a **separate speaker-voltage supply**, which is **not priced here** if required. Passive speakers not included. | [Core Electronics audio list](https://core-electronics.com.au/raspberry-pi/audio.html) |
-| Adafruit I2S 3W Stereo Speaker Bonnet | 24.60, listed available | Small powered speakers only (3 W/channel class). Fine for a kitchen radio, not a living-room pair. | Same audio list |
-| HiFiBerry MiniAmp | 59.97 inc GST at Pakronics, **out of stock**. 3 W, Zero-sized, powered from the Pi PSU. | Cheap-ish official mini amp when in stock. | [Pakronics](https://www.pakronics.com.au/products/hifiberry-mini-amp) |
-
-AliExpress AU often lists generic PCM5102 and TPA3116/3118 amp boards for less, but this pass did not record a verified live AliExpress AU price, so none is invented here. If you go that way, budget extra time for wiring, drivers and returns.
-
-**Hardware vs software volume.** Snapcast can apply **software volume** on the client. That is good enough for household use and is the right fallback on PCM5102A and many USB adapters. Prefer a PCM5122-class HAT (official DAC+) when you want an ALSA hardware mixer.
-
-### 6.3 Minimal PSU, case and storage
-
-| Item | AUD inc GST | Notes | Source (10 Nov 2026) |
-|---|---:|---|---|
-| Official Raspberry Pi 12.5W micro-USB PSU (5.1 V 2.5 A) | 13.79, in stock | Correct official supply for Zero 2 W, Pi 3B+ and Pi 3A+. | [Core Electronics](https://core-electronics.com.au/official-raspberry-pi-12-5w-micro-usb-power-supply.html) |
-| Official Raspberry Pi 4 15.3W USB-C PSU (white) | 11.90, in stock | Use this for Pi 4 players and Pi 4 servers. Do not use a random phone charger. | [Core Electronics](https://core-electronics.com.au/raspberry-pi-4-official-power-supply-usb-c-5v-15w-white.html) |
-| Official Raspberry Pi 5 27W USB-C PSU | 21.07, in stock | Only needed for a Pi 5. | [Core Electronics](https://core-electronics.com.au/raspberry-pi-5-power-supply-usb-c-pd-27w-white.html) |
-| Official Raspberry Pi 32GB A2 microSD | 32.18, **out of stock** | Still the list price to budget. A cheaper in-stock substitute was not firmly priced in this pass (an HP 32GB Class 10 card was 40.86, so not cheaper). Shop around (office retailers, eBay) and treat any unlisted card as unpriced here. | [Core Electronics](https://core-electronics.com.au/raspberry-pi-a2-class-sd-card-32gb.html) |
-| Official Pi 4 case, black/grey or red/white | 5.40 / 6.65, in stock | **The official lid often blocks a HAT.** Use it lid-off, or skip the case, if you fit a DAC+. | [Black/grey](https://core-electronics.com.au/raspberry-pi-4-case-blackgrey-official.html), [red/white](https://core-electronics.com.au/raspberry-pi-4-case-red-white.html) |
-| Slim case for Pi Zero | 5.05, listed available | Fine with a USB DAC (no HAT). Official Zero case is 9.75. | [Slim case](https://core-electronics.com.au/raspberry-pi/pi-zero-cases.html), [official Zero case](https://core-electronics.com.au/raspberry-pi-zero-w-case-enclosure-official.html) |
-
-### 6.4 Server options
-
-[Music Assistant’s installation guide](https://www.music-assistant.io/installation/) requires a **64-bit OS**, a **minimum of 2 GB RAM** on the device or container (4 GB+ if anything else shares the box), and one of: a recent 64-bit Intel CPU (about 10 years, maybe 15), a recent AMD CPU (about 5 years, maybe 10), a **Raspberry Pi 4 or newer** (or equivalent), or another Home Assistant–supported aarch64 SoC. Smart Fades wants 4 GB RAM and two cores and is not the reason to overspend for MVP.
-
-| Server option | Typical cost (AUD) | Fit |
+| Role | Design minimum | Why |
 |---|---|---|
-| An existing PC, NAS or Home Assistant box that already meets the 2 GB / 64-bit / network rules | **0 extra**, if you have one | Best first move. Keep MA in Docker with host networking so music can outlive an HA restart. |
-| Raspberry Pi 4 2GB + official 15.3W PSU + 32GB microSD | 109.33 + 11.90 + 32.18 = **153.41** (SD currently OOS at that list price) | Meets the 2 GB minimum. Tight if you also run Home Assistant on the same Pi (MA recommends 4 GB+ then). |
-| Raspberry Pi 4 4GB + PSU + microSD | 162.20 + 11.90 + 32.18 = **206.28** | Comfortable small dedicated server. Board listed at [Core Electronics](https://core-electronics.com.au/raspberry-pi/boards.html). |
-| Used mini PC, e.g. Lenovo ThinkCentre M710q | One eBay AU listing on 10 Nov 2026: **220.00** or best offer for a used i5-7400T, 8 GB, 256 GB SSD, Wi-Fi, Win 11 (Somerton VIC; confirm whether a PSU is included). | Far more CPU than a Pi for library scans. A 2017 Intel CPU is close to MA’s “about 10 years” guidance in 2026 — check the exact CPU year. Other common tinies (Dell OptiPlex 3050 micro, HP 600 G3, M720q, N100 boxes) appear on the same market; **no second price is recorded here**. | [eBay AU item 198616785017](https://www.ebay.com.au/itm/198616785017) |
-| Pi 5 4GB as server + first room | See the premium room kit below, or 178.42 + 21.07 + 16.90 + 32.18 before a DAC | Only if you want one box to do both jobs and can wait out lead times. |
+| **Default player (can be coordinator)** | **Raspberry Pi 4 2GB**, Ethernet preferred | 2 GB gives headroom for daemon + snapserver + ingress without MA. Official 1 GB is tight and is not the recommended SKU. |
+| **Light / measure-first** | Pi 4 1GB or Pi 3B+ (1 GB, slower Ethernet on the 3B+) | May work for a light stack; confirm before promising. Do not elect a struggling node as coordinator if a 2 GB (or better) player is in the group. |
+| **Member or single-room only** | Pi Zero 2 W (512 MB, Wi-Fi only) | `snapclient` + a slim daemon may fit; do not make this the household coordinator or an MA host. Standalone Connect/AirPlay on a Zero is a best-effort extra. |
+| **Comfortable / future MA-on-player experiments** | Pi 4 4GB or Pi 5 4GB | Only if we later try optional MA *on a player*. Not required for v1. |
 
-A Pi 4 **1GB**, a Pi 3, or a Zero is **not** a supported Music Assistant server under the published minimums.
+**Same image on every board.** The daemon advertises capabilities (coordinator-eligible or member-only) from RAM, CPU and a wired-link flag. A house that mixes a Pi 4 2GB and a Zero 2 W still works: the Pi 4 leads groups.
 
-### 6.5 Per-room kit totals
+### 6.1 Per-room kit totals
 
-All totals **exclude shipping, speakers and cables**. The official 32GB card (32.18) is in every total so kits are comparable, even though it was out of stock when fetched — replace it with any decent 16–32 GB card you already own and subtract 32.18.
+Accessories and DAC notes in the previous hardware research still apply (official DAC+ 31.40 in stock, PCM5122 hardware volume; official 15.3W Pi 4 PSU 11.90; official 12.5W micro-USB PSU 13.79; official 32GB microSD 32.18 **out of stock** at that list price; official Pi 4 case lid often blocks a HAT). Little Bird still had Pi Zero 2 W at 34.99. Sources are unchanged from §12 and the previous §6 tables.
 
-| Tier | What’s in it | AUD inc GST | Trade-offs |
+The official 32GB card is included so kits are comparable; subtract 32.18 if you already have a card.
+
+| Tier | What’s in it | AUD inc GST | Role |
 |---|---|---:|---|
-| **Ultra-budget** | Pi Zero 2 W (Little Bird 34.99, in stock) + official 12.5W PSU (13.79) + Adafruit USB DAC (10.50) + official 32GB microSD (32.18) + slim case (5.05) | **96.51** (59.28 if you already have a microSD and skip the case) | **Wi-Fi only.** USB DAC occupies the only USB port (no Ethernet dongle without a hub). Software volume. Modest converter quality. Needs existing **powered** speakers. Soldering not required. |
-| **Recommended budget** | Pi 4 1GB (64.88, in stock) + official DAC+ (31.40) + official 15.3W PSU (11.90) + official 32GB microSD (32.18). Official case 5.40 is optional and often **does not fit a HAT with the lid on**, so it is left out of the total. | **140.36** | **Gigabit Ethernet**, PCM5122 hardware volume, RCA into an existing stereo. Best default for a free public project. Limit 1 board per customer at Core when fetched. |
-| **With amp** (passive speakers) | Pi 4 1GB (64.88) + official DigiAMP+ (51.30) + official 15.3W PSU (11.90) + official 32GB microSD (32.18) | **160.26**, **plus** passive speakers, and possibly a **second, unpriced PSU** if the amp cannot run from the 15.3W supply alone — check the DigiAMP+ docs before buying. A smaller alternative is the Adafruit 3W bonnet (24.60) for 133.56 before speakers, kitchen-radio volume only. | Buys an amp. Still not a complete living-room system without speakers. |
-| **Pi 5 premium** (comparison only) | Pi 5 4GB (178.42) + official 27W PSU (21.07) + official Pi 5 case (16.90) + official 32GB microSD (32.18) + HiFiBerry DAC2 Pro (94.10) | **342.67** | The earlier “nice” kit. 4GB board was on a 25–35 day lead time. Unnecessary for snapclient alone. |
+| **Recommended (coordinator-capable)** | Pi 4 **2GB** (109.33, in stock when fetched, temporary 1-per-customer limit) + official DAC+ (31.40) + official 15.3W PSU (11.90) + official 32GB microSD (32.18). Official case omitted (HAT / lid). | **184.81** | Default SKU. Gigabit Ethernet, hardware volume, can lead a group. |
+| **Light Ethernet (measure first)** | Pi 4 **1GB** (64.88) + official DAC+ + 15.3W PSU + microSD | **140.36** | Cheaper wired player. Use as member, or as coordinator only after we measure the real image. Limit 1 board per customer at Core when fetched. |
+| **Ultra-budget member / standalone** | Little Bird Zero 2 W (34.99) + 12.5W PSU (13.79) + Adafruit USB DAC (10.50) + microSD (32.18) + slim case (5.05) | **96.51** (59.28 without case/SD) | **Wi-Fi only**, not a house coordinator. Fine as a member or a single-room radio. |
+| **With amp** (passive speakers) | Pi 4 2GB (109.33) + official DigiAMP+ (51.30) + 15.3W PSU (11.90) + microSD (32.18) | **204.71**, plus speakers and possibly a second, unpriced amp PSU | Same caveats as before. |
+| **Pi 5 premium** (comparison) | Pi 5 4GB (178.42) + 27W PSU (21.07) + official case (16.90) + microSD (32.18) + HiFiBerry DAC2 Pro (94.10) | **342.67** | Comfortable, 25–35 day lead on the 4GB board when fetched. Unnecessary for v1 snapserver + ingress. |
 
-A **Pi 3B+** recommended-style kit (64.79 + DAC+ 31.40 + 12.5W PSU 13.79 + microSD 32.18) totals **142.16** — almost the same money as the Pi 4 1GB kit, with slower Ethernet. Prefer the Pi 4 when both are in stock.
+A Pi 3B+ + DAC+ + 12.5W PSU + microSD still totals **142.16**. Treat it like the light Ethernet tier.
 
-**International note.** Official Raspberry Pi USD list prices are lower than these Australian figures; HiFiBerry’s own shop also lists the DAC+ Zero at US$19.90, versus 42.70 landed at Core Electronics. Expect GST, freight and thinner AU stock, especially on Zero 2 W.
+**Removed:** the dedicated Music Assistant server table (existing PC/NAS, used mini PC, Pi 4 as server). An existing NAS may still hold **files**. An existing Home Assistant box is optional automation, not part of playback.
 
-### 6.6 Trade-offs in short
+Prefer Ethernet for at least one player in every group that you care about, and use that player as coordinator when possible (same reason Sonos staff give for a wired group coordinator).
 
-- **Wi-Fi-only sync** (Zero 2 W, Pi 3A+) is the main way to get under A$100 a room, and the main reliability risk. Use Ethernet when the room allows it.
-- **Snapcast software volume is fine**; spend extra on a PCM5122 HAT only if you want a hardware mixer and RCA jacks.
-- **Availability** is the hidden cost: official microSD cards and bare Zero 2 W boards were out of stock at Core Electronics; Little Bird still had Zero 2 W units.
-- **Power:** use the official PSU for that model. Amp HATs may need more than a 15 W Pi supply.
-- **Performance:** any Pi 3 or newer is enough for a FLAC snapclient; spend the saved money on the server (2 GB+ RAM) and on speakers you already own.
+---
 
 ## 7. Build vs reuse
 
-*(This is the software counterpart to the cheap-hardware question: spend project time where it changes the product, not on clocks and Spotify clients.)*
-
-**Decided 10 November 2026, Australia/Melbourne — hybrid, locked for v1.** freesounder **owns** a small set of pieces and **reuses** the hard, moving ones as unmodified separate processes. This is no longer an open option for the first version.
+**Hybrid principle stands; the split is restated for the player-only model (10 November 2026, Australia/Melbourne).** We still own a small set of pieces and reuse the hard audio programs as unmodified separate processes. We no longer reuse Music Assistant as a household server, because that forced a server box.
 
 **Own**
 
-- The **freesounder control API** — a thin facade over Music Assistant’s API that defines *our* room/group model and is the only contract the apps speak.
-- The **Flutter apps and design system** (rooms panel, now-playing, grouping).
-- The **setup / onboarding service** (mDNS discovery, room naming, Wi-Fi or Ethernet setup).
-- The **player image** — a Raspberry Pi OS image that bundles `snapclient` and ALSA/DAC configuration.
+- The **freesounder player daemon and control API** — on *every* player: room/group model, coordinator election, Snapcast process control, state replication, WebSocket API, mDNS.
+- The **Flutter apps and design system**.
+- The **setup / onboarding service** (first-boot Wi-Fi or Ethernet, room naming, pairing players into a household).
+- The **player image** — Raspberry Pi OS with the daemon, `snapserver`, `snapclient`, ALSA/DAC config, shairport-sync + NQPTP, and a Connect sidecar.
 
-**Reuse, unmodified, as separate programs:** Snapcast (sync), Music Assistant (library, queues, streaming providers), shairport-sync (AirPlay 2 ingress), and the Spotify path (Soloist and/or a librespot/raspotify sidecar).
+**Reuse, unmodified, as separate programs:** Snapcast, shairport-sync, and the Spotify Connect sidecar (librespot/raspotify). Music Assistant is **out of v1**. Sendspin is a later candidate if it can run as a coordinator-side server without a separate MA host.
 
 ### Three ways to split the work
 
-| Approach | Effort and time-to-a-working-system (qualitative; rough judgement, not a timesheet) | What you get | Maintenance and licence |
+| Approach | Effort and time-to-a-working-system (qualitative; rough judgement) | What you get | Maintenance and licence |
 |---|---|---|---|
-| **1. Hybrid (chosen for v1, decided 10 November 2026)** | First sound: relatively soon, once a player image and a stock Music Assistant + snapserver are up. A polished app takes longer, but it is *app* work, not protocol work. | The UX we actually want, without rewriting codecs, Connect, or clock sync. | Apache-2.0 first-party code stays clean because GPL parts are separate processes. Streaming-provider breakage is largely Music Assistant’s problem. |
-| **2. Reuse the upstream UIs as well** (just ship compose + MA / Snapweb / Iris) | Fastest path to music in the house. | Fails the product brief: those UIs are not a rooms-first redesign, and Sonos-style grouping remains awkward. | Almost no app code to maintain, but we also have no product. |
-| **3. From-scratch server, sync and providers** | Slowest by a wide margin. Clock sync, drift correction and buffering alone are a research project; Snapcast already does them (typical deviation below 0.2 ms, default 1000 ms buffer). Keeping Spotify, Tidal, Qobuz and friends working is continuous work. | “Licence purity” and total control — benefits we do **not** need, given the facade-and-separate-process model. | High. Music Assistant’s server repo had **320 contributors** (GitHub API, including anonymous accounts, `contributors?per_page=1&anon=true` `Link` last page, looked up 10 November 2026, Australia/Melbourne). Replicating that bench is not realistic for a new public project. |
+| **1. Hybrid player-only (chosen for v1)** | First *one-room* sound can come up quickly (image + Connect or AirPlay, or a radio URL into local Snapcast). *Synced groups* take more work than the old “one snapserver in the cupboard” design, because we must elect a coordinator and re-point clients (including a `snapclient` restart — §5.2). The polished app is still app work. | Sonos-shaped system, no extra box, the UX we want. | Apache-2.0 first-party code stays clean (GPL Snapcast remains a separate process). We take on grouping/state ourselves. We do **not** take on streaming-provider maintenance in v1. |
+| **2. Reuse a central Music Assistant + Snapcast server** | Faster to a full in-app library — and this was the previous recommendation. | **Rejected** by the product requirement: it needs a server box. | MA’s large contributor bench would still help providers, at the cost of a host the user does not want. |
+| **3. From-scratch sync and providers on the players** | Slowest. Clock sync and provider APIs are continuous work. | Licence purity we do not need. | High. Still not justified. |
 
-**What owning “our own libraries” would buy** — a cleaner API, no surprise upstream UI changes, and independence from MA’s room model — is exactly what a **thin facade** already buys, at a fraction of the cost. The facade is also the **escape hatch**: apps keep calling freesounder. If we later replace Music Assistant, or swap Snapcast for Sendspin or an in-house sync layer, the apps do not have to change.
+The facade/daemon remains the **escape hatch**: apps keep calling freesounder. Snapcast can later be replaced by Sendspin or an in-house sync layer without changing the apps.
 
-**MVP:** reuse everything except the control API, the apps, setup/onboarding, and the player image.
+**MVP:** identical player image + daemon + Flutter apps + setup. Reuse Snapcast and ingress. No separate server, no Music Assistant process.
 
-How we will beta-test the Flutter apps, which stores and sideload channels to use, CI, and the immediate repo scaffold are in [docs/development.md](development.md). That note also recommends **Python** for the facade (official [`music-assistant-client`](https://github.com/music-assistant/client)) and **TestFlight + Play internal testing**, with Firebase App Distribution optional and F-Droid later.
-
+How we beta-test the apps is still in [docs/development.md](development.md). That note now targets a **player daemon first**, still in Python, talking to Snapcast on the device rather than to a Music Assistant client library as the core of v1.
 
 ---
 
@@ -581,7 +593,7 @@ This matches the project README: third-party GPL programs keep their own licence
 
 ## 9. Proposed monorepo layout
 
-Suggested layout for [github.com/mhatzis/freesounder](https://github.com/mhatzis/freesounder) after the current README-only tree. All first-party code stays Apache-2.0. The v1 scaffold names to create next (`apps/flutter`, `services/control-api`, `services/setup`, `images/player`) are listed in [development.md](development.md).
+Suggested layout for [github.com/mhatzis/freesounder](https://github.com/mhatzis/freesounder) after the current README-only tree. All first-party code stays Apache-2.0. The first engineering slice is the **player daemon** on the image, not a central server. Details are in [development.md](development.md).
 
 ```
 freesounder/
@@ -593,11 +605,11 @@ freesounder/
     design/              tokens, room tile, now-playing, volume
     api_client/          generated or hand-written API client
   services/
-    control-api/         Python facade over Music Assistant (Apache-2.0)
+    player-daemon/       Python control API, election, Snapcast control (Apache-2.0)
     setup/               mDNS, room naming, network onboarding
   images/player/         Pi OS image: snapclient + ALSA/DAC
   deploy/
-    compose/             snapserver, music-assistant, shairport, avahi, snapclient
+    compose/             two simulated players (daemon + snapserver/snapclient) for local dev
   third_party/README.md  runbooks only; no vendored GPL sources
 ```
 
@@ -605,11 +617,12 @@ freesounder/
 
 ## 10. Open questions and decisions
 
-1. ~~Confirm Music Assistant as the backend versus a from-scratch server or a Lyrion-based path.~~ **Decided 10 November 2026:** hybrid v1 — Music Assistant + Snapcast as separate processes, plus a new Flutter UI, a Python control-API facade, setup, and a player image (see §7 and [development.md](development.md)).
-2. **Spotify policy:** enable Soloist (official engine, ToS grey area, works for newer accounts) and/or Connect via librespot/raspotify (unofficial, often broken on post-2024 accounts). This should be an explicit, disclosed project decision.
-3. Whether a phone must be a synced speaker in MVP (Sendspin preview vs Snapweb vs control-only). Recommendation: **control-only for MVP**.
-4. Where the server runs (one Pi 5 for server + first room, versus a dedicated mini PC) and whether Ethernet can be provided in every room.
-5. How much of Music Assistant’s surface (providers, Home Assistant) to hide so the app stays rooms-first.
+1. ~~Central Music Assistant + Snapcast server versus player-only.~~ **Decided 10 November 2026 (later the same day):** **player-only**, Sonos-shaped. No required server box. Hybrid split restated in §7.
+2. **In-app catalogue vs ingress-first (needs a user decision).** v1 recommendation is ingress-first (Spotify Connect, AirPlay 2, radio, files, phone cast). A Music Assistant-class in-app browse would need a 4 GB-class player running a heavy process, or new official-API work. Confirm this is acceptable.
+3. **Spotify policy:** Connect via librespot/raspotify on each player (unofficial, often broken on post-2024 accounts). Disclose in the app. Soloist is not v1.
+4. Whether a phone must be a synced *speaker* in MVP. Recommendation remains **control-only** for the handset, plus optional AirPlay/Connect *into* a player.
+5. Confirm **Pi 4 2GB** as the default coordinator-capable SKU, and whether mixed houses (2GB coordinator + Zero 2 W members) are in the first hardware kit story.
+6. How aggressively to hide “coordinator” as a user-facing word (Sonos mostly hid it). Recommendation: hide it in the UI; show a plain “Syncing…” / “Can’t reach Kitchen” state.
 
 ---
 
@@ -617,7 +630,7 @@ freesounder/
 
 Status as of 10 November 2026, Australia/Melbourne: **design only**; no product code in the repo yet. This is a plan, not a live tracker.
 
-1. **MVP — two rooms, local library, groups, volume, web client.** snapserver + two ALSA snapclients; Music Assistant plus the Python control-API facade; Flutter web; rooms-first Home; global mini-player plus rooms bottom sheet (chip, Play here too, checkboxes, undo); per-room and master volume; editable queue; local search.
+1. **MVP — two players, no server box, groups, volume, web client.** Identical player image with the Python daemon; `snapserver` on the elected coordinator and `snapclient` on both rooms; Flutter web rooms panel (chip, Play here too, checkboxes, undo); per-room and master volume; radio or a file/HTTP stream plus at least one ingress path (AirPlay or Connect); honest Syncing state on regroup.
 2. **Phase 2 — native iOS and Android** from the same Flutter app. Accessibility audit, onboarding and add-speaker flow, lock-screen controls.
 3. **Phase 3 — ingress and services.** shairport-sync into Snapcast; Spotify path per the ToS decision; radio; document Apple Music and Tidal limits honestly.
 4. **Phase 4 — polish and extras.** Sleep timer and alarms without regressions; optional Sendspin phone playback; ESP32/Esparagus experiments; optional Home Assistant; store listings only when features and accessibility are at parity.
@@ -628,6 +641,15 @@ Status as of 10 November 2026, Australia/Melbourne: **design only**; no product 
 
 - [freesounder repository](https://github.com/mhatzis/freesounder)
 - [freesounder development, beta distribution and next steps](development.md)
+- [Sonos Discover (households, groups, coordinatorId)](https://docs.sonos.com/docs/discover)
+- [SoCo speaker topologies](https://github.com/SoCo/SoCo/blob/v0.30.3/doc/advanced/topology.rst)
+- [ZoneGroupTopology (community docs)](https://sonos.svrooij.io/services/zone-group-topology.html)
+- [Sonos Community: group coordinator, staff reply](https://en.community.sonos.com/controllers-music-services-228995/sonos-group-coordinator-question-6803946)
+- [snapcast#527 — snapclient cannot change server without restart](https://github.com/badaix/snapcast/issues/527)
+- [shairport-sync AIRPLAY2.md](https://github.com/mikebrady/shairport-sync/blob/master/AIRPLAY2.md)
+- [TIDAL Connect is partner-only](https://developer.tidal.com/documentation/connect)
+- [Music Assistant installation / minimum hardware](https://www.music-assistant.io/installation/)
+- [Sendspin (technical preview)](https://www.music-assistant.io/player-support/sendspin/)
 - [Snapcast README](https://github.com/snapcast/snapcast) (sync mechanism, 0.2 ms)
 - [Snapcast configuration](https://github.com/snapcast/snapcast/blob/master/doc/configuration.md)
 - [Music Assistant Snapcast provider](https://www.music-assistant.io/player-support/snapcast/)
