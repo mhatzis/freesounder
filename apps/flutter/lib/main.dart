@@ -1,12 +1,22 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
+import 'api/connection_prefs.dart';
 import 'theme/tokens.dart';
 import 'ui/app_shell.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(const ProviderScope(child: FreesounderApp()));
+  final prefs = ConnectionPrefs(await SharedPreferences.getInstance());
+  runApp(
+    ProviderScope(
+      overrides: [
+        connectionPrefsProvider.overrideWithValue(prefs),
+      ],
+      child: const FreesounderApp(),
+    ),
+  );
 }
 
 class FreesounderApp extends StatelessWidget {

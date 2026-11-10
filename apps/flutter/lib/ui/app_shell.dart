@@ -4,7 +4,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../state/playback_store.dart';
 import '../theme/tokens.dart';
 import 'mini_player.dart';
+import 'room_settings_sheet.dart';
 import 'rooms_panel.dart';
+import 'settings_screen.dart';
 
 /// App shell: now-playing canvas, persistent mini-player, rooms bottom sheet
 /// on narrow widths, and a right-hand rooms rail at 900px and above.
@@ -89,6 +91,7 @@ class _AppShellState extends ConsumerState<AppShell> {
   }
 }
 
+
 class _NowPlayingCanvas extends StatelessWidget {
   const _NowPlayingCanvas({required this.state});
 
@@ -110,86 +113,102 @@ class _NowPlayingCanvas extends StatelessWidget {
       child: SafeArea(
         bottom: false,
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(24, 8, 24, 16),
+          padding: const EdgeInsets.fromLTRB(24, 8, 12, 16),
           child: Column(
             children: [
               _TopBar(state: state),
-              const Spacer(),
-              ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 420),
-                child: Column(
-                  children: [
-                    AspectRatio(
-                      aspectRatio: 1,
-                      child: DecoratedBox(
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(28),
-                          boxShadow: [
-                            BoxShadow(
-                              color: FsTokens.seed.withValues(alpha: 0.28),
-                              blurRadius: 32,
-                              offset: const Offset(0, 16),
+              Expanded(
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final artSize = (constraints.maxHeight * 0.48)
+                        .clamp(96.0, constraints.maxWidth.clamp(96.0, 420.0));
+                    return SingleChildScrollView(
+                      child: ConstrainedBox(
+                        constraints: BoxConstraints(minHeight: constraints.maxHeight),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            SizedBox(
+                              width: artSize,
+                              height: artSize,
+                              child: DecoratedBox(
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(28),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: FsTokens.seed.withValues(alpha: 0.28),
+                                      blurRadius: 32,
+                                      offset: const Offset(0, 16),
+                                    ),
+                                  ],
+                                ),
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(28),
+                                  child: Image.asset(
+                                    'assets/logo.png',
+                                    fit: BoxFit.cover,
+                                    filterQuality: FilterQuality.medium,
+                                  ),
+                                ),
+                              ),
                             ),
+                            const SizedBox(height: 24),
+                            Text(
+                              title,
+                              textAlign: TextAlign.center,
+                              style: text.headlineSmall?.copyWith(fontWeight: FontWeight.w600),
+                            ),
+                            if (subtitle.isNotEmpty) ...[
+                              const SizedBox(height: 8),
+                              Text(
+                                subtitle,
+                                textAlign: TextAlign.center,
+                                style: text.bodyLarge?.copyWith(color: scheme.onSurfaceVariant),
+                              ),
+                            ],
+                            if (state.activeRoom != null) ...[
+                              const SizedBox(height: 4),
+                              TextButton.icon(
+                                key: const Key('now-playing-room-settings'),
+                                onPressed: () => showRoomSettingsSheet(
+                                  context,
+                                  roomId: state.activeRoom!.id,
+                                  roomName: state.activeRoom!.name,
+                                ),
+                                icon: const Icon(Icons.tune, size: 18),
+                                label: Text(state.activeRoom!.name),
+                              ),
+                            ],
+                            if (progress != null) ...[
+                              const SizedBox(height: 16),
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(99),
+                                child: LinearProgressIndicator(
+                                  value: progress,
+                                  minHeight: 3,
+                                  backgroundColor: scheme.surfaceContainerHighest,
+                                ),
+                              ),
+                            ],
+                            if (state.discovering) ...[
+                              const SizedBox(height: 24),
+                              const SizedBox(
+                                width: 20,
+                                height: 20,
+                                child: CircularProgressIndicator(strokeWidth: 2),
+                              ),
+                            ],
+                            if (state.error != null && !state.mockMode) ...[
+                              const SizedBox(height: 16),
+                              Text(state.error!, style: TextStyle(color: scheme.error)),
+                            ],
                           ],
                         ),
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(28),
-                          child: Image.asset(
-                            'assets/logo.png',
-                            fit: BoxFit.cover,
-                            filterQuality: FilterQuality.medium,
-                          ),
-                        ),
                       ),
-                    ),
-                    const SizedBox(height: 32),
-                    Text(
-                      title,
-                      textAlign: TextAlign.center,
-                      style: text.headlineSmall?.copyWith(fontWeight: FontWeight.w600),
-                    ),
-                    if (subtitle.isNotEmpty) ...[
-                      const SizedBox(height: 8),
-                      Text(
-                        subtitle,
-                        textAlign: TextAlign.center,
-                        style: text.bodyLarge?.copyWith(color: scheme.onSurfaceVariant),
-                      ),
-                    ],
-                    if (state.activeRoom != null) ...[
-                      const SizedBox(height: 8),
-                      Text(
-                        state.activeRoom!.name,
-                        style: text.labelLarge?.copyWith(color: scheme.primary),
-                      ),
-                    ],
-                    if (progress != null) ...[
-                      const SizedBox(height: 24),
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(99),
-                        child: LinearProgressIndicator(
-                          value: progress,
-                          minHeight: 3,
-                          backgroundColor: scheme.surfaceContainerHighest,
-                        ),
-                      ),
-                    ],
-                    if (state.discovering) ...[
-                      const SizedBox(height: 24),
-                      const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      ),
-                    ],
-                    if (state.error != null && !state.mockMode) ...[
-                      const SizedBox(height: 16),
-                      Text(state.error!, style: TextStyle(color: scheme.error)),
-                    ],
-                  ],
+                    );
+                  },
                 ),
               ),
-              const Spacer(),
             ],
           ),
         ),
@@ -212,28 +231,44 @@ class _TopBar extends StatelessWidget {
           borderRadius: BorderRadius.circular(9),
           child: Image.asset('assets/logo.png', width: 32, height: 32, fit: BoxFit.cover),
         ),
-        const SizedBox(width: 12),
-        Text(
-          'FreeSounder',
-          style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            'FreeSounder',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+          ),
         ),
-        const Spacer(),
         if (state.mockMode && !state.discovering)
-          DecoratedBox(
-            decoration: BoxDecoration(
-              color: scheme.surfaceContainerHighest,
-              borderRadius: BorderRadius.circular(99),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-              child: Text(
-                'Demo mode',
-                style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: scheme.onSurfaceVariant,
+          Padding(
+            padding: const EdgeInsets.only(right: 4),
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: scheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(99),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                child: Text(
+                  'Demo',
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
                 ),
               ),
             ),
           ),
+        IconButton(
+          key: const Key('settings-button'),
+          tooltip: 'Settings',
+          icon: const Icon(Icons.settings_outlined),
+          onPressed: () {
+            Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const SettingsScreen()),
+            );
+          },
+        ),
       ],
     );
   }

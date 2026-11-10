@@ -4,6 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/room.dart';
 import '../state/playback_store.dart';
 import '../theme/tokens.dart';
+import 'add_player_sheet.dart';
+import 'room_settings_sheet.dart';
 
 /// Rooms list used both in the bottom sheet and the wide right-hand rail.
 class RoomsPanel extends ConsumerWidget {
@@ -38,6 +40,12 @@ class RoomsPanel extends ConsumerWidget {
                     'Offline',
                     style: Theme.of(context).textTheme.labelSmall?.copyWith(color: scheme.error),
                   ),
+                IconButton(
+                  key: const Key('add-player-button'),
+                  tooltip: 'Add a player',
+                  icon: const Icon(Icons.add),
+                  onPressed: () => showAddPlayerSheet(context),
+                ),
               ],
             ),
           ),
@@ -78,6 +86,7 @@ class _RoomTile extends ConsumerWidget {
       child: InkWell(
         borderRadius: BorderRadius.circular(16),
         onTap: () => ref.read(playbackProvider.notifier).selectRoom(room.id),
+        onLongPress: () => showRoomSettingsSheet(context, roomId: room.id, roomName: room.name),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(12, 10, 8, 6),
           child: Column(
@@ -103,6 +112,12 @@ class _RoomTile extends ConsumerWidget {
                       if (room.groupId != null) 'Grouped',
                     ].join(' · '),
                     style: Theme.of(context).textTheme.labelSmall?.copyWith(color: scheme.onSurfaceVariant),
+                  ),
+                  IconButton(
+                    key: Key('room-settings-${room.id}'),
+                    tooltip: 'Room settings',
+                    icon: const Icon(Icons.tune, size: 20),
+                    onPressed: () => showRoomSettingsSheet(context, roomId: room.id, roomName: room.name),
                   ),
                 ],
               ),

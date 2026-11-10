@@ -160,3 +160,24 @@ A 64-bit Lite image for Pi 4 and Pi 5 is built from [images/player](../images/pl
 - [music-assistant-client](https://github.com/music-assistant/client)
 - [Music Assistant installation](https://www.music-assistant.io/installation/)
 - [freesounder architecture](architecture.md)
+
+
+## Connect, adopt, and room settings (app + player agent)
+
+The Flutter app talks only to the household-host control API. That API
+advertises `_freesounder._tcp`. Every board also runs
+`services/player-agent` on port 8090 as `_freesounder-player._tcp`.
+
+- Settings in the app lists discovered hosts, accepts a manual address
+  (persisted), reconnects, and can switch back to the in-app demo.
+- Add player lists unclaimed agents (`GET /api/v1/players/unclaimed`) and
+  adopts them (`POST /api/v1/players/adopt`). The host forwards that to the
+  agent, which stores the room name, points `snapclient` at the host, and
+  restarts it.
+- Room settings (`GET`/`PATCH /api/v1/players/{id}/settings`) cover name,
+  volume limit, bass, treble, balance, loudness (bass boost) and DAC.
+  Tone controls are applied on the Pi with an ALSA LADSPA equaliser.
+
+```bash
+cd services/player-agent && uv sync --group dev && uv run ruff check src tests && uv run pytest
+```

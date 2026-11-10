@@ -37,14 +37,21 @@ class Room {
     );
   }
 
-  Room copyWith({int? volume, String? groupId, String? state, List<String>? memberIds}) {
+  Room copyWith({
+    String? name,
+    int? volume,
+    String? groupId,
+    String? state,
+    List<String>? memberIds,
+    bool clearGroupId = false,
+  }) {
     return Room(
       id: id,
-      name: name,
+      name: name ?? this.name,
       available: available,
       volume: volume ?? this.volume,
       muted: muted,
-      groupId: groupId ?? this.groupId,
+      groupId: clearGroupId ? null : (groupId ?? this.groupId),
       isGroup: isGroup,
       memberIds: memberIds ?? this.memberIds,
       state: state ?? this.state,

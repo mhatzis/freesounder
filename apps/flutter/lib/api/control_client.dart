@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../models/now_playing.dart';
+import '../models/player_settings.dart';
 import '../models/room.dart';
 
 /// HTTP + WebSocket client for services/control-api.
@@ -65,6 +66,43 @@ class ControlApiClient {
       body: jsonEncode({'player_id': playerId}),
     );
     _ensureOk(response);
+  }
+
+  Future<List<UnclaimedPlayer>> listUnclaimed() async {
+    final response = await _http.get(_uri('/api/v1/players/unclaimed'));
+    _ensureOk(response);
+    final data = jsonDecode(response.body) as List<dynamic>;
+    return [for (final item in data) UnclaimedPlayer.fromJson(item as Map<String, dynamic>)];
+  }
+
+  Future<UnclaimedPlayer> adoptPlayer({required String name, String? id, String? url}) async {
+    final response = await _http.post(
+      _uri('/api/v1/players/adopt'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'name': name,
+        'id': ?id,
+        'url': ?url,
+      }),
+    );
+    _ensureOk(response);
+    return UnclaimedPlayer.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+  }
+
+  Future<PlayerSettings> getSettings(String playerId) async {
+    final response = await _http.get(_uri('/api/v1/players/$playerId/settings'));
+    _ensureOk(response);
+    return PlayerSettings.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+  }
+
+  Future<PlayerSettings> patchSettings(String playerId, Map<String, dynamic> patch) async {
+    final response = await _http.patch(
+      _uri('/api/v1/players/$playerId/settings'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode(patch),
+    );
+    _ensureOk(response);
+    return PlayerSettings.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
   }
 
   Stream<Map<String, dynamic>> connectEvents() {

@@ -68,7 +68,7 @@ jobs:
       - name: Build IPA
         run: |
           flutter build ipa --release \
-            --build-name=0.1.0 \
+            --build-name=0.2.0 \
             --build-number="${GITHUB_RUN_NUMBER}" \
             --export-options-plist=ios/ExportOptions.plist
 
