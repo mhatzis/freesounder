@@ -40,33 +40,8 @@ class _AppShellState extends ConsumerState<AppShell> {
     final width = MediaQuery.sizeOf(context).width;
     final useRail = width >= FsTokens.railBreakpoint;
     final playback = ref.watch(playbackProvider);
-    final np = playback.nowPlaying;
 
-    final canvas = ColoredBox(
-      color: Theme.of(context).colorScheme.surface,
-      child: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(Icons.album, size: 96, color: Theme.of(context).colorScheme.primary),
-              const SizedBox(height: 16),
-              Text(np?.title ?? 'Nothing playing', style: Theme.of(context).textTheme.headlineSmall),
-              const SizedBox(height: 4),
-              Text(
-                [np?.artist, np?.album].where((s) => s != null && s.isNotEmpty).join(' — '),
-                style: Theme.of(context).textTheme.bodyLarge,
-              ),
-              if (playback.error != null) ...[
-                const SizedBox(height: 16),
-                Text(playback.error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
-              ],
-            ],
-          ),
-        ),
-      ),
-    );
+    final canvas = _NowPlayingCanvas(state: playback);
 
     if (useRail) {
       return Scaffold(
@@ -76,11 +51,11 @@ class _AppShellState extends ConsumerState<AppShell> {
               child: Column(
                 children: [
                   Expanded(child: canvas),
-                  MiniPlayer(showRoomsChip: false),
+                  const MiniPlayer(showRoomsChip: false),
                 ],
               ),
             ),
-            const VerticalDivider(width: 1),
+            VerticalDivider(width: 1, color: Theme.of(context).colorScheme.outlineVariant),
             const SizedBox(
               width: FsTokens.railWidth,
               child: RoomsPanel(asRail: true),
@@ -91,24 +66,175 @@ class _AppShellState extends ConsumerState<AppShell> {
     }
 
     return Scaffold(
-      body: Stack(
+      body: Column(
         children: [
-          Column(
-            children: [
-              Expanded(child: canvas),
-              // Reserve collapsed-sheet height so content is not hidden.
-              SizedBox(height: MediaQuery.sizeOf(context).height * FsTokens.sheetCollapsed),
-            ],
+          Expanded(
+            child: Stack(
+              children: [
+                Column(
+                  children: [
+                    Expanded(child: canvas),
+                    // Reserve collapsed-sheet height so content is not hidden.
+                    SizedBox(height: MediaQuery.sizeOf(context).height * FsTokens.sheetCollapsed),
+                  ],
+                ),
+                RoomsBottomSheet(controller: _sheetController),
+              ],
+            ),
           ),
-          RoomsBottomSheet(controller: _sheetController),
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 0,
-            child: MiniPlayer(onRoomsPressed: _openRooms),
-          ),
+          MiniPlayer(onRoomsPressed: _openRooms),
         ],
       ),
+    );
+  }
+}
+
+class _NowPlayingCanvas extends StatelessWidget {
+  const _NowPlayingCanvas({required this.state});
+
+  final PlaybackState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final text = Theme.of(context).textTheme;
+    final np = state.nowPlaying;
+    final title = np?.title ?? (state.discovering ? 'Looking for players…' : 'Nothing playing');
+    final subtitle = [np?.artist, np?.album].whereType<String>().where((s) => s.isNotEmpty).join(' — ');
+    final progress = (np?.duration != null && np!.duration! > 0)
+        ? ((np.position ?? 0) / np.duration!).clamp(0.0, 1.0)
+        : null;
+
+    return ColoredBox(
+      color: scheme.surface,
+      child: SafeArea(
+        bottom: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 8, 24, 16),
+          child: Column(
+            children: [
+              _TopBar(state: state),
+              const Spacer(),
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 420),
+                child: Column(
+                  children: [
+                    AspectRatio(
+                      aspectRatio: 1,
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(28),
+                          boxShadow: [
+                            BoxShadow(
+                              color: FsTokens.seed.withValues(alpha: 0.28),
+                              blurRadius: 32,
+                              offset: const Offset(0, 16),
+                            ),
+                          ],
+                        ),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(28),
+                          child: Image.asset(
+                            'assets/logo.png',
+                            fit: BoxFit.cover,
+                            filterQuality: FilterQuality.medium,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 32),
+                    Text(
+                      title,
+                      textAlign: TextAlign.center,
+                      style: text.headlineSmall?.copyWith(fontWeight: FontWeight.w600),
+                    ),
+                    if (subtitle.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        subtitle,
+                        textAlign: TextAlign.center,
+                        style: text.bodyLarge?.copyWith(color: scheme.onSurfaceVariant),
+                      ),
+                    ],
+                    if (state.activeRoom != null) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        state.activeRoom!.name,
+                        style: text.labelLarge?.copyWith(color: scheme.primary),
+                      ),
+                    ],
+                    if (progress != null) ...[
+                      const SizedBox(height: 24),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(99),
+                        child: LinearProgressIndicator(
+                          value: progress,
+                          minHeight: 3,
+                          backgroundColor: scheme.surfaceContainerHighest,
+                        ),
+                      ),
+                    ],
+                    if (state.discovering) ...[
+                      const SizedBox(height: 24),
+                      const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    ],
+                    if (state.error != null && !state.mockMode) ...[
+                      const SizedBox(height: 16),
+                      Text(state.error!, style: TextStyle(color: scheme.error)),
+                    ],
+                  ],
+                ),
+              ),
+              const Spacer(),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TopBar extends StatelessWidget {
+  const _TopBar({required this.state});
+
+  final PlaybackState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Row(
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(9),
+          child: Image.asset('assets/logo.png', width: 32, height: 32, fit: BoxFit.cover),
+        ),
+        const SizedBox(width: 12),
+        Text(
+          'FreeSounder',
+          style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+        ),
+        const Spacer(),
+        if (state.mockMode && !state.discovering)
+          DecoratedBox(
+            decoration: BoxDecoration(
+              color: scheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(99),
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+              child: Text(
+                'Demo mode',
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: scheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+          ),
+      ],
     );
   }
 }

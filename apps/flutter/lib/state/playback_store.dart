@@ -3,19 +3,25 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/control_client.dart';
+import '../api/discovery.dart';
 import '../api/mock_data.dart';
 import '../models/now_playing.dart';
 import '../models/room.dart';
 
 class AppConfig {
   const AppConfig({
-    this.mockMode = true,
-    this.apiBase = 'http://127.0.0.1:8080',
+    this.forceDemo = false,
+    this.apiBase,
+    this.discoveryTimeout = const Duration(seconds: 3),
   });
 
-  /// When true, the UI uses in-memory rooms and never talks to a player.
-  final bool mockMode;
-  final String apiBase;
+  /// When true, skip discovery and load the in-app demo household immediately.
+  final bool forceDemo;
+
+  /// Optional explicit control-api URL. When null, players are discovered
+  /// via mDNS (`_freesounder._tcp`) and the app falls back to demo mode.
+  final String? apiBase;
+  final Duration discoveryTimeout;
 }
 
 class PlaybackState {
@@ -25,6 +31,7 @@ class PlaybackState {
     this.nowPlaying,
     this.mockMode = true,
     this.connected = false,
+    this.discovering = false,
     this.error,
   });
 
@@ -33,6 +40,7 @@ class PlaybackState {
   final NowPlaying? nowPlaying;
   final bool mockMode;
   final bool connected;
+  final bool discovering;
   final String? error;
 
   Room? get activeRoom {
@@ -53,6 +61,7 @@ class PlaybackState {
     NowPlaying? nowPlaying,
     bool? mockMode,
     bool? connected,
+    bool? discovering,
     String? error,
     bool clearError = false,
   }) {
@@ -62,12 +71,20 @@ class PlaybackState {
       nowPlaying: nowPlaying ?? this.nowPlaying,
       mockMode: mockMode ?? this.mockMode,
       connected: connected ?? this.connected,
+      discovering: discovering ?? this.discovering,
       error: clearError ? null : (error ?? this.error),
     );
   }
 }
 
-final appConfigProvider = Provider<AppConfig>((ref) => const AppConfig());
+final appConfigProvider = Provider<AppConfig>((ref) {
+  const api = String.fromEnvironment('API_BASE');
+  const forceDemo = bool.fromEnvironment('FORCE_DEMO');
+  return AppConfig(
+    forceDemo: forceDemo,
+    apiBase: api.isEmpty ? null : api,
+  );
+});
 
 final playbackProvider = NotifierProvider<PlaybackStore, PlaybackState>(PlaybackStore.new);
 
@@ -86,41 +103,55 @@ class PlaybackStore extends Notifier<PlaybackState> {
       _events?.cancel();
       _client?.close();
     });
-    if (config.mockMode) {
-      return PlaybackState(
-        rooms: List.of(_mock.rooms),
-        activeRoomId: _mock.activeRoomId,
-        nowPlaying: _mock.nowPlaying[_mock.activeRoomId],
-        mockMode: true,
-        connected: true,
-      );
+    if (config.forceDemo) {
+      return _demoState();
     }
-    Future.microtask(_connectLive);
-    return const PlaybackState(rooms: [], mockMode: false, connected: false);
+    Future.microtask(_connectOrDemo);
+    return const PlaybackState(rooms: [], mockMode: false, connected: false, discovering: true);
   }
 
-  Future<void> _connectLive() async {
+  PlaybackState _demoState() {
+    return PlaybackState(
+      rooms: List.of(_mock.rooms),
+      activeRoomId: _mock.activeRoomId,
+      nowPlaying: _mock.nowPlaying[_mock.activeRoomId],
+      mockMode: true,
+      discovering: false,
+      connected: true,
+    );
+  }
+
+  Future<void> _connectOrDemo() async {
     final config = ref.read(appConfigProvider);
-    _client = ControlApiClient(baseUrl: config.apiBase);
+    var base = config.apiBase;
+    base ??= await discoverControlApi(timeout: config.discoveryTimeout);
+    if (base == null) {
+      state = _demoState();
+      return;
+    }
+    _client = ControlApiClient(baseUrl: base);
     try {
-      final rooms = await _client!.listRooms();
+      final rooms = await _client!.listRooms().timeout(const Duration(seconds: 3));
       final activeId = rooms.isNotEmpty ? rooms.first.id : null;
       NowPlaying? np;
       if (activeId != null) {
-        np = await _client!.nowPlaying(activeId);
+        np = await _client!.nowPlaying(activeId).timeout(const Duration(seconds: 3));
       }
       state = state.copyWith(
         rooms: rooms,
         activeRoomId: activeId,
         nowPlaying: np,
+        mockMode: false,
         connected: true,
+        discovering: false,
         clearError: true,
       );
       _events = _client!.connectEvents().listen(_onEvent, onError: (Object err) {
         state = state.copyWith(error: err.toString(), connected: false);
       });
-    } catch (err) {
-      state = state.copyWith(error: err.toString(), connected: false);
+    } on Object {
+      // No reachable player — testers can still explore the UI in demo mode.
+      state = _demoState();
     }
   }
 

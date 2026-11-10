@@ -15,7 +15,7 @@ class FreesounderApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'freesounder',
+      title: 'FreeSounder',
       theme: FsTokens.light(),
       darkTheme: FsTokens.dark(),
       home: const AppShell(),

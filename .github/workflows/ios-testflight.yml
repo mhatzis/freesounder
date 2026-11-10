@@ -1,0 +1,111 @@
+name: iOS TestFlight
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+# Reuse the iOS Distribution certificate stored in repo secrets.
+# Do not mint a new distribution certificate on each run — Apple limits them.
+# Secrets: ASC_KEY_P8, ASC_KEY_ID, ASC_ISSUER_ID, APPLE_TEAM_ID,
+#          IOS_DIST_CERT_P12, IOS_DIST_CERT_PASSWORD, IOS_PROVISIONING_PROFILE
+
+jobs:
+  testflight:
+    name: Build and upload
+    runs-on: macos-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: apps/flutter
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: "3.47.9"
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze --no-fatal-infos
+
+      - name: Test
+        run: flutter test
+
+      - name: Install signing certificate and profile
+        env:
+          IOS_DIST_CERT_P12: ${{ secrets.IOS_DIST_CERT_P12 }}
+          IOS_DIST_CERT_PASSWORD: ${{ secrets.IOS_DIST_CERT_PASSWORD }}
+          IOS_PROVISIONING_PROFILE: ${{ secrets.IOS_PROVISIONING_PROFILE }}
+        run: |
+          set -euo pipefail
+          CERT_PATH="$RUNNER_TEMP/dist.p12"
+          PROFILE_PATH="$RUNNER_TEMP/profile.mobileprovision"
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+          echo -n "$IOS_DIST_CERT_P12" | base64 --decode > "$CERT_PATH"
+          echo -n "$IOS_PROVISIONING_PROFILE" | base64 --decode > "$PROFILE_PATH"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" \
+            -P "$IOS_DIST_CERT_PASSWORD" \
+            -A -t cert -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain-db
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          PROFILE_UUID="$(security cms -D -i "$PROFILE_PATH" | plutil -extract UUID raw -)"
+          cp "$PROFILE_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/${PROFILE_UUID}.mobileprovision"
+          echo "Installed profile $PROFILE_UUID"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+      - name: Build IPA
+        run: |
+          flutter build ipa --release \
+            --build-name=0.1.0 \
+            --build-number="${GITHUB_RUN_NUMBER}" \
+            --export-options-plist=ios/ExportOptions.plist
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: freesounder-ipa
+          path: apps/flutter/build/ios/ipa/*.ipa
+          if-no-files-found: error
+
+      - name: Upload to TestFlight
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          IPA=$(ls build/ios/ipa/*.ipa)
+          echo "Uploading $IPA"
+          mkdir -p "$HOME/.appstoreconnect/private_keys"
+          python3 - <<'PY'
+          import os, re, textwrap
+          from pathlib import Path
+          raw = os.environ["ASC_KEY_P8"]
+          body = re.sub(r"-----[^-]+-----|\s", "", raw)
+          pem = (
+              "-----BEGIN PRIVATE KEY-----\n"
+              + "\n".join(textwrap.wrap(body, 64))
+              + "\n-----END PRIVATE KEY-----\n"
+          )
+          key_id = os.environ["ASC_KEY_ID"]
+          dest = Path.home() / ".appstoreconnect" / "private_keys" / f"AuthKey_{key_id}.p8"
+          dest.write_text(pem)
+          dest.chmod(0o600)
+          PY
+          xcrun altool --upload-app --type ios \
+            -f "$IPA" \
+            --apiKey "$ASC_KEY_ID" \
+            --apiIssuer "$ASC_ISSUER_ID" \
+            --output-format xml

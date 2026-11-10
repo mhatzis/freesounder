@@ -1,11 +1,11 @@
 {
-    "name": "freesounder",
-    "short_name": "freesounder",
+    "name": "FreeSounder",
+    "short_name": "FreeSounder",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#2157B0",
+    "theme_color": "#2157B0",
+    "description": "FreeSounder — multi-room wireless audio.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

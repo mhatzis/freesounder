@@ -1,6 +1,11 @@
-# freesounder
+# FreeSounder
 
-**freesounder** is a free, open-source multi-room wireless audio system that aims to feel as simple and polished as commercial whole-home speaker systems, without the lock-in.
+<p align="center">
+  <img src="assets/freesounder-icon.png" width="128" height="128" alt="FreeSounder icon">
+</p>
+
+**FreeSounder** is a free, open-source multi-room wireless audio system that aims to feel as simple and polished as commercial whole-home speaker systems, without the lock-in.
+
 
 > Status: early implementation. Architecture is locked as **player-only**: there is no cupboard server. Music Assistant runs on an elected 4 GB household-host player; the Flutter app talks to a control API on any player, which proxies to that host.
 
@@ -29,6 +34,6 @@ Design research Page: [freesounder – Architecture Research & Recommended Stack
 
 ## Licence
 
-freesounder is licensed under the [Apache License 2.0](LICENSE). Some third-party components it may build on use other licences (for example GPL-3.0 Snapcast); those run as separate programs and keep their own licences.
+FreeSounder is licensed under the [Apache License 2.0](LICENSE). Some third-party components it may build on use other licences (for example GPL-3.0 Snapcast); those run as separate programs and keep their own licences.
 
-"Sonos" is a trademark of Sonos, Inc. freesounder is an independent project and is not affiliated with or endorsed by Sonos.
+"Sonos" is a trademark of Sonos, Inc. FreeSounder is an independent project and is not affiliated with or endorsed by Sonos.

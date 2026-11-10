@@ -6,19 +6,26 @@ import 'package:freesounder/theme/tokens.dart';
 import 'package:freesounder/ui/app_shell.dart';
 import 'package:freesounder/ui/rooms_panel.dart';
 
+Widget _host(Widget child) {
+  return ProviderScope(
+    overrides: [
+      appConfigProvider.overrideWithValue(const AppConfig(forceDemo: true)),
+    ],
+    child: MaterialApp(home: child),
+  );
+}
+
 void main() {
   testWidgets('rooms panel lists mock rooms and can select one', (tester) async {
     await tester.pumpWidget(
-      const ProviderScope(
-        child: MaterialApp(home: Scaffold(body: RoomsPanel())),
-      ),
+      _host(const Scaffold(body: RoomsPanel())),
     );
     await tester.pumpAndSettle();
 
     expect(find.text('Kitchen'), findsOneWidget);
     expect(find.text('Lounge'), findsOneWidget);
     expect(find.text('Bedroom'), findsOneWidget);
-    expect(find.text('Mock data'), findsOneWidget);
+    expect(find.text('Demo mode'), findsOneWidget);
 
     await tester.tap(find.text('Lounge'));
     await tester.pumpAndSettle();
@@ -26,7 +33,6 @@ void main() {
     final container = ProviderScope.containerOf(
       tester.element(find.byType(RoomsPanel)),
     );
-    expect(container.read(playbackProvider).activeRoomId, 'Lounge'.toLowerCase());
     expect(container.read(playbackProvider).activeRoomId, 'lounge');
   });
 
@@ -36,16 +42,14 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    await tester.pumpWidget(
-      const ProviderScope(
-        child: MaterialApp(home: AppShell()),
-      ),
-    );
+    await tester.pumpWidget(_host(const AppShell()));
     await tester.pumpAndSettle();
 
     expect(find.text('Morning Light'), findsWidgets);
     expect(find.text('Kitchen'), findsWidgets);
     expect(find.byType(RoomsBottomSheet), findsOneWidget);
+    expect(find.text('FreeSounder'), findsOneWidget);
+    expect(find.text('Demo mode'), findsWidgets);
 
     await tester.tap(find.byKey(const Key('rooms-chip')));
     await tester.pumpAndSettle();
@@ -58,15 +62,12 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
 
-    await tester.pumpWidget(
-      const ProviderScope(
-        child: MaterialApp(home: AppShell()),
-      ),
-    );
+    await tester.pumpWidget(_host(const AppShell()));
     await tester.pumpAndSettle();
 
     expect(find.byType(RoomsPanel), findsOneWidget);
     expect(find.byType(RoomsBottomSheet), findsNothing);
     expect(find.text('Lounge'), findsOneWidget);
+    expect(find.text('FreeSounder'), findsOneWidget);
   });
 }

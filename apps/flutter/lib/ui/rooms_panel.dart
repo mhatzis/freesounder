@@ -15,30 +15,49 @@ class RoomsPanel extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final state = ref.watch(playbackProvider);
     final rooms = state.rooms.where((room) => !room.isGroup).toList();
+    final scheme = Theme.of(context).colorScheme;
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-          child: Row(
-            children: [
-              Text('Rooms', style: Theme.of(context).textTheme.titleLarge),
-              const Spacer(),
-              if (state.mockMode)
-                const Chip(label: Text('Mock data'), visualDensity: VisualDensity.compact),
-              if (!state.connected && !state.mockMode)
-                const Chip(label: Text('Offline'), visualDensity: VisualDensity.compact),
-            ],
+    return ColoredBox(
+      color: asRail ? scheme.surfaceContainerLow : scheme.surface,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: EdgeInsets.fromLTRB(20, asRail ? 20 : 8, 16, 8),
+            child: Row(
+              children: [
+                Text('Rooms', style: Theme.of(context).textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w600)),
+                const Spacer(),
+                if (state.mockMode)
+                  Text(
+                    'Demo mode',
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(color: scheme.onSurfaceVariant),
+                  ),
+                if (!state.connected && !state.mockMode && !state.discovering)
+                  Text(
+                    'Offline',
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(color: scheme.error),
+                  ),
+              ],
+            ),
           ),
-        ),
-        Expanded(
-          child: ListView.builder(
-            itemCount: rooms.length,
-            itemBuilder: (context, index) => _RoomTile(room: rooms[index]),
+          Expanded(
+            child: rooms.isEmpty
+                ? Center(
+                    child: Text(
+                      state.discovering ? 'Looking for players…' : 'No rooms yet',
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
+                    ),
+                  )
+                : ListView.separated(
+                    padding: const EdgeInsets.fromLTRB(12, 4, 12, 24),
+                    itemCount: rooms.length,
+                    separatorBuilder: (_, _) => const SizedBox(height: 4),
+                    itemBuilder: (context, index) => _RoomTile(room: rooms[index]),
+                  ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 }
@@ -52,28 +71,52 @@ class _RoomTile extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final state = ref.watch(playbackProvider);
     final selected = state.activeRoomId == room.id;
-    return ListTile(
-      selected: selected,
-      leading: Icon(selected ? Icons.speaker : Icons.speaker_outlined),
-      title: Text(room.name),
-      subtitle: Text(
-        [
-          if (room.volume != null) 'Vol ${room.volume}',
-          if (room.groupId != null) 'Grouped',
-          if (room.state != null) room.state!,
-        ].join(' · '),
-      ),
-      trailing: SizedBox(
-        width: 128,
-        child: Slider(
-          value: (room.volume ?? 0).clamp(0, 100).toDouble(),
-          max: 100,
-          label: '${room.volume ?? 0}',
-          onChanged: (value) =>
-              ref.read(playbackProvider.notifier).setVolume(room.id, value.round()),
+    final scheme = Theme.of(context).colorScheme;
+    return Material(
+      color: selected ? scheme.primaryContainer.withValues(alpha: 0.55) : Colors.transparent,
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: () => ref.read(playbackProvider.notifier).selectRoom(room.id),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 10, 8, 6),
+          child: Column(
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    selected ? Icons.speaker : Icons.speaker_outlined,
+                    color: selected ? scheme.primary : scheme.onSurfaceVariant,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      room.name,
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                  Text(
+                    [
+                      if (room.volume != null) '${room.volume}',
+                      if (room.groupId != null) 'Grouped',
+                    ].join(' · '),
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(color: scheme.onSurfaceVariant),
+                  ),
+                ],
+              ),
+              Slider(
+                value: (room.volume ?? 0).clamp(0, 100).toDouble(),
+                max: 100,
+                label: '${room.volume ?? 0}',
+                onChanged: (value) =>
+                    ref.read(playbackProvider.notifier).setVolume(room.id, value.round()),
+              ),
+            ],
+          ),
         ),
       ),
-      onTap: () => ref.read(playbackProvider.notifier).selectRoom(room.id),
     );
   }
 }
@@ -95,14 +138,15 @@ class RoomsBottomSheet extends ConsumerWidget {
       snapSizes: const [FsTokens.sheetCollapsed, FsTokens.sheetHalf, FsTokens.sheetFull],
       builder: (context, scrollController) {
         return Material(
-          elevation: 8,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+          elevation: 1,
+          color: Theme.of(context).colorScheme.surfaceContainerLow,
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
           clipBehavior: Clip.antiAlias,
           child: CustomScrollView(
             controller: scrollController,
             slivers: [
               const SliverToBoxAdapter(child: _Grabber()),
-              SliverFillRemaining(
+              const SliverFillRemaining(
                 hasScrollBody: true,
                 child: RoomsPanel(),
               ),
@@ -120,10 +164,10 @@ class _Grabber extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.only(top: 8, bottom: 4),
+      padding: const EdgeInsets.only(top: 10, bottom: 4),
       child: Center(
         child: Container(
-          width: 40,
+          width: 36,
           height: 4,
           decoration: BoxDecoration(
             color: Theme.of(context).colorScheme.outlineVariant,
