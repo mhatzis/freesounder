@@ -1,0 +1,15 @@
+[Unit]
+Description=Write FreeSounder early boot marker to the boot partition
+DefaultDependencies=no
+After=local-fs.target
+RequiresMountsFor=/boot/firmware
+Before=sysinit.target cloud-init-local.service cloud-init-main.service cloud-init-network.service
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/freesounder/write-boot-marker freesounder-booted.txt early-local-fs
+
+[Install]
+WantedBy=sysinit.target

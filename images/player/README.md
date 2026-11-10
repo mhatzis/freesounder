@@ -125,4 +125,11 @@ the build machine; it is installed **inside** the image.
 
 ## Bluetooth setup diagnostics
 
-If a new player does not appear over Bluetooth, wait one minute after boot, power off, and read `freesounder-doctor.txt` from the boot partition (the `bootfs` volume) on a computer. The same short status is printed on the HDMI console (tty1). On the device itself, run `sudo freesounder-setup doctor` and `journalctl -u freesounder-ble-provisioning -b --no-pager`.
+After a boot (even a failed or incomplete one), the boot partition (`bootfs`) should contain progress markers you can read on a computer:
+
+- `freesounder-initramfs.txt` — kernel reached initramfs (before first-boot resize)
+- `freesounder-booted.txt` — systemd mounted `/boot/firmware` (very early)
+- `freesounder-sysinit-ok.txt` — `sysinit.target` completed
+- `freesounder-doctor.txt` — Bluetooth / network diagnostics (written after sysinit and again one minute after boot)
+
+The HDMI console is verbose (`console=tty1`, `loglevel=7`, no `quiet`). Plug in a micro-HDMI cable to read kernel messages if the green ACT LED stays solid. On the device itself, run `sudo freesounder-setup doctor` and `journalctl -u freesounder-ble-provisioning -b --no-pager`.

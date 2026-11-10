@@ -1,0 +1,12 @@
+[Unit]
+Description=Write an early FreeSounder doctor report once sysinit has finished
+After=sysinit.target freesounder-ble-provisioning.service
+Wants=freesounder-ble-provisioning.service
+RequiresMountsFor=/boot/firmware
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/freesounder/run-boot-doctor
+
+[Install]
+WantedBy=basic.target

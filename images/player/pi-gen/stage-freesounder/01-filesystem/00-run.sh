@@ -24,6 +24,7 @@ install -m 0755 files/usr/lib/freesounder/apply-dsp-config "${ROOTFS_DIR}/usr/li
 install -m 0755 files/usr/lib/freesounder/apply-player-agent "${ROOTFS_DIR}/usr/lib/freesounder/apply-player-agent"
 install -m 0755 files/usr/lib/freesounder/run-music-assistant "${ROOTFS_DIR}/usr/lib/freesounder/run-music-assistant"
 install -m 0755 files/usr/lib/freesounder/run-boot-doctor "${ROOTFS_DIR}/usr/lib/freesounder/run-boot-doctor"
+install -m 0755 files/usr/lib/freesounder/write-boot-marker "${ROOTFS_DIR}/usr/lib/freesounder/write-boot-marker"
 install -m 0755 files/usr/sbin/freesounder-setup "${ROOTFS_DIR}/usr/sbin/freesounder-setup"
 install -m 0644 files/etc/systemd/system/freesounder-role.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-role.service"
 install -m 0644 files/etc/systemd/system/freesounder-music-assistant.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-music-assistant.service"
@@ -32,6 +33,9 @@ install -m 0644 files/etc/systemd/system/freesounder-player-agent.service "${ROO
 install -m 0644 files/etc/systemd/system/freesounder-ble-provisioning.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-ble-provisioning.service"
 install -m 0644 files/etc/systemd/system/freesounder-boot-doctor.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-boot-doctor.service"
 install -m 0644 files/etc/systemd/system/freesounder-boot-doctor.timer "${ROOTFS_DIR}/etc/systemd/system/freesounder-boot-doctor.timer"
+install -m 0644 files/etc/systemd/system/freesounder-boot-mark.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-boot-mark.service"
+install -m 0644 files/etc/systemd/system/freesounder-boot-sysinit.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-boot-sysinit.service"
+install -m 0644 files/etc/systemd/system/freesounder-boot-doctor-early.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-boot-doctor-early.service"
 install -m 0644 files/etc/default/snapclient "${ROOTFS_DIR}/etc/default/snapclient"
 install -m 0644 files/etc/alsa/conf.d/99-freesounder.conf "${ROOTFS_DIR}/etc/alsa/conf.d/99-freesounder.conf"
 install -m 0755 files/etc/update-motd.d/20-freesounder "${ROOTFS_DIR}/etc/update-motd.d/20-freesounder"
@@ -48,5 +52,28 @@ if [ -f "${ROOTFS_DIR}/boot/firmware/config.txt" ]; then
 # dtoverlay=hifiberry-dacplus
 # --- freesounder-dac-end ---
 CFG
+	fi
+fi
+
+install -d "${ROOTFS_DIR}/etc/systemd/system/cloud-init-network.service.d"
+install -d "${ROOTFS_DIR}/etc/systemd/system/cloud-init-local.service.d"
+install -d "${ROOTFS_DIR}/etc/systemd/system/cloud-init-main.service.d"
+install -m 0644 files/etc/systemd/system/cloud-init-network.service.d/10-freesounder-timeout.conf \
+	"${ROOTFS_DIR}/etc/systemd/system/cloud-init-network.service.d/10-freesounder-timeout.conf"
+install -m 0644 files/etc/systemd/system/cloud-init-local.service.d/10-freesounder-timeout.conf \
+	"${ROOTFS_DIR}/etc/systemd/system/cloud-init-local.service.d/10-freesounder-timeout.conf"
+install -m 0644 files/etc/systemd/system/cloud-init-main.service.d/10-freesounder-timeout.conf \
+	"${ROOTFS_DIR}/etc/systemd/system/cloud-init-main.service.d/10-freesounder-timeout.conf"
+install -d "${ROOTFS_DIR}/etc/initramfs-tools/scripts/local-bottom"
+install -m 0755 files/etc/initramfs-tools/scripts/local-bottom/00-freesounder-mark \
+	"${ROOTFS_DIR}/etc/initramfs-tools/scripts/local-bottom/00-freesounder-mark"
+
+# Keep HDMI kernel messages visible (no quiet). loglevel=7 helps with a
+# micro-HDMI cable if the board hangs during boot.
+if [ -f "${ROOTFS_DIR}/boot/firmware/cmdline.txt" ]; then
+	sed -i 's/[[:space:]]quiet//g' "${ROOTFS_DIR}/boot/firmware/cmdline.txt"
+	if ! grep -q 'loglevel=' "${ROOTFS_DIR}/boot/firmware/cmdline.txt"; then
+		# cmdline is a single line
+		sed -i 's/[[:space:]]*$/ loglevel=7/' "${ROOTFS_DIR}/boot/firmware/cmdline.txt"
 	fi
 fi

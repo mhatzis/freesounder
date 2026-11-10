@@ -13,6 +13,9 @@ systemctl enable bluetooth.service || true
 systemctl enable NetworkManager.service || true
 systemctl enable freesounder-ble-provisioning.service
 systemctl enable freesounder-boot-doctor.timer
+systemctl enable freesounder-boot-mark.service
+systemctl enable freesounder-boot-sysinit.service
+systemctl enable freesounder-boot-doctor-early.service
 
 # The first user is renamed on first boot but keeps supplementary groups.
 if getent passwd pi >/dev/null; then

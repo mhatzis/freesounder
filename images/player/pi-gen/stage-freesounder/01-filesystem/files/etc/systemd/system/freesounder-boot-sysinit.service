@@ -1,0 +1,15 @@
+[Unit]
+Description=Write FreeSounder mid-boot (sysinit reached) marker to the boot partition
+DefaultDependencies=no
+After=sysinit.target
+RequiresMountsFor=/boot/firmware
+Before=basic.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/freesounder/write-boot-marker freesounder-sysinit-ok.txt sysinit
+
+[Install]
+WantedBy=basic.target

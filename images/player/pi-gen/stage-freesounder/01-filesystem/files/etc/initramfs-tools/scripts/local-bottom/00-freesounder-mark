@@ -1,0 +1,54 @@
+#!/bin/sh
+# Write a bootfs marker before first-boot resize/disk-id work, so a hang
+# in set_partuuid (e.g. /dev/hwrng) still leaves evidence on the SD card.
+case "$1" in
+	prereqs) exit 0 ;;
+esac
+
+# Never fail the boot for a marker.
+set +e
+# shellcheck disable=SC1091
+. /scripts/functions
+
+TARGET=/run/freesounder-boot
+mkdir -p "$TARGET"
+
+BOOT_PART_DEV=""
+if [ -n "${rootmnt:-}" ] && [ -f "${rootmnt}/etc/fstab" ]; then
+	BOOT_PART_DEV=$(findmnt -n -o SOURCE -s -F "${rootmnt}/etc/fstab" /boot/firmware 2>/dev/null)
+fi
+if [ -z "$BOOT_PART_DEV" ]; then
+	for cand in /dev/mmcblk0p1 /dev/sda1; do
+		if [ -b "$cand" ]; then
+			BOOT_PART_DEV=$cand
+			break
+		fi
+	done
+fi
+if [ -z "$BOOT_PART_DEV" ]; then
+	log_warning_msg "freesounder-mark: no boot partition found"
+	exit 0
+fi
+
+if command -v resolve_device >/dev/null 2>&1; then
+	BOOT_PART_DEV=$(resolve_device "$BOOT_PART_DEV")
+fi
+
+mkdir -p "$TARGET"
+if ! mount -o rw "$BOOT_PART_DEV" "$TARGET"; then
+	log_warning_msg "freesounder-mark: could not mount boot partition"
+	exit 0
+fi
+
+{
+	echo "FreeSounder boot marker"
+	echo "Stage: initramfs-local-bottom"
+	echo "Uptime: $(cut -d' ' -f1 /proc/uptime 2>/dev/null) s"
+	echo "Cmdline: $(cat /proc/cmdline 2>/dev/null)"
+	echo "Boot dev: ${BOOT_PART_DEV}"
+} >"$TARGET/freesounder-initramfs.txt"
+chmod 0644 "$TARGET/freesounder-initramfs.txt" 2>/dev/null
+sync
+umount "$TARGET" 2>/dev/null
+rmdir "$TARGET" 2>/dev/null
+exit 0

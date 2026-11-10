@@ -1,0 +1,44 @@
+#!/bin/bash
+# Write a short marker file onto the boot partition (readable on a PC).
+# Usage: write-boot-marker <filename> [stage-label] [extra text...]
+set -u
+umask 022
+NAME=${1:-freesounder-booted.txt}
+shift || true
+STAGE=${1:-marker}
+shift || true
+
+BOOT=""
+for candidate in /boot/firmware /boot; do
+	if [ -d "$candidate" ]; then
+		if [ ! -w "$candidate" ] && mountpoint -q "$candidate" 2>/dev/null; then
+			mount -o remount,rw "$candidate" 2>/dev/null || true
+		fi
+		if [ -w "$candidate" ]; then
+			BOOT=$candidate
+			break
+		fi
+	fi
+done
+if [ -z "$BOOT" ]; then
+	echo "write-boot-marker: boot partition not writable" >&2
+	exit 0
+fi
+
+{
+	echo "FreeSounder boot marker"
+	echo "Stage: ${STAGE}"
+	echo "Generated: $(date -Iseconds 2>/dev/null || echo unknown)"
+	echo "Hostname: $(hostname 2>/dev/null || echo unknown)"
+	echo "Uptime: $(cut -d' ' -f1 /proc/uptime 2>/dev/null || echo unknown) s"
+	echo "Kernel: $(uname -s -r 2>/dev/null || echo unknown)"
+	if [ -f /proc/cmdline ]; then
+		echo "Cmdline: $(tr '\n' ' ' < /proc/cmdline)"
+	fi
+	echo "Boot dir: ${BOOT}"
+	if [ "$#" -gt 0 ]; then
+		echo "$*"
+	fi
+} >"${BOOT}/${NAME}.tmp" 2>/dev/null && mv "${BOOT}/${NAME}.tmp" "${BOOT}/${NAME}"
+chmod 0644 "${BOOT}/${NAME}" 2>/dev/null || true
+exit 0
