@@ -5,11 +5,47 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from freesounder_ble_provisioning.protocol import ConnectResult, NetworkPort, WifiNetwork
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class LinkAddress:
+    """One IPv4 address on a named interface, with uplink classification."""
+
+    iface: str
+    address: str
+    virtual: bool = False
+    up: bool = False
+    carrier: bool = False
+    link_local: bool = False
+    loopback: bool = False
+
+    @property
+    def usable(self) -> bool:
+        if self.virtual or self.loopback or self.link_local:
+            return False
+        if not self.up or not self.carrier:
+            return False
+        return True
+
+    @property
+    def skip_reason(self) -> str | None:
+        if self.loopback:
+            return "loopback"
+        if self.link_local:
+            return "link-local"
+        if self.virtual:
+            return "virtual"
+        if not self.up:
+            return "down"
+        if not self.carrier:
+            return "no-carrier"
+        return None
 
 # Patterns matched against nmcli stderr after the password has been stripped.
 _WRONG_PASSWORD = re.compile(
@@ -175,25 +211,118 @@ async def _run_nmcli(nmcli: str, *args: str) -> _Completed:
 
 
 def _sync_global_addrs() -> list[str]:
+    """Usable IPv4 addresses on a real uplink (not docker0, not no-carrier eth)."""
+
+    return [row.address for row in inspect_ipv4() if row.usable]
+
+
+def inspect_ipv4(
+    ip_text: str | None = None, sys_class_net: Path | None = None
+) -> list[LinkAddress]:
+    """Parse IPv4 addresses and classify which ones mean the player is online."""
+
+    if ip_text is None:
+        ip_text = _ip_addr_text()
+    rows: list[LinkAddress] = []
+    for iface, address in parse_ip_ipv4(ip_text):
+        virtual = is_virtual_iface(iface)
+        up, carrier = link_flags(iface, sys_class_net=sys_class_net)
+        rows.append(
+            LinkAddress(
+                iface=iface,
+                address=address,
+                virtual=virtual,
+                up=up,
+                carrier=carrier,
+                link_local=_is_link_local(address),
+                loopback=_is_loopback(address),
+            )
+        )
+    return rows
+
+
+def parse_ip_ipv4(text: str) -> list[tuple[str, str]]:
+    """Parse `ip -4 -o addr` lines into (iface, ipv4) pairs."""
+
+    found: list[tuple[str, str]] = []
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) < 4 or "inet" not in parts:
+            continue
+        # 2: eth0    inet 192.168.1.4/24 ...
+        iface = parts[1].rstrip(":")
+        idx = parts.index("inet")
+        if idx + 1 >= len(parts):
+            continue
+        address = parts[idx + 1].split("/", 1)[0]
+        found.append((iface, address))
+    return found
+
+
+def is_virtual_iface(name: str) -> bool:
+    if name in _VIRTUAL_EXACT or name == "lo":
+        return True
+    return name.startswith(_VIRTUAL_PREFIXES)
+
+
+def link_flags(iface: str, sys_class_net: Path | None = None) -> tuple[bool, bool]:
+    """Return (operstate-up, has-carrier). Missing sysfs is treated as down."""
+
+    base = (sys_class_net or Path("/sys/class/net")) / iface
+    try:
+        oper = (base / "operstate").read_text(encoding="utf-8").strip().lower()
+    except OSError:
+        oper = ""
+    try:
+        carrier_raw = (base / "carrier").read_text(encoding="utf-8").strip()
+    except OSError:
+        carrier_raw = ""
+    up = oper in {"up", "unknown"}
+    carrier = carrier_raw == "1" or (oper == "up" and carrier_raw == "")
+    return up, carrier
+
+
+def _ip_addr_text() -> str:
     import subprocess
 
     try:
-        out = subprocess.check_output(
-            ["ip", "-4", "-o", "addr", "show", "scope", "global"],
+        return subprocess.check_output(
+            ["ip", "-4", "-o", "addr", "show"],
             stderr=subprocess.DEVNULL,
             text=True,
             timeout=3,
         )
     except (OSError, subprocess.SubprocessError):
-        return []
-    addrs: list[str] = []
-    for line in out.splitlines():
-        parts = line.split()
-        if "inet" in parts:
-            idx = parts.index("inet")
-            if idx + 1 < len(parts):
-                addrs.append(parts[idx + 1].split("/", 1)[0])
-    return addrs
+        return ""
+
+
+def _is_link_local(address: str) -> bool:
+    parts = address.split(".")
+    return len(parts) == 4 and parts[0] == "169" and parts[1] == "254"
+
+
+def _is_loopback(address: str) -> bool:
+    return address.startswith("127.")
+
+
+_VIRTUAL_PREFIXES = (
+    "docker",
+    "br-",
+    "veth",
+    "virbr",
+    "cni",
+    "flannel",
+    "lxc",
+    "lxd",
+    "incus",
+    "nodocker",
+    "tunl",
+    "sit",
+    "dummy",
+    "vmnet",
+    "kube",
+)
+_VIRTUAL_EXACT = frozenset({"lo", "docker0", "cni0", "flannel.1", "kube-ipvs0"})
 
 
 def _signal_to_rssi(signal: int) -> int:

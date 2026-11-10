@@ -1,6 +1,6 @@
 [project]
 name = "freesounder-ble-provisioning"
-version = "0.3.0"
+version = "0.3.1"
 description = "Improv Wi-Fi BLE provisioning for a FreeSounder player."
 readme = "README.md"
 license = { text = "Apache-2.0" }

@@ -17,6 +17,37 @@ CHAR_CAPABILITIES: Final = "00467768-6228-2272-4663-277478268005"
 ADVERTISEMENT_SERVICE_DATA_UUID: Final = "00004677-0000-1000-8000-00805f9b34fb"
 ADVERTISEMENT_SERVICE_DATA_SHORT: Final = 0x4677
 
+
+# Legacy BLE advertisements are 31 bytes. Improv requires the 128-bit service
+# UUID and 16-bit service data in the *same* primary advertisement (not the
+# scan response). Flags (3) + 128-bit UUID list (18) + service data (10) = 31,
+# so a local name must not be packed into the primary PDU.
+
+
+def legacy_advertisement_length(
+    *,
+    flags: bool = True,
+    service_uuid_128: bool = True,
+    service_data: bytes | None = None,
+    local_name: str | None = None,
+) -> int:
+    """Packed size of a legacy AD payload (excluding the 31-byte limit itself)."""
+
+    size = 0
+    if flags:
+        size += 3  # length, type, flags
+    if service_uuid_128:
+        size += 2 + 16  # length, type, 128-bit UUID
+    if service_data is not None:
+        # length, type (Service Data 16-bit UUID), UUID 0x4677, payload
+        size += 2 + 2 + len(service_data)
+    if local_name:
+        raw = local_name.encode("utf-8")
+        size += 2 + len(raw)
+    return size
+
+
+
 CAP_IDENTIFY: Final = 1 << 0
 CAP_DEVICE_INFO: Final = 1 << 1
 CAP_SCAN_WIFI: Final = 1 << 2
@@ -161,7 +192,7 @@ class NetworkPort:
 @dataclass
 class DeviceIdentity:
     firmware_name: str = "FreeSounder"
-    firmware_version: str = "0.3.0"
+    firmware_version: str = "0.3.1"
     hardware: str = "raspberry-pi"
     device_name: str = "FreeSounder"
     player_id: str = ""

@@ -88,13 +88,50 @@ async def run_forever(
             logger.info("Stopped Improv advertising")
         advertising = False
 
+    _logged_online: bool | None = None
+
+    def _describe_network() -> str:
+        try:
+            from freesounder_ble_provisioning.network import inspect_ipv4
+
+            rows = inspect_ipv4()
+        except Exception:  # noqa: BLE001
+            return "network inspection failed"
+        if not rows:
+            return "no IPv4 addresses"
+        parts = []
+        for row in rows:
+            reason = row.skip_reason
+            if reason:
+                parts.append(f"{row.iface}/{row.address} ({reason})")
+            else:
+                parts.append(f"{row.iface}/{row.address} (usable)")
+        return ", ".join(parts)
+
     try:
+        logger.info("Provisioning service starting as %s", local_name)
         while not done.is_set():
             online = network.has_usable_network()
+            if online != _logged_online:
+                logger.info(
+                    "Network state: %s (%s)",
+                    "online — will not advertise" if online else "offline — will advertise",
+                    _describe_network(),
+                )
+                _logged_online = online
             if online:
                 await ensure_stopped()
             else:
-                await ensure_started()
+                try:
+                    await ensure_started()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Could not start advertising (will retry): %s", exc)
+                    advertising = False
+                    if handle is not None:
+                        try:
+                            await handle.stop()
+                        except Exception:  # noqa: BLE001
+                            logger.debug("stop after failed start", exc_info=True)
             try:
                 await asyncio.wait_for(done.wait(), timeout=poll_seconds)
             except TimeoutError:

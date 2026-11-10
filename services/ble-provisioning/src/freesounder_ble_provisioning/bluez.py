@@ -3,8 +3,6 @@
 This process is a BLE peripheral only. It does not register audio profiles.
 """
 
-from __future__ import annotations
-
 import asyncio
 import logging
 from typing import Any
@@ -47,37 +45,60 @@ class BlueZPeripheral(PeripheralHandle):
         self._started = False
 
     async def start(self, session: ImprovSession, local_name: str) -> None:
-        if self._started:
+        if self._bus is not None:
             await self.stop()
         self._session = session
-        await _rfkill_unblock()
         from dbus_next.aio import MessageBus
         from dbus_next.constants import BusType
 
+        from freesounder_ble_provisioning.protocol import legacy_advertisement_length
+
+        await _rfkill_unblock()
+        await _try_bring_up_controller()
         self._bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-        self._adapter_path = await _find_adapter(self._bus)
-        if not self._adapter_path:
-            raise RuntimeError("No BlueZ adapter found")
-        await _prepare_adapter(self._bus, self._adapter_path, local_name)
+        try:
+            self._adapter_path = await _wait_for_adapter(self._bus)
+            await _prepare_adapter(self._bus, self._adapter_path, local_name)
 
-        self._app = ImprovApplication(session, self._bus)
-        self._advertisement = ImprovAdvertisement(session, local_name)
-        self._bus.export(APP_PATH, self._app)
-        for path, obj in self._app.objects():
-            self._bus.export(path, obj)
-        self._bus.export(ADV_PATH, self._advertisement)
+            self._app = ImprovApplication(session, self._bus)
+            # Do not put LocalName in the primary PDU: flags + 128-bit UUID +
+            # Improv service data already use all 31 legacy advertising bytes.
+            # The adapter Alias is set so the name can appear in a scan response.
+            self._advertisement = ImprovAdvertisement(session)
+            self._bus.export(APP_PATH, self._app)
+            for path, obj in self._app.objects():
+                self._bus.export(path, obj)
+            self._bus.export(ADV_PATH, self._advertisement)
 
-        introspect = await self._bus.introspect(BLUEZ, self._adapter_path)
-        proxy = self._bus.get_proxy_object(BLUEZ, self._adapter_path, introspect)
-        gatt = proxy.get_interface(GATT_MANAGER)
-        adv_mgr = proxy.get_interface(LE_ADVERTISING_MANAGER)
-        await gatt.call_register_application(APP_PATH, {})  # type: ignore[union-attr]
-        await adv_mgr.call_register_advertisement(ADV_PATH, {})  # type: ignore[union-attr]
-        self._started = True
-        logger.info("BlueZ Improv advertisement registered as %s", local_name)
+            packed = legacy_advertisement_length(service_data=session.service_data())
+            logger.info(
+                "Registering Improv advertisement on %s (primary PDU %s/31 bytes, alias %s)",
+                self._adapter_path,
+                packed,
+                local_name,
+            )
+            introspect = await self._bus.introspect(BLUEZ, self._adapter_path)
+            proxy = self._bus.get_proxy_object(BLUEZ, self._adapter_path, introspect)
+            gatt = proxy.get_interface(GATT_MANAGER)
+            adv_mgr = proxy.get_interface(LE_ADVERTISING_MANAGER)
+            await gatt.call_register_application(APP_PATH, {})  # type: ignore[union-attr]
+            await adv_mgr.call_register_advertisement(ADV_PATH, {})  # type: ignore[union-attr]
+            self._started = True
+            logger.info("BlueZ Improv advertisement registered (alias %s)", local_name)
+        except Exception:
+            await self.stop()
+            raise
 
     async def stop(self) -> None:
-        if not self._started or self._bus is None or self._adapter_path is None:
+        if self._bus is None:
+            self._started = False
+            return
+        if self._adapter_path is None:
+            try:
+                self._bus.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
+            self._bus = None
             self._started = False
             return
         try:
@@ -269,10 +290,9 @@ class ImprovCommandCharacteristic(ImprovCharacteristic):
 
 
 class ImprovAdvertisement(ServiceInterface):
-    def __init__(self, session: ImprovSession, local_name: str) -> None:
+    def __init__(self, session: ImprovSession) -> None:
         super().__init__("org.bluez.LEAdvertisement1")
         self._session = session
-        self._local_name = local_name
         self._service_data = session.service_data()
 
     def update_service_data(self, session: ImprovSession) -> None:
@@ -294,10 +314,6 @@ class ImprovAdvertisement(ServiceInterface):
     @dbus_property()
     def Type(self) -> "s":  # type: ignore[name-defined]
         return "peripheral"
-
-    @dbus_property()
-    def LocalName(self) -> "s":  # type: ignore[name-defined]
-        return self._local_name
 
     @dbus_property()
     def ServiceUUIDs(self) -> "as":  # type: ignore[name-defined]
@@ -328,6 +344,32 @@ _CHAR_ORDER = (
 def _char_path(uuid: str) -> str:
     suffix = uuid.split("-")[-1]
     return f"{SVC_PATH}/char_{suffix}"
+
+
+async def _wait_for_adapter(bus: Any, *, wait_seconds: float = 60.0, interval: float = 2.0) -> str:
+    """Wait for hci0 (or any adapter) to appear after rfkill / firmware attach."""
+
+    import time
+
+    deadline = time.monotonic() + wait_seconds
+    last_note = 0.0
+    while True:
+        path = await _find_adapter(bus)
+        if path:
+            logger.info("BlueZ adapter ready at %s", path)
+            return path
+        now = time.monotonic()
+        if now - last_note >= 8:
+            logger.info("Waiting for a BlueZ adapter (hci0); unblocking rfkill and retrying")
+            last_note = now
+        if now >= deadline:
+            raise RuntimeError(
+                "No BlueZ adapter found after waiting for hci0. "
+                "Run: sudo freesounder-setup doctor"
+            )
+        await _rfkill_unblock()
+        await _try_bring_up_controller()
+        await asyncio.sleep(interval)
 
 
 async def _find_adapter(bus: Any) -> str | None:
@@ -367,5 +409,37 @@ async def _rfkill_unblock() -> None:
             stderr=asyncio.subprocess.DEVNULL,
         )
         await proc.wait()
-    except OSError:
-        pass
+        if proc.returncode not in {0, None}:
+            logger.info("rfkill unblock bluetooth exited %s", proc.returncode)
+        else:
+            logger.debug("rfkill unblock bluetooth succeeded")
+    except OSError as exc:
+        logger.info("rfkill not available: %s", exc)
+
+
+async def _try_bring_up_controller() -> None:
+    """Best-effort: start hciuart if present, load UART Bluetooth modules."""
+
+    for unit in ("hciuart.service", "bluetooth.service"):
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "systemctl",
+                "start",
+                unit,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await proc.wait()
+        except OSError:
+            pass
+    for mod in ("btbcm", "hci_uart"):
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "modprobe",
+                mod,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await proc.wait()
+        except OSError:
+            pass
