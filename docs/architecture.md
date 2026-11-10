@@ -10,13 +10,13 @@ A companion Page with the same findings is here: [freesounder – Architecture R
 
 ## 1. Recommendation
 
-freesounder should not clone the Sonos app. The product is a **cleaner, rooms-first redesign** of multi-room control: very clear now-playing, one-tap per-room and group volume, and grouping that takes a couple of seconds.
+freesounder should not clone the Sonos app. The product is a **cleaner, rooms-first redesign** of multi-room control: very clear now-playing, a rooms panel reachable from every screen, one-tap per-room and group volume, and grouping that takes a couple of seconds.
 
 **Recommended stack**
 
 | Layer | Choice |
 |---|---|
-| Control apps (iOS, Android, web) | **Flutter**, one custom design system. Do not ship Music Assistant, Iris, Snapweb, Volumio or Lyrion UIs as the product face. |
+| Control apps (iOS, Android, web) | **Flutter**, one custom design system, including a **global rooms panel** (mini-player + room chip → bottom sheet on phones, right-hand rail on desktop). Do not ship Music Assistant, Iris, Snapweb, Volumio or Lyrion UIs as the product face. |
 | Server / library / streaming sources | **Music Assistant** (Apache-2.0), unmodified, separate process. Talk to its WebSocket API, with an optional thin freesounder facade later. |
 | Sync layer | **Snapcast** (GPL-3.0), unmodified, separate process. `snapclient` on each room, **ALSA** to a DAC, **Ethernet** where possible. |
 | AirPlay 2 ingress | **shairport-sync** + NQPTP, audio fed into a Snapcast source. |
@@ -48,7 +48,7 @@ Some reviewers noted the new app felt sleeker or more responsive for large syste
 2. **Do not ship a redesign that removes working features.** Queue edit, local library search, add-a-speaker, sleep timer, alarms and precise volume belong in the first release. No forced, un-downgradeable cutover.
 3. **Volume is a primary control.** Immediate, precise, one-tap per room, plus a group master. Never hide numeric volume behind a gesture-only slider with no value.
 4. **Now-playing is persistent and obvious.** Artwork, title, artist, rooms in the group, transport and volume stay visible on every tab.
-5. **Grouping is a two-second task.** Drag one room onto another, or an equally obvious tap/checklist. Ungroup is just as easy.
+5. **Grouping is a two-second task.** The rooms panel is available from every screen. Drag a room onto another, or use Play here too, checkboxes or presets. Ungroup is just as easy.
 6. **Accessibility is a launch requirement.** VoiceOver, TalkBack, Dynamic Type, captions, keyboard and large hit targets are tested before release.
 7. **Local libraries are first-class.** Browse and search of a NAS or server library must work as well as a streamer catalogue.
 8. **Minimal, not empty.** A calm, modern layout. Power features (EQ, sleep timer, queue edit) are findable, not deleted in the name of simplicity.
@@ -91,9 +91,9 @@ Settings and speaker setup live behind a single gear on Home, and in first-run o
 
 **Home.** One large tile per room: name, playing or idle, a short track line if active, and volume on the tile. Grouped tiles share a visual bind (outline or a joined block). Tapping a tile selects that room and expands now-playing for its group. A **group master volume** appears whenever two or more rooms are bound.
 
-**Grouping.** Primary gesture: drag one room tile onto another to group; drag out or tap Ungroup to split. On phones, a long-press also opens a simple checklist (“Play also in…”). Pinch-to-group is a welcome extra on tablets, not the only path. Offer undo for a few seconds after a group change.
+**Grouping.** The rooms panel (§2.7) is the always-reachable control for this. On Home, drag one room tile onto another to group, or use Play here too, checkboxes and presets in the panel. Ungroup is just as easy. Offer undo for a few seconds after a group change. Pinch-to-group is a welcome extra on tablets, not the only path.
 
-**Persistent now-playing.** Mini bar on every screen: artwork, title, artist, room or group name, play/pause, compact volume. Tap the bar for a full sheet: large art, scrubber, **editable queue**, lyrics if present, sleep timer, and the rooms in this group with per-room volumes plus master. Lock-screen and OS media controls show the same title and transport.
+**Persistent now-playing.** Mini bar on every screen: artwork, title, artist, play/pause, compact volume, plus a dedicated **room or group chip**. Tapping the artwork or title opens the full now-playing sheet (large art, scrubber, **editable queue**, lyrics, sleep timer). Tapping the room chip, or swiping the bar upward, opens the rooms and grouping panel (§2.7) — it does not leave the current screen. Lock-screen and OS media controls show the same title and transport.
 
 **Onboarding / add speaker**
 
@@ -155,13 +155,133 @@ Information architecture:
 flowchart LR
   Home[Home: rooms] --> Group[Drag to group]
   Home --> Tile[Per-room volume]
-  Home --> Bar[Persistent now-playing]
-  Bar --> Sheet[Full now playing]
-  Sheet --> Queue[Editable queue]
-  Sheet --> Rooms[Group rooms and master volume]
+  Home --> Bar[Mini-player and room chip]
+  Bar --> NP[Full now playing]
+  Bar --> Panel[Rooms panel half or full]
+  NP --> Queue[Editable queue]
+  Panel --> Switch[Switch active room]
+  Panel --> Join[Play here too / group]
   Browse[Browse] --> Bar
   Search[Search] --> Bar
 ```
+
+### 2.7 Rooms and grouping panel — always reachable
+
+A specific complaint about Sonos is that **changing players and grouping is terrible**: those controls are buried, inconsistent, or require leaving the screen you are on. freesounder should put room selection and grouping in a panel that is reachable from Home, Browse, Search, Now Playing and Settings, without losing your place.
+
+**Recommended mobile pattern:** a hybrid. A persistent mini-player with a room or group chip expands into a **bottom sheet with three detents** (collapsed, half, full). On tablets and landscape, and on desktop web, the same list becomes a persistent trailing side rail. Do not use a phone side drawer as the primary pattern, and do not make Rooms a place you have to navigate to in order to switch.
+
+#### Why this pattern, and not the alternatives
+
+On a phone, the lower third of the screen is where the thumb already rests. Media apps (Apple Music, Spotify, YouTube Music, Material 3 sheets) already teach “swipe up the mini-player.” A bottom sheet with detents keeps Browse or Search visible behind a scrim, so switching Office while looking at an album does not reset navigation. iOS sheet detents and Android Material 3 modal bottom sheets are the platform-native containers for this.
+
+A leading side drawer is a poor primary control on a phone: the handle sits in a hard-to-reach corner, it fights the back affordance, and it is not how people expect to change speakers. A rooms-only tab repeats the Sonos problem — you leave Search to change rooms. A fully persistent list that steals a third of a phone screen is too heavy. The hybrid keeps the list one gesture away, and uses the extra width of a tablet or desktop for an always-on rail instead.
+
+#### The three detents on a phone
+
+**Collapsed** (always visible, sitting above the tab bar): mini-player (artwork, title, artist, play/pause, compact volume) plus a room chip labelled with the active room or “Kitchen + 2”, a grab handle, and a group cue when rooms are bound. Tap artwork or title for Now Playing. Tap the chip, swipe up, or swipe left/right on the bar to work with rooms.
+
+```
++--------------------------------------+
+|  Browse: albums                      |
+|  ... current screen stays here ...   |
++--------------------------------------+
+|  = handle                            |
+|  [art] Night Moves        [Kitchen+] |  <- room chip
+|        Bob Seger     35%       ||    |
++--------------------------------------+
+|  Home     Browse     Search     You  |
++--------------------------------------+
+```
+
+**Half sheet** (about half the screen): the room list. The active room is clearly selected. Each row has name, playing or idle, a short track line, a Play here too control, and an optional checkbox. Tapping the row name switches the active room and can auto-collapse the sheet. Grouped rows share artwork, a common outline and a text label (colour is never the only cue). A status pill shows Synced, Syncing, or Can’t reach Kitchen.
+
+```
++--------------------------------------+
+|  Browse still dimmed behind          |
++--------------------------------------+
+|  = Rooms                    [Edit]   |
+|  Now controlling Kitchen + 2         |
+|                                      |
+|  [*] Kitchen     Night Moves    40%  |
+|      Playing here                    |
+|  [*] Living      Night Moves    25%  |
+|      Play here too          [on]     |
+|  [ ] Office      idle                |
+|      Play here too          [  ]     |
+|                                      |
+|  Presets: Evening   House   Upstairs |
++--------------------------------------+
+```
+
+**Full sheet:** group master volume, per-room sliders with numeric values, Ungroup, Save as preset, and room health. This is also where a user fine-balances a party without opening Home.
+
+```
++--------------------------------------+
+|  = Rooms                             |
+|  Group master                    35% |
+|  =================================   |
+|  Kitchen                         40% |
+|  Living                          25% |
+|  [ Ungroup all ]  [ Save preset ]    |
+|  Evening · House · Upstairs          |
+|  Kitchen + Living    Synced          |
+|  Office              idle, reachable |
++--------------------------------------+
+```
+
+#### Fast switching, without leaving the screen
+
+- Tap the room chip to open the half sheet; tap another room to make it the active control target. The album, search results or settings page stay put. The chip label updates immediately.
+- Swipe left or right on the collapsed mini-player to cycle rooms or existing groups, with a light haptic. A short toast or chip animation confirms the new target.
+- Long-press the chip for a shortcut list: recent rooms and group presets, so a two-room household can switch in one hold.
+- On Home, tapping a room tile still selects that room; it is the same store, not a second notion of “current player.”
+
+#### Intuitive grouping
+
+Offer more than one way in, and keep them consistent. **Checkboxes** and **Play here too** are the primary phone methods, because they are accurate one-handed and accessible. **Drag** is excellent on tablets and the web, and remains available on Home tiles and in the sheet.
+
+- **Play here too:** one tap on a room row joins it to the current group and starts the same queue; tap again to leave. This is the fastest “I walked into the kitchen” action.
+- **Multi-select:** Edit or a checkbox on each row, then the selected rooms become the group. Good for setting three rooms at once.
+- **Drag** a room row onto another (or a Home tile onto another) to group; drag out to leave. Show a drop target and a short haptic on success.
+- **Group presets or scenes** (Evening, House, Upstairs) pin at the top of the half sheet. Tapping a preset applies membership only; it does not have to change the track unless the user has saved it that way later.
+- After every group change, an **undo snackbar** stays up for about eight seconds (“Living joined Kitchen + Living” / Undo).
+- **Visual feedback:** grouped rows share now-playing artwork, a linked outline and a written group name. A sync pill tells the truth if a room cannot be reached. **Group master** volume sits above per-room sliders in the full sheet; moving the master scales members, a member slider then diverges on purpose.
+
+#### Consistent access from every screen
+
+In the Flutter app the mini-player and rooms sheet are a **shell overlay**, not a page in the navigation stack. Tabs and pushed routes (album, search, settings, the full Now Playing sheet) render underneath. Opening the rooms panel does not dispose the route you were on. Now Playing can still open the same rooms sheet from its own chip — there is one panel, not a second copy with different rules.
+
+All screens read **one rooms-and-playback store**. The store is the source of truth for the active room, group membership, volumes, now-playing metadata and sync health. It subscribes to the control API WebSocket so a second phone, a hardware button or a Home Assistant automation updates the chip and list in real time.
+
+#### Web, tablet and keyboard
+
+From a medium breakpoint upward (tablet landscape and desktop web, roughly 900 px and above), use a **persistent trailing rooms rail** — right-hand in left-to-right layout — instead of a sheet. The rail shows the same rows, Play here too, presets, and a compact group master. Narrow web widths collapse to the phone bottom sheet so a phone-sized browser window does not grow a cramped sidebar. Drag and drop is a first-class grouping method on the rail and on the Home grid.
+
+Keyboard shortcuts: `R` opens or focuses Rooms, `1`–`9` select a room, `[` and `]` cycle, `G` toggles Play here too on the focused room, `Shift+G` ungroups, plus the existing space / arrows for play and volume. A shortcuts sheet lists these.
+
+#### Key interaction flows
+
+1. **Switch room while browsing an album.** You are on an album in Browse. Tap the Kitchen chip (or swipe up). The half sheet lists rooms; Browse stays dimmed behind. Tap Office. The chip reads Office, the sheet collapses, the album is still on screen. Play now starts in Office, not Kitchen.
+2. **Play this in the kitchen too.** Living is playing. Walk in with the phone, swipe up, tap Play here too on Kitchen. Kitchen joins, both rows show the same art, a snackbar offers Undo. You never left whatever screen you had open.
+3. **Build a house group, then undo.** Open the half sheet, turn on Edit, check Kitchen, Living and Office, done. The chip reads Kitchen + 2. A snackbar offers Undo for eight seconds. Full detent is available if you want to balance volumes.
+4. **Balance volume in a group.** Swipe the sheet to full. Move Group master to set the house level, then trim Living down. Numeric values stay visible. The collapsed chip can show the master value while a group is active.
+
+#### Accessibility and haptics
+
+- Do not require drag to group. VoiceOver and TalkBack **custom actions** on each room row: Switch to this room, Play here too, Leave group, Adjust volume. The row name and value are spoken (“Kitchen, 40 percent, grouped with Living, synced”).
+- Hit targets at least 44 pt on iOS and 48 dp on Android, including the room chip and Play here too. The chip is a real control, not only a label.
+- Light haptics on room switch, successful group, and volume tick marks, honouring system haptic and reduce-motion settings. Announce group changes so a screen-reader user hears “Living joined Kitchen and Living.”
+- Focus order in the sheet is handle, group name, presets, then rooms. Escape or a downward swipe closes to collapsed without changing the selection.
+
+#### Architecture and stack implications
+
+The panel is a reason to treat the Flutter client as a real-time control surface, not a page that refetches on navigate. Put a rooms-and-playback store in `packages/api_client` (or a sibling package) and keep the sheet widgets in `packages/design` so web and mobile share them.
+
+- **Control API:** subscribe to WebSocket events for player added or removed, group membership, per-room and group volume, now-playing, and reachability. Commands needed: set active control target, join or leave a group, replace group membership, set member volume, set group master volume, list and apply presets. If Music Assistant’s API is awkward for “active target” versus “play here too”, add a thin freesounder facade rather than bending the UI.
+- **Optimistic UI:** the chip, selection and group outline update on tap, before the server replies. If the command fails or a later event disagrees, revert and show a short error. Volume sliders move immediately; send updates while dragging (about 30–50 ms debounce) and do not wait for a round trip to paint the thumb.
+- **Design targets, not measured backend figures:** switching the active room should feel instant (aim to paint the new chip within about 100 ms). Volume should feel continuous. Group join may take longer on the audio path because Snapcast’s default end-to-end buffer is 1000 ms — the UI must not pretend the new room is already audible if it is still buffering; show Syncing until the server reports the room is in lock.
+- Two phones can change the same group. Last accepted server state wins; both clients follow the event stream. An offline room stays in the list, marked unreachable, and cannot be the silent victim of a group change.
 
 ---
 
@@ -379,7 +499,7 @@ freesounder/
 
 Status as of 10 November 2026, Australia/Melbourne: **design only**; no product code in the repo yet. This is a plan, not a live tracker.
 
-1. **MVP — two rooms, local library, groups, volume, web client.** snapserver + two ALSA snapclients; Music Assistant or a minimal queue; Flutter web on the design system; rooms-first Home, persistent now-playing, drag or checklist grouping, per-room and master volume, editable queue, local search.
+1. **MVP — two rooms, local library, groups, volume, web client.** snapserver + two ALSA snapclients; Music Assistant or a minimal queue; Flutter web; rooms-first Home; global mini-player plus rooms bottom sheet (chip, Play here too, checkboxes, undo); per-room and master volume; editable queue; local search.
 2. **Phase 2 — native iOS and Android** from the same Flutter app. Accessibility audit, onboarding and add-speaker flow, lock-screen controls.
 3. **Phase 3 — ingress and services.** shairport-sync into Snapcast; Spotify path per the ToS decision; radio; document Apple Music and Tidal limits honestly.
 4. **Phase 4 — polish and extras.** Sleep timer and alarms without regressions; optional Sendspin phone playback; ESP32/Esparagus experiments; optional Home Assistant; store listings only when features and accessibility are at parity.
