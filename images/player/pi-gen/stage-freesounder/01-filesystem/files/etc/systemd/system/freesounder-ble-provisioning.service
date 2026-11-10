@@ -1,0 +1,17 @@
+[Unit]
+Description=FreeSounder Improv Wi-Fi BLE provisioning
+Documentation=https://www.improv-wifi.com/ble/
+After=bluetooth.service NetworkManager.service
+Wants=bluetooth.service NetworkManager.service
+# Independent of snapclient / audio — advertising must not disturb playback.
+
+[Service]
+Type=simple
+ExecStart=/opt/freesounder/control-api/.venv/bin/freesounder-ble-provisioning
+Restart=on-failure
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+# Keep logs at the process default (INFO). Debug can leak secrets from lower layers.
+
+[Install]
+WantedBy=multi-user.target

@@ -31,3 +31,15 @@ rm -rf "${AGENT_DEST}"
 mkdir -p "${AGENT_DEST}"
 cp -a "${AGENT_SRC}/pyproject.toml" "${AGENT_SRC}/README.md" "${AGENT_DEST}/"
 cp -a "${AGENT_SRC}/src" "${AGENT_DEST}/"
+
+# BLE Improv provisioning service (installed into the same venv in the chroot step).
+BLE_SRC="${FREESOUNDER_ROOT}/services/ble-provisioning"
+if [ ! -d "$BLE_SRC/src" ]; then
+	echo "ble-provisioning sources not found at $BLE_SRC" >&2
+	exit 1
+fi
+BLE_DEST="${ROOTFS_DIR}/opt/freesounder/ble-provisioning"
+rm -rf "${BLE_DEST}"
+mkdir -p "${BLE_DEST}"
+cp -a "${BLE_SRC}/pyproject.toml" "${BLE_SRC}/README.md" "${BLE_DEST}/"
+cp -a "${BLE_SRC}/src" "${BLE_DEST}/"

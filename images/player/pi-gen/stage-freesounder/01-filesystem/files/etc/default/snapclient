@@ -1,0 +1,5 @@
+# Default snapclient options baked into the image.
+# apply-runtime-config rewrites this on boot to add --host, and always keeps
+# --soundcard freesounder so ALSA tone controls are used from first start.
+START_SNAPCLIENT=true
+SNAPCLIENT_OPTS="--soundcard freesounder"

@@ -13,3 +13,6 @@ sudo
 systemd-timesyncd
 caps
 libasound2-plugins
+bluez
+network-manager
+rfkill

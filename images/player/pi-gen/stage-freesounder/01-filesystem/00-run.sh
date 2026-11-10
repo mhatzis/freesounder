@@ -8,6 +8,9 @@ install -d "${ROOTFS_DIR}/etc/update-motd.d"
 install -d "${ROOTFS_DIR}/var/lib/freesounder/ma-data"
 install -d "${ROOTFS_DIR}/opt/freesounder/control-api"
 install -d "${ROOTFS_DIR}/opt/freesounder/player-agent"
+install -d "${ROOTFS_DIR}/opt/freesounder/ble-provisioning"
+install -d "${ROOTFS_DIR}/etc/default"
+install -d "${ROOTFS_DIR}/etc/NetworkManager/system-connections"
 install -d "${ROOTFS_DIR}/etc/alsa/conf.d"
 install -d "${ROOTFS_DIR}/var/lib/freesounder"
 
@@ -25,6 +28,8 @@ install -m 0644 files/etc/systemd/system/freesounder-role.service "${ROOTFS_DIR}
 install -m 0644 files/etc/systemd/system/freesounder-music-assistant.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-music-assistant.service"
 install -m 0644 files/etc/systemd/system/freesounder-control-api.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-control-api.service"
 install -m 0644 files/etc/systemd/system/freesounder-player-agent.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-player-agent.service"
+install -m 0644 files/etc/systemd/system/freesounder-ble-provisioning.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-ble-provisioning.service"
+install -m 0644 files/etc/default/snapclient "${ROOTFS_DIR}/etc/default/snapclient"
 install -m 0644 files/etc/alsa/conf.d/99-freesounder.conf "${ROOTFS_DIR}/etc/alsa/conf.d/99-freesounder.conf"
 install -m 0755 files/etc/update-motd.d/20-freesounder "${ROOTFS_DIR}/etc/update-motd.d/20-freesounder"
 

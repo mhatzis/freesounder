@@ -26,13 +26,20 @@ that first built it. Treat early builds as alpha.
      login. SSH is enabled, but you cannot log in until a user exists.
    - Set the hostname if you do not want the default `freesounder` (each room
      should have a unique name, for example `kitchen` or `lounge`).
-   - Configure Wi-Fi (SSID, password, country) if the board will not be on
-     Ethernet. The household host should prefer Ethernet.
+   - You do **not** need to set Wi-Fi in Imager. An unprovisioned board with no
+     Ethernet and no working Wi-Fi advertises over Bluetooth as
+     `FreeSounder-XXXX`. The FreeSounder app walks you through joining a
+     network (Improv Wi-Fi). Ethernet still works if you plug a cable in.
+   - Optionally set Wi-Fi here anyway if you prefer, and set a wireless
+     country. The household host should prefer Ethernet when you have it.
    - You can also set locale and timezone here (the image default timezone is UTC).
 6. Write the image, eject the media, and boot the Pi.
 
 First boot on a 4 GB host needs **internet access** so Docker can pull
 `ghcr.io/music-assistant/server`. Rooms only need the LAN to reach the host.
+If the board has no network yet, use **Settings → Add a player** in the app
+and choose the nearby Bluetooth player, then join Wi-Fi; adoption continues
+once it appears on the network.
 
 After login:
 
@@ -63,8 +70,12 @@ plug in powered speakers (DAC+) or passives (DigiAMP+; check PSU needs).
   listening on port 8080. Only the **host** advertises `_freesounder._tcp`.
 - player agent (`services/player-agent`) on port 8090, advertised on every
   board as `_freesounder-player._tcp` (state `unconfigured` until adopted)
+- Improv Wi-Fi BLE provisioning (`services/ble-provisioning`) and `bluetooth.service`.
+  Advertising runs only while the board has no usable network. This is a
+  peripheral for setup only; it does not register Bluetooth audio.
 - ALSA LADSPA tone controls (`caps` Eq10X2) on a PCM named `freesounder`;
-  `snapclient` outputs through that device (bass, treble, balance, loudness)
+  `snapclient` outputs through that device (`--soundcard freesounder` is baked
+  into `/etc/default/snapclient`)
 - `freesounder-setup` for role, host, room name, DAC overlay, and optional MA token
 
 No passwords, API tokens, or wireless secrets are baked into the image.

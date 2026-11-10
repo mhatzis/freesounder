@@ -128,6 +128,16 @@ if command -v uv >/dev/null 2>&1 && ! compgen -G "$WHEEL_DIR/hatchling-*.whl" > 
 		|| echo "hatchling wheel download failed; chroot pip will try PyPI."
 fi
 
+# dbus-next is a pure-Python dep of ble-provisioning; fetch it when the wheel
+# cache already exists from a previous control-api download.
+if command -v uv >/dev/null 2>&1 && ! compgen -G "$WHEEL_DIR/dbus_next-*.whl" > /dev/null; then
+	mkdir -p "$WHEEL_DIR"
+	echo "Downloading dbus-next wheel for ble-provisioning..."
+	uv run --directory "$REPO_ROOT/services/ble-provisioning" --with pip python -m pip download \
+		dbus-next --python-version 313 --only-binary=:all: -d "$WHEEL_DIR" \
+		|| echo "dbus-next wheel download failed; chroot pip will try PyPI."
+fi
+
 echo "Starting pi-gen (this takes a good while)..."
 
 cd "$PI_GEN_DIR"

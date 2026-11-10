@@ -8,6 +8,10 @@ systemctl enable freesounder-control-api.service
 systemctl enable freesounder-player-agent.service
 # snapclient ships its own unit; keep it enabled.
 systemctl enable snapclient.service || true
+# Onboard Bluetooth for Improv Wi-Fi setup. No A2DP / Bluetooth audio is registered.
+systemctl enable bluetooth.service || true
+systemctl enable NetworkManager.service || true
+systemctl enable freesounder-ble-provisioning.service
 
 # The first user is renamed on first boot but keeps supplementary groups.
 if getent passwd pi >/dev/null; then
