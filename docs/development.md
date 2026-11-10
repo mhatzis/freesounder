@@ -1,0 +1,148 @@
+# freesounder — development, beta distribution, and next steps
+
+Facts below were checked against the named official pages on **10 November 2026, Australia/Melbourne**. Limits and fees change; re-check the source before paying or inviting testers. This note assumes the **hybrid v1 stack already decided** on that date (see [architecture.md](architecture.md) §1 and §7): we own the Flutter apps, the control API facade, setup/onboarding, and the player image, and we reuse Music Assistant, Snapcast and ingress daemons as unmodified separate processes.
+
+## Recommendation
+
+**Stay on Flutter.** Do not switch the client to React Native to get Expo EAS Update. That would throw away the shared Flutter design system already decided for iOS, Android and web.
+
+For betas:
+
+- **iOS:** [TestFlight](https://developer.apple.com/help/app-store-connect/test-a-beta-version/testflight-overview/) once an Apple Developer Program membership is in place.
+- **Android:** [Play Console internal testing](https://support.google.com/googleplay/android-developer/answer/9845334) for the team (fast, up to 100 testers). Use a **closed test** later if a *personal* Play developer account created after 13 November 2023 needs production access.
+- **Optional, no store:** [Firebase App Distribution](https://firebase.google.com/docs/app-distribution) for both platforms, useful before store accounts exist or for a build that should not go through TestFlight / Play review yet.
+- **F-Droid later**, once the Android app is a FLOSS build with no proprietary SDKs (see below). Do not take a Firebase dependency if an F-Droid flavour is a goal.
+
+OTA “push a Dart fix without a store review” is **not built into Flutter**. Shorebird is an optional paid hosted service if we ever want that; it is not required for MVP.
+
+## iOS — TestFlight
+
+TestFlight is included with an [Apple Developer Program](https://developer.apple.com/programs/) membership. Apple’s enrollment help states the annual fee is **99 USD**, “in local currency where available,” and that “prices may vary by region and are listed in local currency during the enrollment process” ([Program enrollment](https://developer.apple.com/help/account/membership/program-enrollment/)). On the **Australian App Store** listing for the Apple Developer app, the in-app purchase “Apple Developer Program” was shown as **A$144.99** when fetched on 10 November 2026, Australia/Melbourne ([apps.apple.com/au/app/apple-developer/id640199958](https://apps.apple.com/au/app/apple-developer/id640199958)). App Store prices typically include GST; the web enrollment price can differ from the in-app subscription price, so treat A$144.99 as the App Store IAP figure, not a guarantee of the web checkout total.
+
+You can install development builds on your own devices with Xcode without enrolling; you need the Program to use TestFlight and to ship on the App Store.
+
+Limits and rules from Apple’s TestFlight help (same date):
+
+| Fact | Official figure | Source |
+|---|---|---|
+| Internal testers | Up to **100** App Store Connect users who have access to your content | [Add internal testers](https://developer.apple.com/help/app-store-connect/test-a-beta-version/add-internal-testers), [TestFlight overview](https://developer.apple.com/help/app-store-connect/test-a-beta-version/testflight-overview/) |
+| External testers | Up to **10,000** per app (people who are not App Store Connect users) | [Invite external testers](https://developer.apple.com/help/app-store-connect/test-a-beta-version/invite-external-testers/), TestFlight overview |
+| Build expiry | Testers can use a build for up to **90 days** from upload; it then becomes unavailable unless you upload a new one | TestFlight overview (“You can test a build for up to 90 days”; “Your build becomes unavailable for testers after 90 days”) |
+| Beta App Review | Required for **external** testing. The **first** build of a version submitted to an external group goes to App Review; later builds for the same version “might not” need a full review. You can submit up to **six** builds for TestFlight App Review in a 24-hour period. An external group also requires that an internal group already exists. | Invite external testers; TestFlight overview |
+| Public link | External groups can invite testers by email and/or a **public invitation link**. The link can be open to anyone or filtered by device/OS, with an optional cap of **1–10,000** testers on that link. Anyone can reshare the link; testers who join via the public link appear as anonymous in App Store Connect. | Invite external testers |
+| Internal-only builds | Builds uploaded as “TestFlight Internal Only” cannot go to external testers or to customers | Invite external testers |
+
+Internal testers are the right first step (no external review). Use a public link only when we actually want a wide, sharable beta.
+
+## Android — Play Console
+
+There is a **one-time US$25 registration fee** for a Play Console developer account (not an annual fee) ([Get started with Play Console](https://support.google.com/googleplay/android-developer/answer/6112435)).
+
+Tracks, from Google’s help pages:
+
+| Track | What it is | Notes | Source |
+|---|---|---|---|
+| **Internal testing** | Up to **100** chosen testers per app | Builds are “normally available to testers **within seconds**” of being added (testing-requirements page) or “**within minutes**” (set-up page). You can start an internal test **before** finishing app setup. It does **not** count toward the production-access rule below. | [Set up an open, closed, or internal test](https://support.google.com/googleplay/android-developer/answer/9845334); [App testing requirements for new personal developer accounts](https://support.google.com/googleplay/android-developer/answer/14151465) |
+| **Closed testing** | A testers list you control (email / Google Groups / opt-in link) | Required before a new personal account can apply for production. | Same pages |
+| **Open testing** | Anyone can join from the Play listing | Becomes available **after** you gain production access (for accounts under the 2023+ personal-account rule). | Testing requirements page |
+
+**2023+ rule for new personal accounts.** Personal developer accounts **created after 13 November 2023** must run a **closed test** with a **minimum of 12 testers** who have been **opted in continuously for at least 14 days** before they can apply for production (and for pre-registration). Testers who opt out early do not count; if they opt back in, the 14 days start again. Internal testing does not satisfy this. Open testing is not a substitute. After the criteria are met you apply from the Play Console dashboard and answer questions about the test, the app, and production readiness. Google says review “usually takes seven days or less, but can occasionally take longer.” ([App testing requirements for new personal developer accounts](https://support.google.com/googleplay/android-developer/answer/14151465).)
+
+If the Play account is an **organization** account, or a personal account created on or before 13 November 2023, this particular 12-tester / 14-day gate may not apply — confirm the account type in Play Console rather than assuming. For a brand-new personal account, plan a closed-test cohort well before any public launch.
+
+## Firebase App Distribution (optional, no store)
+
+[Firebase App Distribution](https://firebase.google.com/docs/app-distribution) distributes iOS and Android pre-release builds from one console (or the CLI, fastlane, Gradle, or the REST API), with email invitations and tester groups. Official limits: **500 testers per Firebase project**, **200 testers per group**, with a no-cost increase request possible ([Add and remove testers](https://firebase.google.com/docs/app-distribution/add-remove-testers), last updated 5 November 2026 UTC). The SDK is optional for distribution itself (“no SDK to install” is listed as a capability).
+
+This is useful for early CI artifacts and testers who are not yet on TestFlight or Play internal testing. Caveats: iOS still needs valid signing (ad hoc / development profiles typically require each tester device’s UDID — see [Register additional iOS devices](https://firebase.google.com/docs/app-distribution/register-additional-devices)); Android sideload / Play internal app sharing paths have their own install-friction. Firebase / Play Services / Crashlytics SDKs are **not acceptable in an F-Droid main-repo build** (next section), so keep distribution tooling in CI, not as a required app dependency, if F-Droid remains a goal.
+
+## F-Droid (later)
+
+F-Droid is a good eventual channel for a **free, open-source** Android app, but it is a packaging and policy process, not a quick beta track.
+
+[Inclusion Policy](https://f-droid.org/docs/Inclusion_Policy/): apps in the main repository must be FLOSS; “The implementation of proprietary tracking or advertising libraries and analytics tools such as Google Play Services and Firebase and Crashlytics and proprietary ad/tracking SDKs are **strictly forbidden**.” The [Submitting to F-Droid Quick Start Guide](https://f-droid.org/docs/Submitting_to_F-Droid_Quick_Start_Guide/) repeats that Firebase and GMS are notable non-FOSS libraries that are not accepted, unless you ship a flavour without them. F-Droid builds from source with a FLOSS toolchain.
+
+[Reproducible Builds](https://f-droid.org/docs/Reproducible_Builds/) are **not required**, but F-Droid “strongly encourages” them for new apps (quick-start guide): they let F-Droid verify that its rebuild matches the developer’s APK and can keep the developer’s signing key. Switching to reproducible, developer-signed packages later is painful because Android cannot update an app with a different signing key without a reinstall. If we want F-Droid, design for a clean FOSS product flavour and think about reproducibility **before** the first widely installed Android signing key is frozen.
+
+## CI
+
+Two reasonable paths, both compatible with Flutter:
+
+- **GitHub Actions + [fastlane](https://fastlane.tools/)** in this public GitHub repo: build, sign (using secrets or a cloud signing service), and upload to TestFlight, Play internal testing, and optionally Firebase App Distribution. This keeps CI next to the code and avoids a second vendor for the default pipeline.
+- **[Codemagic](https://codemagic.io/)** (or similar Flutter-focused CI) if we want a hosted workflow that already knows how to talk to App Store Connect and Play Console, at the cost of another account and billing relationship.
+
+Stand up Actions first when the developer accounts exist. Do not put provisioning passwords or keystores in the repo.
+
+## OTA code updates
+
+Flutter has **no Expo-style over-the-air update** in the framework. A new Dart UI or bugfix normally ships as a new store (or TestFlight / Play testing) build.
+
+**[Shorebird](https://shorebird.dev/)** is a hosted Code Push service for Flutter (a Flutter-engine add-on, not a replacement of the Dart UI toolkit). Official site, fetched 10 November 2026: “Free for 5,000 patch installs a month”; patches can update Dart code and take effect on the next launch; native code, permissions and assets still need a store build; Shorebird states it has **no self-hosted** offering. Billing is by **successful patch installs** ([Billing](https://docs.shorebird.dev/account/billing/)). The same billing document uses a **Pro** plan example of **US$20 a month**, including **50,000** patch installs. Self-service **Business** and negotiated **Enterprise** plans also exist ([Plans & Upgrading](https://docs.shorebird.dev/account/plans/)); this pass did not record a current official dollar price for Business from a live pricing table, so none is quoted here. Shorebird is a commercial hosted product; evaluate licence, ToS and store-compliance claims if we ever adopt it. It is **optional**, not part of MVP.
+
+**Expo is React Native-only.** [EAS Update](https://docs.expo.dev/eas-update/introduction/) would give a first-party OTA story, but only if we abandoned Flutter. The cost is the already-decided shared Flutter design system, plus rewriting the rooms panel and clients. That trade is not worth it for v1.
+
+## Control API language (decision for the facade)
+
+**Recommend Python** for `services/control-api`.
+
+Music Assistant is itself Python, and there is an official client, [`music-assistant-client`](https://github.com/music-assistant/client) ([PyPI](https://pypi.org/project/music-assistant-client/)), that speaks the server WebSocket API. A thin facade that owns freesounder’s room/group contract can sit on that client (or the same protocol) without re-implementing auth, events and player commands. The setup service can share Python packaging and the same Docker base if useful.
+
+TypeScript and Go remain good *alternatives*: TypeScript if we want one JSON-schema toolchain aimed at the Flutter client; Go if we want a single static binary. For v1, the integration risk is the Music Assistant protocol, not process footprint, so Python is the lower-risk default. Expose an OpenAPI (or similar) contract so the Flutter `api_client` package does not depend on Python.
+
+## Local development
+
+A `docker-compose` (or Compose) file under the repo should run, on one machine:
+
+- **Music Assistant** (official container, host or macvlan-style networking as in [MA installation](https://www.music-assistant.io/installation/))
+- **snapserver**
+- one or two **snapclient** instances (to ALSA, a dummy/file sink, or a desktop output) so grouping can be exercised without two Pis
+
+The control API and Flutter app run on the host (or in additional services) and point at that stack. Document a single `cp .env.example .env && docker compose up` path.
+
+## Next steps
+
+1. **Monorepo layout scaffold** (Apache-2.0 first-party code only; do not vendor GPL sources):
+
+   ```
+   freesounder/
+     LICENSE, NOTICE, README.md
+     docs/                     architecture.md, development.md, …
+     apps/flutter/             iOS, Android, web client
+     packages/design/          tokens, room tile, now-playing, rooms panel
+     packages/api_client/      talks only to the facade
+     services/control-api/     Python facade over Music Assistant
+     services/setup/           mDNS discovery, room naming, network onboarding
+     images/player/            Pi OS image: snapclient + ALSA/DAC
+     deploy/compose/           MA + snapserver + snapclient for local dev
+   ```
+
+2. **Flutter app skeleton** with the rooms-panel shell already specified in architecture.md §2.7: persistent mini-player + room chip, bottom-sheet detents on a phone width, trailing rail from ~900 px, one rooms-and-playback store, optimistic UI stubs.
+
+3. **Control API facade** in Python over Music Assistant (see above). First slice: list rooms/players, set the active control target, join/leave a group, member and group volume, now-playing, and a WebSocket event stream the app can subscribe to.
+
+4. **Local dev via docker-compose:** Music Assistant + snapserver + snapclient, plus a README that brings the facade and the Flutter app up against that stack.
+
+5. **CI:** GitHub Actions workflow that analyses and tests the Dart app and the Python facade on every pull request; add fastlane (or Codemagic) signed TestFlight / Play internal / optional Firebase uploads once the developer accounts and signing secrets exist.
+
+Do not start a from-scratch sync layer, a custom streaming-provider stack, or a React Native rewrite.
+
+## Sources
+
+- [Apple Developer Program](https://developer.apple.com/programs/)
+- [Apple Program enrollment (fees)](https://developer.apple.com/help/account/membership/program-enrollment/)
+- [Australian App Store: Apple Developer app](https://apps.apple.com/au/app/apple-developer/id640199958) (IAP “Apple Developer Program” A$144.99 when fetched 10 November 2026, Australia/Melbourne)
+- [TestFlight overview](https://developer.apple.com/help/app-store-connect/test-a-beta-version/testflight-overview/)
+- [Add internal testers](https://developer.apple.com/help/app-store-connect/test-a-beta-version/add-internal-testers)
+- [Invite external testers](https://developer.apple.com/help/app-store-connect/test-a-beta-version/invite-external-testers/)
+- [Get started with Play Console (US$25 one-time fee)](https://support.google.com/googleplay/android-developer/answer/6112435)
+- [Set up an open, closed, or internal test](https://support.google.com/googleplay/android-developer/answer/9845334)
+- [App testing requirements for new personal developer accounts](https://support.google.com/googleplay/android-developer/answer/14151465)
+- [Firebase App Distribution](https://firebase.google.com/docs/app-distribution)
+- [Firebase App Distribution tester limits](https://firebase.google.com/docs/app-distribution/add-remove-testers)
+- [F-Droid Inclusion Policy](https://f-droid.org/docs/Inclusion_Policy/)
+- [Submitting to F-Droid Quick Start Guide](https://f-droid.org/docs/Submitting_to_F-Droid_Quick_Start_Guide/)
+- [F-Droid Reproducible Builds](https://f-droid.org/docs/Reproducible_Builds/)
+- [Shorebird](https://shorebird.dev/), [Shorebird billing](https://docs.shorebird.dev/account/billing/), [Shorebird plans](https://docs.shorebird.dev/account/plans/)
+- [music-assistant-client](https://github.com/music-assistant/client)
+- [Music Assistant installation](https://www.music-assistant.io/installation/)
+- [freesounder architecture](architecture.md)

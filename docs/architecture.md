@@ -17,14 +17,15 @@ freesounder should not clone the Sonos app. The product is a **cleaner, rooms-fi
 | Layer | Choice |
 |---|---|
 | Control apps (iOS, Android, web) | **Flutter**, one custom design system, including a **global rooms panel** (mini-player + room chip → bottom sheet on phones, right-hand rail on desktop). Do not ship Music Assistant, Iris, Snapweb, Volumio or Lyrion UIs as the product face. |
-| Server / library / streaming sources | **Music Assistant** (Apache-2.0), unmodified, separate process. Talk to its WebSocket API, with an optional thin freesounder facade later. |
+| Server / library / streaming sources | **Music Assistant** (Apache-2.0), unmodified, separate process. Talk to its WebSocket API through a thin freesounder facade that owns the room/group contract (**decided for v1** — see §7). |
 | Sync layer | **Snapcast** (GPL-3.0), unmodified, separate process. `snapclient` on each room, **ALSA** to a DAC, **Ethernet** where possible. |
 | AirPlay 2 ingress | **shairport-sync** + NQPTP, audio fed into a Snapcast source. |
 | Spotify | Music Assistant **Soloist** where it works, and/or a **Connect** sidecar (raspotify/librespot). Both have Terms-of-Service caveats. |
 | Discovery | mDNS / Avahi for server findability, AirPlay and Connect. Snapcast clients connect to snapserver on the LAN. |
 | Home Assistant | **Optional, never required.** Default is standalone Music Assistant in Docker. People who already run HA can add the official Music Assistant integration for automations, dashboards and Assist. |
+| What we build vs reuse | **Decided 10 November 2026 (Australia/Melbourne): hybrid, locked for v1.** Own the control API facade, Flutter apps, setup/onboarding and a snapclient player image. Reuse Snapcast, Music Assistant and ingress daemons as unmodified separate processes. See §7 and [development.md](development.md). |
 
-Avoid Bluetooth and PulseAudio/PipeWire hops on synced room players. Do not use PipeWire/ROC or Pulse RTP as the house clock. Do not build on Volumio as the core (multi-room is a Premium feature). Treat Lyrion + squeezelite + piCorePlayer as a mature *alternative* architecture, not the default. Home Assistant is an optional companion, not part of the required stack.
+Avoid Bluetooth and PulseAudio/PipeWire hops on synced room players. Do not use PipeWire/ROC or Pulse RTP as the house clock. Do not build on Volumio as the core (multi-room is a Premium feature). Treat Lyrion + squeezelite + piCorePlayer as a mature *alternative* architecture, not the default. Home Assistant is an optional companion, not part of the required stack. For hardware, prefer a cheap Ethernet Pi 4 1GB or a Wi-Fi Pi Zero 2 W room kit over a Pi 5 (see §6). For software, **v1 is locked (10 November 2026)** to that hybrid split: build only the apps, API facade, setup and player image; reuse the rest (see §7). Beta distribution and the next engineering steps are in [docs/development.md](development.md).
 
 ---
 
@@ -443,31 +444,129 @@ Music Assistant is designed to sit beside Home Assistant and is also a complete 
 
 ---
 
-## 6. Hardware bill of materials — one room
+## 6. Hardware — cheapest practical builds
 
-Approximate **AUD, GST inclusive**, from named Australian retailers fetched on **10 November 2026, Australia/Melbourne**. Shipping is not included. Speakers, RCA cables and an external amplifier are not included. Stock moves quickly; do not treat this as a live cart.
+Prices below are **AUD, GST inclusive**, from named Australian retailers, fetched on **10 November 2026, Australia/Melbourne**, unless noted. Shipping is not included. Stock moves quickly; do not treat this as a live cart. Speakers, RCA cables and passive-speaker wire are not in the totals unless a row says so. Official US dollar list prices are noted only as an international comparison — Australian street prices are higher once GST and distribution are included.
 
-| Item | AUD inc GST | Stock when fetched | Source |
+The goal is the **cheapest kit that still runs the recommended stack**: `snapclient` to an ALSA DAC (or a cheap USB DAC) in each room, Music Assistant on a server, **Ethernet preferred**. A Pi 5 + DAC2 Pro kit is kept only as a premium comparison (~A$343).
+
+### 6.1 Room-player boards
+
+| Board | AUD inc GST | Network | Notes | Source (10 Nov 2026) |
+|---|---:|---|---|---|
+| Raspberry Pi Zero 2 W | 34.99 (Little Bird, 24 in Sydney stock). Core Electronics lists 28.50 but **out of stock**; with pre-soldered headers 34.20 and a 60–90 day lead time. | **Wi-Fi only** (2.4 GHz). USB-Ethernet is possible but awkward: the Zero has one USB OTG port, so a dongle fights with a USB DAC, and a Gigabit USB adapter was 35.80 at Core Electronics — almost the price of the board. | Quad-core Cortex-A53 @ 1 GHz, 512 MB RAM. Plenty for `snapclient` decoding default **FLAC** (Snapcast’s own guidance is that FLAC is modest CPU and modest bandwidth; PCM is heavier on the network). Boards without headers need soldering for an I2S HAT. | [Little Bird](https://littlebirdcompany.myshopify.com/products/raspberry-pi-zero-2-w-1), [Core Zero 2 W](https://core-electronics.com.au/raspberry-pi-zero-2-w-wireless.html), [headers](https://core-electronics.com.au/raspberry-pi-zero-2-w-wireless-soldered-male-headers.html), [Simplecom USB NIC](https://core-electronics.com.au/simplecom-nu302-usb3-gigabit-ethernet-adapter.html) |
+| Raspberry Pi 3 Model A+ | 46.34 | Wi-Fi (no Ethernet jack) | 1 GB RAM, more headroom than a Zero, still no built-in Ethernet. | [Core Electronics](https://core-electronics.com.au/raspberry-pi/boards.html) (listed 10 Nov 2026; confirm stock on the product page before buying) |
+| Raspberry Pi 3 Model B+ | 64.79, in stock | Ethernet (USB 2.0, up to ~300 Mbps — enough for FLAC) plus Wi-Fi | Same 64.79-class price as a Pi 4 1GB, but slower CPU and slower Ethernet. Fine as a player, **not** a Music Assistant server (MA asks for a Pi 4 or newer). | [Core Electronics](https://core-electronics.com.au/raspberry-pi-3-model-b-plus.html) |
+| Raspberry Pi 4 Model B 1GB | 64.88, in stock, limit 1 per customer | **True Gigabit Ethernet** plus dual-band Wi-Fi | Best new-board value for a wired room player. 1.5 GHz Cortex-A72. **Do not use as the MA server** — MA requires a **minimum of 2 GB RAM**. | [Core Electronics](https://core-electronics.com.au/raspberry-pi-4-model-b-1gb.html) |
+| Raspberry Pi 4 Model B 2GB | 109.33, in stock, temporary 1-per-customer limit | Gigabit Ethernet | Comfortable player; meets MA’s 2 GB RAM minimum if you also want this box to be the server (tight if Home Assistant shares it; MA recommends 4 GB+ in that case). | [Core Electronics](https://core-electronics.com.au/raspberry-pi-4-model-b-2gb.html) |
+| Raspberry Pi 5 2GB / 4GB / 8GB | 125.52 (2GB, 30–45 day lead) / 178.42 (4GB, 25–35 day lead) / 283.85 (8GB, listed available) | Gigabit Ethernet | More than a snapclient needs. Use for a combined server + first room, not as the default player. | [Pi 5 boards](https://core-electronics.com.au/raspberry-pi/raspberry-pi-5-boards-kits-and-accessories/raspberry-pi-5-boards.html) |
+
+**Used Pis.** A used Pi 4 can undercut 64.88, but this pass did not record a firm eBay AU sold-price sample — check current listings rather than assuming a number. **Orange Pi, Radxa and Libre Computer** can be cheaper internationally; this pass did not find a clearly in-stock, cheaper, well-supported AU alternative with documented `snapclient` + I2S/ALSA support. Prefer Raspberry Pi for the official player image until someone in the project has verified a specific board.
+
+**CPU headroom.** Default Snapcast **FLAC** is the right codec for these boards: less bandwidth than PCM, easy to decode. Historical Snapcast discussion found FLAC more reliable than PCM or Vorbis on small ARM boards. Prefer ALSA to a local DAC; avoid Bluetooth and Pulse/PipeWire hops (see earlier Snapcast notes). Wired Ethernet is still the more predictable path for sync; Wi-Fi on a Zero 2 W can work in a quiet network but is the first thing to blame if you hear dropouts.
+
+### 6.2 DACs, amps and speakers
+
+**Use existing powered speakers or a stereo** wherever you can. A line-level DAC into a cupboard stereo or a pair of active monitors is the cheapest *good* sound, because you are not buying speakers or an amp.
+
+| DAC / amp | AUD inc GST | Volume / quality | Source (10 Nov 2026) |
 |---|---:|---|---|
-| Raspberry Pi 5 Model B 4GB (CE09785) | 178.42 | 25 to 35 day lead time | [Core Electronics](https://core-electronics.com.au/raspberry-pi-5-model-b-4gb.html) |
-| Alternative: Raspberry Pi 5 8GB (CE09786) | 283.85 | Listed as available, delivery from 12 Nov 2026 | [Pi 5 boards list](https://core-electronics.com.au/raspberry-pi/raspberry-pi-5-boards-kits-and-accessories/raspberry-pi-5-boards.html) |
-| Alternative: Raspberry Pi 5 2GB (CE09784) | 125.52 | 30 to 45 day lead time | Same list |
-| Official Raspberry Pi 27W USB-C PSU, white (CE09787) | 21.07 | In stock | [Core Electronics](https://core-electronics.com.au/raspberry-pi-5-power-supply-usb-c-pd-27w-white.html) |
-| Official Raspberry Pi 5 case, red/white (CE09789) | 16.90 | In stock. Integrated fan; note compatibility with the official active cooler | [Core Electronics](https://core-electronics.com.au/raspberry-pi-5-case-red-white-official.html) |
-| Official Raspberry Pi 32GB A2 microSD (CE09939) | 32.18 | Out of stock | [Core Electronics](https://core-electronics.com.au/raspberry-pi-a2-class-sd-card-32gb.html) |
-| HiFiBerry DAC2 Pro (CE08661) | 94.10 | In stock. Hardware volume, RCA, headphone amp | [Core Electronics](https://core-electronics.com.au/hifiberry-dac2-pro.html) |
-| Cheaper DAC: HiFiBerry DAC+ Light | 66.65 | Out of stock at Pakronics. No ALSA hardware volume — use software or a preamp | [Pakronics](https://www.pakronics.com.au/products/hifiberry-dac-light-pakr-a0484) |
-| Optional cheaper client board: Raspberry Pi Zero 2 W (CE08211) | 28.50 | Out of stock, limit 1 per customer when available. Needs its own 5V supply (the 27W PSU above is for Pi 5; a Zero supply was not priced in this pass) | [Core Electronics](https://core-electronics.com.au/raspberry-pi-zero-2-w-wireless.html) |
+| Adafruit USB Audio Adapter (ADA1475) | 10.50, listed available | USB class-compliant; typically **software / USB mixer** volume. Adafruit describes it as better than the Pi’s onboard jack, not a hi-fi HAT. On a Zero 2 W it occupies the only USB port. | [Core Electronics audio list](https://core-electronics.com.au/raspberry-pi/audio.html) |
+| Official Raspberry Pi DAC+ (PCM5122, RCA + headphone) | 31.40, in stock | Full-size HAT for Pi 1 B+ and later (including Pi 4 / 5). The PCM5122 supports **hardware (ALSA mixer) volume**. This is the best cheap “proper HAT” in this pass. | [Core Electronics](https://core-electronics.com.au/raspberry-pi-dac.html) |
+| Official Raspberry Pi DAC Pro (PCM5242) | 39.50, listed available | A step up; headphone amp and balanced output. Still far cheaper than a HiFiBerry DAC2 Pro. | [Core Electronics audio list](https://core-electronics.com.au/raspberry-pi/audio.html) |
+| Official Raspberry Pi Codec Zero | 32.60, listed available | Zero-sized I/O codec (DA7212), not only a line-out DAC. Useful on a Zero 2 W if you have headers. | Same audio list |
+| HiFiBerry DAC+ Zero | 42.70, listed available | Zero form factor. Costs more than the official DAC+. Like other “light/zero” boards, check whether yours exposes a hardware mixer; **Snapcast software volume is fine** if it does not. | Same audio list |
+| HiFiBerry DAC2 Pro | 94.10, in stock | Hardware volume, RCA, headphone — premium, not the budget pick. | [Core Electronics](https://core-electronics.com.au/hifiberry-dac2-pro.html) |
+| Generic GY-PCM5102 I2S module | 9.95 listed at Tempero Systems (Gold Coast), “10 in stock” on the product page. A direct fetch of that page timed out, so **confirm the price before buying**. | Cheap PCM5102A boards usually have **no hardware volume**. Need jumper wiring (and often soldering). Quality varies by clone. | [Tempero Systems](https://temperosystems.com.au/products/gy-pcm5102-i2s-dac-audio-decoder-board-pcm5102a-hi-fi-stereo-audio-module/) |
+| Official Raspberry Pi DigiAMP+ (TAS5756M, 2×35 W into **passive** speakers) | 51.30, listed available | Amp + DAC in one HAT. Confirm whether your Pi PSU is enough — many amp HATs want a **separate speaker-voltage supply**, which is **not priced here** if required. Passive speakers not included. | [Core Electronics audio list](https://core-electronics.com.au/raspberry-pi/audio.html) |
+| Adafruit I2S 3W Stereo Speaker Bonnet | 24.60, listed available | Small powered speakers only (3 W/channel class). Fine for a kitchen radio, not a living-room pair. | Same audio list |
+| HiFiBerry MiniAmp | 59.97 inc GST at Pakronics, **out of stock**. 3 W, Zero-sized, powered from the Pi PSU. | Cheap-ish official mini amp when in stock. | [Pakronics](https://www.pakronics.com.au/products/hifiberry-mini-amp) |
 
-Suggested kit on a Pi 5 4GB with official PSU, official case, official 32GB card and DAC2 Pro:
+AliExpress AU often lists generic PCM5102 and TPA3116/3118 amp boards for less, but this pass did not record a verified live AliExpress AU price, so none is invented here. If you go that way, budget extra time for wiring, drivers and returns.
 
-**178.42 + 21.07 + 16.90 + 32.18 + 94.10 = 342.67 AUD inc GST**, before shipping, amp and speakers.
+**Hardware vs software volume.** Snapcast can apply **software volume** on the client. That is good enough for household use and is the right fallback on PCM5102A and many USB adapters. Prefer a PCM5122-class HAT (official DAC+) when you want an ALSA hardware mixer.
 
-If the 4GB board is on lead time, wait, pay 283.85 for the in-stock 8GB board, or use a 2GB board (125.52) for a dedicated room player. Prefer Ethernet. A first server can be this same Pi, or a separate used mini PC if you also run Home Assistant and heavy library scans.
+### 6.3 Minimal PSU, case and storage
+
+| Item | AUD inc GST | Notes | Source (10 Nov 2026) |
+|---|---:|---|---|
+| Official Raspberry Pi 12.5W micro-USB PSU (5.1 V 2.5 A) | 13.79, in stock | Correct official supply for Zero 2 W, Pi 3B+ and Pi 3A+. | [Core Electronics](https://core-electronics.com.au/official-raspberry-pi-12-5w-micro-usb-power-supply.html) |
+| Official Raspberry Pi 4 15.3W USB-C PSU (white) | 11.90, in stock | Use this for Pi 4 players and Pi 4 servers. Do not use a random phone charger. | [Core Electronics](https://core-electronics.com.au/raspberry-pi-4-official-power-supply-usb-c-5v-15w-white.html) |
+| Official Raspberry Pi 5 27W USB-C PSU | 21.07, in stock | Only needed for a Pi 5. | [Core Electronics](https://core-electronics.com.au/raspberry-pi-5-power-supply-usb-c-pd-27w-white.html) |
+| Official Raspberry Pi 32GB A2 microSD | 32.18, **out of stock** | Still the list price to budget. A cheaper in-stock substitute was not firmly priced in this pass (an HP 32GB Class 10 card was 40.86, so not cheaper). Shop around (office retailers, eBay) and treat any unlisted card as unpriced here. | [Core Electronics](https://core-electronics.com.au/raspberry-pi-a2-class-sd-card-32gb.html) |
+| Official Pi 4 case, black/grey or red/white | 5.40 / 6.65, in stock | **The official lid often blocks a HAT.** Use it lid-off, or skip the case, if you fit a DAC+. | [Black/grey](https://core-electronics.com.au/raspberry-pi-4-case-blackgrey-official.html), [red/white](https://core-electronics.com.au/raspberry-pi-4-case-red-white.html) |
+| Slim case for Pi Zero | 5.05, listed available | Fine with a USB DAC (no HAT). Official Zero case is 9.75. | [Slim case](https://core-electronics.com.au/raspberry-pi/pi-zero-cases.html), [official Zero case](https://core-electronics.com.au/raspberry-pi-zero-w-case-enclosure-official.html) |
+
+### 6.4 Server options
+
+[Music Assistant’s installation guide](https://www.music-assistant.io/installation/) requires a **64-bit OS**, a **minimum of 2 GB RAM** on the device or container (4 GB+ if anything else shares the box), and one of: a recent 64-bit Intel CPU (about 10 years, maybe 15), a recent AMD CPU (about 5 years, maybe 10), a **Raspberry Pi 4 or newer** (or equivalent), or another Home Assistant–supported aarch64 SoC. Smart Fades wants 4 GB RAM and two cores and is not the reason to overspend for MVP.
+
+| Server option | Typical cost (AUD) | Fit |
+|---|---|---|
+| An existing PC, NAS or Home Assistant box that already meets the 2 GB / 64-bit / network rules | **0 extra**, if you have one | Best first move. Keep MA in Docker with host networking so music can outlive an HA restart. |
+| Raspberry Pi 4 2GB + official 15.3W PSU + 32GB microSD | 109.33 + 11.90 + 32.18 = **153.41** (SD currently OOS at that list price) | Meets the 2 GB minimum. Tight if you also run Home Assistant on the same Pi (MA recommends 4 GB+ then). |
+| Raspberry Pi 4 4GB + PSU + microSD | 162.20 + 11.90 + 32.18 = **206.28** | Comfortable small dedicated server. Board listed at [Core Electronics](https://core-electronics.com.au/raspberry-pi/boards.html). |
+| Used mini PC, e.g. Lenovo ThinkCentre M710q | One eBay AU listing on 10 Nov 2026: **220.00** or best offer for a used i5-7400T, 8 GB, 256 GB SSD, Wi-Fi, Win 11 (Somerton VIC; confirm whether a PSU is included). | Far more CPU than a Pi for library scans. A 2017 Intel CPU is close to MA’s “about 10 years” guidance in 2026 — check the exact CPU year. Other common tinies (Dell OptiPlex 3050 micro, HP 600 G3, M720q, N100 boxes) appear on the same market; **no second price is recorded here**. | [eBay AU item 198616785017](https://www.ebay.com.au/itm/198616785017) |
+| Pi 5 4GB as server + first room | See the premium room kit below, or 178.42 + 21.07 + 16.90 + 32.18 before a DAC | Only if you want one box to do both jobs and can wait out lead times. |
+
+A Pi 4 **1GB**, a Pi 3, or a Zero is **not** a supported Music Assistant server under the published minimums.
+
+### 6.5 Per-room kit totals
+
+All totals **exclude shipping, speakers and cables**. The official 32GB card (32.18) is in every total so kits are comparable, even though it was out of stock when fetched — replace it with any decent 16–32 GB card you already own and subtract 32.18.
+
+| Tier | What’s in it | AUD inc GST | Trade-offs |
+|---|---|---:|---|
+| **Ultra-budget** | Pi Zero 2 W (Little Bird 34.99, in stock) + official 12.5W PSU (13.79) + Adafruit USB DAC (10.50) + official 32GB microSD (32.18) + slim case (5.05) | **96.51** (59.28 if you already have a microSD and skip the case) | **Wi-Fi only.** USB DAC occupies the only USB port (no Ethernet dongle without a hub). Software volume. Modest converter quality. Needs existing **powered** speakers. Soldering not required. |
+| **Recommended budget** | Pi 4 1GB (64.88, in stock) + official DAC+ (31.40) + official 15.3W PSU (11.90) + official 32GB microSD (32.18). Official case 5.40 is optional and often **does not fit a HAT with the lid on**, so it is left out of the total. | **140.36** | **Gigabit Ethernet**, PCM5122 hardware volume, RCA into an existing stereo. Best default for a free public project. Limit 1 board per customer at Core when fetched. |
+| **With amp** (passive speakers) | Pi 4 1GB (64.88) + official DigiAMP+ (51.30) + official 15.3W PSU (11.90) + official 32GB microSD (32.18) | **160.26**, **plus** passive speakers, and possibly a **second, unpriced PSU** if the amp cannot run from the 15.3W supply alone — check the DigiAMP+ docs before buying. A smaller alternative is the Adafruit 3W bonnet (24.60) for 133.56 before speakers, kitchen-radio volume only. | Buys an amp. Still not a complete living-room system without speakers. |
+| **Pi 5 premium** (comparison only) | Pi 5 4GB (178.42) + official 27W PSU (21.07) + official Pi 5 case (16.90) + official 32GB microSD (32.18) + HiFiBerry DAC2 Pro (94.10) | **342.67** | The earlier “nice” kit. 4GB board was on a 25–35 day lead time. Unnecessary for snapclient alone. |
+
+A **Pi 3B+** recommended-style kit (64.79 + DAC+ 31.40 + 12.5W PSU 13.79 + microSD 32.18) totals **142.16** — almost the same money as the Pi 4 1GB kit, with slower Ethernet. Prefer the Pi 4 when both are in stock.
+
+**International note.** Official Raspberry Pi USD list prices are lower than these Australian figures; HiFiBerry’s own shop also lists the DAC+ Zero at US$19.90, versus 42.70 landed at Core Electronics. Expect GST, freight and thinner AU stock, especially on Zero 2 W.
+
+### 6.6 Trade-offs in short
+
+- **Wi-Fi-only sync** (Zero 2 W, Pi 3A+) is the main way to get under A$100 a room, and the main reliability risk. Use Ethernet when the room allows it.
+- **Snapcast software volume is fine**; spend extra on a PCM5122 HAT only if you want a hardware mixer and RCA jacks.
+- **Availability** is the hidden cost: official microSD cards and bare Zero 2 W boards were out of stock at Core Electronics; Little Bird still had Zero 2 W units.
+- **Power:** use the official PSU for that model. Amp HATs may need more than a 15 W Pi supply.
+- **Performance:** any Pi 3 or newer is enough for a FLAC snapclient; spend the saved money on the server (2 GB+ RAM) and on speakers you already own.
+
+## 7. Build vs reuse
+
+*(This is the software counterpart to the cheap-hardware question: spend project time where it changes the product, not on clocks and Spotify clients.)*
+
+**Decided 10 November 2026, Australia/Melbourne — hybrid, locked for v1.** freesounder **owns** a small set of pieces and **reuses** the hard, moving ones as unmodified separate processes. This is no longer an open option for the first version.
+
+**Own**
+
+- The **freesounder control API** — a thin facade over Music Assistant’s API that defines *our* room/group model and is the only contract the apps speak.
+- The **Flutter apps and design system** (rooms panel, now-playing, grouping).
+- The **setup / onboarding service** (mDNS discovery, room naming, Wi-Fi or Ethernet setup).
+- The **player image** — a Raspberry Pi OS image that bundles `snapclient` and ALSA/DAC configuration.
+
+**Reuse, unmodified, as separate programs:** Snapcast (sync), Music Assistant (library, queues, streaming providers), shairport-sync (AirPlay 2 ingress), and the Spotify path (Soloist and/or a librespot/raspotify sidecar).
+
+### Three ways to split the work
+
+| Approach | Effort and time-to-a-working-system (qualitative; rough judgement, not a timesheet) | What you get | Maintenance and licence |
+|---|---|---|---|
+| **1. Hybrid (chosen for v1, decided 10 November 2026)** | First sound: relatively soon, once a player image and a stock Music Assistant + snapserver are up. A polished app takes longer, but it is *app* work, not protocol work. | The UX we actually want, without rewriting codecs, Connect, or clock sync. | Apache-2.0 first-party code stays clean because GPL parts are separate processes. Streaming-provider breakage is largely Music Assistant’s problem. |
+| **2. Reuse the upstream UIs as well** (just ship compose + MA / Snapweb / Iris) | Fastest path to music in the house. | Fails the product brief: those UIs are not a rooms-first redesign, and Sonos-style grouping remains awkward. | Almost no app code to maintain, but we also have no product. |
+| **3. From-scratch server, sync and providers** | Slowest by a wide margin. Clock sync, drift correction and buffering alone are a research project; Snapcast already does them (typical deviation below 0.2 ms, default 1000 ms buffer). Keeping Spotify, Tidal, Qobuz and friends working is continuous work. | “Licence purity” and total control — benefits we do **not** need, given the facade-and-separate-process model. | High. Music Assistant’s server repo had **320 contributors** (GitHub API, including anonymous accounts, `contributors?per_page=1&anon=true` `Link` last page, looked up 10 November 2026, Australia/Melbourne). Replicating that bench is not realistic for a new public project. |
+
+**What owning “our own libraries” would buy** — a cleaner API, no surprise upstream UI changes, and independence from MA’s room model — is exactly what a **thin facade** already buys, at a fraction of the cost. The facade is also the **escape hatch**: apps keep calling freesounder. If we later replace Music Assistant, or swap Snapcast for Sendspin or an in-house sync layer, the apps do not have to change.
+
+**MVP:** reuse everything except the control API, the apps, setup/onboarding, and the player image.
+
+How we will beta-test the Flutter apps, which stores and sideload channels to use, CI, and the immediate repo scaffold are in [docs/development.md](development.md). That note also recommends **Python** for the facade (official [`music-assistant-client`](https://github.com/music-assistant/client)) and **TestFlight + Play internal testing**, with Firebase App Distribution optional and F-Droid later.
+
 
 ---
 
-## 7. Licence compatibility (Apache-2.0 already chosen)
+## 8. Licence compatibility (Apache-2.0 already chosen)
 
 freesounder is already licensed under the [Apache License 2.0](https://github.com/mhatzis/freesounder/blob/main/LICENSE). That is compatible with this stack **if GPL software is not statically linked or combined into a single Apache-licensed binary**.
 
@@ -480,31 +579,33 @@ This matches the project README: third-party GPL programs keep their own licence
 
 ---
 
-## 8. Proposed monorepo layout
+## 9. Proposed monorepo layout
 
-Suggested layout for [github.com/mhatzis/freesounder](https://github.com/mhatzis/freesounder) after the current README-only tree. All first-party code stays Apache-2.0.
+Suggested layout for [github.com/mhatzis/freesounder](https://github.com/mhatzis/freesounder) after the current README-only tree. All first-party code stays Apache-2.0. The v1 scaffold names to create next (`apps/flutter`, `services/control-api`, `services/setup`, `images/player`) are listed in [development.md](development.md).
 
 ```
 freesounder/
   LICENSE, NOTICE, README.md
-  docs/                  architecture.md, ux, api
+  docs/                  architecture.md, development.md, ux, api
   apps/
-    client/              Flutter app (iOS, Android, web)
+    flutter/             Flutter app (iOS, Android, web)
   packages/
     design/              tokens, room tile, now-playing, volume
     api_client/          generated or hand-written API client
-  server/                optional thin facade (Apache-2.0)
+  services/
+    control-api/         Python facade over Music Assistant (Apache-2.0)
+    setup/               mDNS, room naming, network onboarding
+  images/player/         Pi OS image: snapclient + ALSA/DAC
   deploy/
-    compose/             snapserver, music-assistant, shairport, avahi
-    pi-player/           cloud-init or script for snapclient + ALSA
+    compose/             snapserver, music-assistant, shairport, avahi, snapclient
   third_party/README.md  runbooks only; no vendored GPL sources
 ```
 
 ---
 
-## 9. Open questions and decisions
+## 10. Open questions and decisions
 
-1. Confirm Music Assistant as the backend versus a from-scratch server or a Lyrion-based path. This research recommends **MA + Snapcast + a new Flutter UI**.
+1. ~~Confirm Music Assistant as the backend versus a from-scratch server or a Lyrion-based path.~~ **Decided 10 November 2026:** hybrid v1 — Music Assistant + Snapcast as separate processes, plus a new Flutter UI, a Python control-API facade, setup, and a player image (see §7 and [development.md](development.md)).
 2. **Spotify policy:** enable Soloist (official engine, ToS grey area, works for newer accounts) and/or Connect via librespot/raspotify (unofficial, often broken on post-2024 accounts). This should be an explicit, disclosed project decision.
 3. Whether a phone must be a synced speaker in MVP (Sendspin preview vs Snapweb vs control-only). Recommendation: **control-only for MVP**.
 4. Where the server runs (one Pi 5 for server + first room, versus a dedicated mini PC) and whether Ethernet can be provided in every room.
@@ -512,20 +613,21 @@ freesounder/
 
 ---
 
-## 10. Phased build plan
+## 11. Phased build plan
 
 Status as of 10 November 2026, Australia/Melbourne: **design only**; no product code in the repo yet. This is a plan, not a live tracker.
 
-1. **MVP — two rooms, local library, groups, volume, web client.** snapserver + two ALSA snapclients; Music Assistant or a minimal queue; Flutter web; rooms-first Home; global mini-player plus rooms bottom sheet (chip, Play here too, checkboxes, undo); per-room and master volume; editable queue; local search.
+1. **MVP — two rooms, local library, groups, volume, web client.** snapserver + two ALSA snapclients; Music Assistant plus the Python control-API facade; Flutter web; rooms-first Home; global mini-player plus rooms bottom sheet (chip, Play here too, checkboxes, undo); per-room and master volume; editable queue; local search.
 2. **Phase 2 — native iOS and Android** from the same Flutter app. Accessibility audit, onboarding and add-speaker flow, lock-screen controls.
 3. **Phase 3 — ingress and services.** shairport-sync into Snapcast; Spotify path per the ToS decision; radio; document Apple Music and Tidal limits honestly.
 4. **Phase 4 — polish and extras.** Sleep timer and alarms without regressions; optional Sendspin phone playback; ESP32/Esparagus experiments; optional Home Assistant; store listings only when features and accessibility are at parity.
 
 ---
 
-## 11. Key sources
+## 12. Key sources
 
 - [freesounder repository](https://github.com/mhatzis/freesounder)
+- [freesounder development, beta distribution and next steps](development.md)
 - [Snapcast README](https://github.com/snapcast/snapcast) (sync mechanism, 0.2 ms)
 - [Snapcast configuration](https://github.com/snapcast/snapcast/blob/master/doc/configuration.md)
 - [Music Assistant Snapcast provider](https://www.music-assistant.io/player-support/snapcast/)
@@ -542,4 +644,8 @@ Status as of 10 November 2026, Australia/Melbourne: **design only**; no product 
 - [Lyrion downloads](https://lyrion.org/downloads/)
 - [Lyrion Synchronization wiki](https://wiki.lyrion.org/index.php/Synchronization.html)
 - [Core Electronics Raspberry Pi 5 boards](https://core-electronics.com.au/raspberry-pi/raspberry-pi-5-boards-kits-and-accessories/raspberry-pi-5-boards.html)
-- GitHub API lookups for stargazers and releases, 10 November 2026, Australia/Melbourne, for the repositories named in the sections above.
+- [Core Electronics Raspberry Pi 4 1GB](https://core-electronics.com.au/raspberry-pi-4-model-b-1gb.html), [official DAC+](https://core-electronics.com.au/raspberry-pi-dac.html), [Pi 4 15.3W PSU](https://core-electronics.com.au/raspberry-pi-4-official-power-supply-usb-c-5v-15w-white.html), [audio catalogue](https://core-electronics.com.au/raspberry-pi/audio.html)
+- [Little Bird Pi Zero 2 W](https://littlebirdcompany.myshopify.com/products/raspberry-pi-zero-2-w-1)
+- [Music Assistant installation / minimum hardware](https://www.music-assistant.io/installation/)
+- [eBay AU used Lenovo M710q example](https://www.ebay.com.au/itm/198616785017) (listing when fetched 10 November 2026; may expire)
+- GitHub API lookups for stargazers, releases, and Music Assistant contributor count (`/repos/music-assistant/server/contributors?per_page=1&anon=true`, `Link` last page = 320), 10 November 2026, Australia/Melbourne, for the repositories named in the sections above.
