@@ -28,7 +28,7 @@ new = '''	# Detach every loop backed by this image (whole-disk and offset
 		losetup -d "$LOOP_DEVICE" || true
 	done < <(losetup -n -O NAME -j "$1")
 '''
-if 'offset partition loops used when loop.max_part' in text:
+if 'Detach every loop backed by this image' in text:
     print('unmount_image already patched')
 elif old not in text:
     raise SystemExit('unmount_image needle missing')
