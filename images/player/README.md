@@ -40,8 +40,14 @@ After login:
 sudo freesounder-setup status
 sudo freesounder-setup set-role auto    # or host / room
 sudo freesounder-setup set-host <hostname-or-ip-of-the-household-host>
+sudo freesounder-setup set-name Kitchen
 sudo freesounder-setup set-dac dacplus  # DAC+ or DigiAMP+ (same overlay)
 ```
+
+Prefer the FreeSounder app for everyday setup: **Settings → Connect** to reach
+an existing host, **Add a player** to name a new Pi and join it, and the gear
+on a room for bass, treble, balance, bass boost, volume limit and DAC.
+`freesounder-setup` remains for SSH and first-boot recovery.
 
 DAC+: `dtoverlay=hifiberry-dacplus` in `/boot/firmware/config.txt`. Official
 DigiAMP+ uses the same overlay. A reboot is required after `set-dac`. Then
@@ -54,8 +60,12 @@ plug in powered speakers (DAC+) or passives (DigiAMP+; check PSU needs).
 - Docker Engine (`docker.io`) and a systemd unit that starts Music Assistant
   **only** in the host role
 - freesounder control API (`services/control-api`) in a Python 3.13 venv,
-  listening on port 8080 and advertising `_freesounder._tcp`
-- `freesounder-setup` for role, host, DAC overlay, and optional MA token
+  listening on port 8080. Only the **host** advertises `_freesounder._tcp`.
+- player agent (`services/player-agent`) on port 8090, advertised on every
+  board as `_freesounder-player._tcp` (state `unconfigured` until adopted)
+- ALSA LADSPA tone controls (`caps` Eq10X2) on a PCM named `freesounder`;
+  `snapclient` outputs through that device (bass, treble, balance, loudness)
+- `freesounder-setup` for role, host, room name, DAC overlay, and optional MA token
 
 No passwords, API tokens, or wireless secrets are baked into the image.
 
@@ -94,5 +104,9 @@ the build machine; it is installed **inside** the image.
 - Automatic host failover is **not** in the first beta; back up
   `/var/lib/freesounder/ma-data`.
 - The default hostname `freesounder` will clash if two unconfigured boards
-  share a LAN. Rename them in Imager or with `hostnamectl`.
+  share a LAN. Rename them in Imager, with `hostnamectl`, or by adopting
+  the player in the app (that also sets a hostname-friendly label).
+- Tone controls use ALSA LADSPA (`caps`). A CamillaDSP YAML file is written
+  as well, but CamillaDSP is not bundled in this image. Changing DAC still
+  needs a reboot. These paths have not been tested on real Pi hardware yet.
 - QEMU system emulation of a Pi 4/5 is not a substitute for a real boot test.

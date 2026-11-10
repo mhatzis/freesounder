@@ -1,0 +1,28 @@
+#!/bin/bash
+# Hook run by the player agent after adopt or settings changes.
+set -euo pipefail
+
+/usr/lib/freesounder/apply-runtime-config || true
+
+if [[ "${FREESOUNDER_DAC_CHANGED:-0}" == "1" ]]; then
+	/usr/lib/freesounder/apply-dac-overlay || true
+fi
+
+/usr/lib/freesounder/apply-dsp-config || true
+
+# Pretty hostname always; static hostname only when a room name is set.
+if [[ -f /etc/freesounder/name ]]; then
+	name=$(tr -d '\n' < /etc/freesounder/name)
+	if [[ -n "$name" ]] && command -v hostnamectl >/dev/null; then
+		hostnamectl set-hostname --pretty "$name" || true
+		label=$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//;s/-$//' | cut -c1-63)
+		if [[ -n "$label" ]]; then
+			hostnamectl set-hostname "$label" || true
+		fi
+	fi
+fi
+
+systemctl daemon-reload || true
+systemctl try-restart snapclient.service 2>/dev/null || true
+systemctl try-restart freesounder-control-api.service 2>/dev/null || true
+# The agent is the caller; do not restart it here (it would kill this hook).

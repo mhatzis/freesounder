@@ -11,3 +11,5 @@ python3-venv
 snapclient
 sudo
 systemd-timesyncd
+caps
+libasound2-plugins

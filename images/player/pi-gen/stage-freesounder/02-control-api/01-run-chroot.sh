@@ -12,9 +12,16 @@ if [ -d /opt/freesounder/control-api/wheels ]; then
 		hatchling packaging pathspec pluggy trove-classifiers editables tomlkit
 	${PIP} install --no-index --find-links=/opt/freesounder/control-api/wheels \
 		--no-build-isolation /opt/freesounder/control-api
+	if [ -d /opt/freesounder/player-agent ]; then
+		${PIP} install --no-index --find-links=/opt/freesounder/control-api/wheels \
+			--no-build-isolation /opt/freesounder/player-agent
+	fi
 else
 	${PIP} install /opt/freesounder/control-api
+	if [ -d /opt/freesounder/player-agent ]; then
+		${PIP} install /opt/freesounder/player-agent
+	fi
 fi
 rm -rf /opt/freesounder/control-api/wheels
 # Confirm the package imported (do not launch the server here).
-/opt/freesounder/control-api/.venv/bin/python -c "import freesounder_control_api, music_assistant_client; print(freesounder_control_api.__version__)"
+/opt/freesounder/control-api/.venv/bin/python -c "import freesounder_control_api, freesounder_player_agent, music_assistant_client; print(freesounder_control_api.__version__, freesounder_player_agent.__version__)"

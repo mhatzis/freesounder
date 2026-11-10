@@ -11,6 +11,7 @@ Usage:
   freesounder-setup set-role host|room|auto
   freesounder-setup set-host <hostname-or-ip>
   freesounder-setup set-dac none|dacplus|digiampplus
+  freesounder-setup set-name <room-name>
   freesounder-setup set-ma-token          # reads the token from stdin (not echoed if tty)
   freesounder-setup apply                 # regenerate services and restart what we can
 
@@ -39,6 +40,7 @@ case "$cmd" in
 			echo "Effective:   $(/usr/lib/freesounder/detect-role)"
 		fi
 		echo "MA/host:     $(tr -d '[:space:]' < /etc/freesounder/host 2>/dev/null || echo '(unset)')"
+		echo "Name:        $(tr -d '\n' < /etc/freesounder/name 2>/dev/null || echo '(unset)')"
 		echo "DAC:         $(tr -d '[:space:]' < /etc/freesounder/dac 2>/dev/null || echo none)"
 		if [[ -f /etc/freesounder/ma-token ]]; then
 			echo "MA token:    present"
@@ -69,6 +71,34 @@ case "$cmd" in
 	set-dac)
 		need_root
 		/usr/lib/freesounder/apply-dac-overlay "${2:-}"
+		;;
+	set-name)
+		need_root
+		val=${2:-}
+		if [[ -z "$val" ]]; then
+			echo "Usage: freesounder-setup set-name <room-name>" >&2
+			exit 1
+		fi
+		printf '%s\n' "$val" > /etc/freesounder/name
+		# Keep settings.json in sync if Python is available.
+		if [[ -x /opt/freesounder/control-api/.venv/bin/python ]]; then
+			/opt/freesounder/control-api/.venv/bin/python - << PY || true
+from pathlib import Path
+import json
+name = Path("/etc/freesounder/name").read_text().strip()
+path = Path("/var/lib/freesounder/settings.json")
+data = {}
+if path.is_file():
+    try:
+        data = json.loads(path.read_text())
+    except Exception:
+        data = {}
+data["name"] = name
+path.parent.mkdir(parents=True, exist_ok=True)
+path.write_text(json.dumps(data, indent=2) + "\n")
+PY
+		fi
+		/usr/lib/freesounder/apply-player-agent
 		;;
 	set-ma-token)
 		need_root

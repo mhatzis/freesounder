@@ -1,0 +1,8 @@
+#!/bin/bash
+# Render ALSA / CamillaDSP configs from /var/lib/freesounder/settings.json.
+set -euo pipefail
+PYTHON=/opt/freesounder/control-api/.venv/bin/python
+if [[ ! -x "$PYTHON" ]]; then
+	PYTHON=python3
+fi
+"$PYTHON" -m freesounder_player_agent.dsp

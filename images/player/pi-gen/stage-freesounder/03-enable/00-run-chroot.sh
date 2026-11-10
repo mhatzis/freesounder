@@ -5,6 +5,7 @@ systemctl enable avahi-daemon.service
 systemctl enable freesounder-role.service
 systemctl enable freesounder-music-assistant.service
 systemctl enable freesounder-control-api.service
+systemctl enable freesounder-player-agent.service
 # snapclient ships its own unit; keep it enabled.
 systemctl enable snapclient.service || true
 
