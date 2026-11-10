@@ -1,0 +1,87 @@
+#!/bin/bash
+# Write provisioning diagnostics to the boot partition (readable on a PC) and
+# a short status line to the HDMI console. No secrets are included.
+set -u
+umask 022
+
+DOC=/opt/freesounder/control-api/.venv/bin/freesounder-ble-provisioning
+BOOT=""
+for candidate in /boot/firmware /boot; do
+	if [ -d "$candidate" ] && [ -w "$candidate" ]; then
+		BOOT=$candidate
+		break
+	fi
+done
+# If the mount is read-only, try remounting it so the file can be read on a PC.
+if [ -z "$BOOT" ]; then
+	for candidate in /boot/firmware /boot; do
+		if mountpoint -q "$candidate" 2>/dev/null; then
+			mount -o remount,rw "$candidate" 2>/dev/null || true
+			if [ -w "$candidate" ]; then
+				BOOT=$candidate
+				break
+			fi
+		fi
+	done
+fi
+
+REPORT=$(mktemp)
+{
+	echo "FreeSounder doctor"
+	echo "Generated: $(date -Iseconds)"
+	echo "Hostname: $(hostname 2>/dev/null || echo unknown)"
+	echo
+	if [ -x "$DOC" ]; then
+		"$DOC" --doctor || echo "doctor command failed ($?)"
+	else
+		echo "ble-provisioning is not installed in the shared venv."
+	fi
+	echo
+	echo "== journalctl -u freesounder-ble-provisioning (last 50) =="
+	journalctl -u freesounder-ble-provisioning -n 50 --no-pager 2>/dev/null || true
+} >"$REPORT" 2>&1
+
+if [ -n "$BOOT" ]; then
+	cp "$REPORT" "$BOOT/freesounder-doctor.txt"
+	chmod 0644 "$BOOT/freesounder-doctor.txt" 2>/dev/null || true
+	BOOT_FILE="$BOOT/freesounder-doctor.txt"
+else
+	BOOT_FILE="/boot/firmware/freesounder-doctor.txt (boot partition not writable)"
+fi
+
+hci="missing"
+if [ -d /sys/class/bluetooth/hci0 ]; then
+	hci="present"
+fi
+svc=$(systemctl is-active freesounder-ble-provisioning.service 2>/dev/null || echo unknown)
+verdict=$(grep -E '^verdict:' "$REPORT" | tail -n1)
+if [ -z "$verdict" ]; then
+	verdict="verdict: (see doctor file)"
+fi
+
+host=$(hostname 2>/dev/null || echo unknown)
+SHORT="
+---- FreeSounder ----
+hostname: ${host}
+hci0: ${hci}   provisioning service: ${svc}
+${verdict}
+Full report: ${BOOT_FILE}
+Insert this SD card in a computer and open freesounder-doctor.txt
+on the boot partition if you have no network.
+----
+"
+
+mkdir -p /etc/issue.d
+printf '%s\n' "$SHORT" >/etc/issue.d/freesounder.issue
+if [ -f /etc/issue ]; then
+	if grep -q '---- FreeSounder ----' /etc/issue; then
+		sed -i '/---- FreeSounder ----/,/^----$/d' /etc/issue
+	fi
+	printf '%s\n' "$SHORT" >>/etc/issue
+fi
+# HDMI console (agetty on tty1 may already be at the login prompt).
+if [ -w /dev/tty1 ]; then
+	printf '%s\n' "$SHORT" >/dev/tty1 || true
+fi
+
+rm -f "$REPORT"

@@ -1,0 +1,8 @@
+[Unit]
+Description=Write FreeSounder doctor report to the boot partition and HDMI
+After=freesounder-ble-provisioning.service bluetooth.service local-fs.target
+Wants=freesounder-ble-provisioning.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/freesounder/run-boot-doctor

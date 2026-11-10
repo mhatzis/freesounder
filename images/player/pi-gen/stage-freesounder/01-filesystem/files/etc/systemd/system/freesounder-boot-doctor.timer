@@ -1,0 +1,11 @@
+[Unit]
+Description=Run FreeSounder doctor one minute after boot
+
+[Timer]
+OnBootSec=1min
+AccuracySec=5s
+Persistent=false
+Unit=freesounder-boot-doctor.service
+
+[Install]
+WantedBy=timers.target

@@ -8,6 +8,7 @@ freesounder-setup — configure this player
 
 Usage:
   freesounder-setup status
+  freesounder-setup doctor              # BLE / network diagnostics
   freesounder-setup set-role host|room|auto
   freesounder-setup set-host <hostname-or-ip>
   freesounder-setup set-dac none|dacplus|digiampplus
@@ -33,6 +34,16 @@ need_root() {
 cmd=${1:-status}
 case "$cmd" in
 	-h|--help|help) usage; exit 0 ;;
+	doctor)
+		echo "FreeSounder doctor"
+		if [[ -x /opt/freesounder/control-api/.venv/bin/freesounder-ble-provisioning ]]; then
+			/opt/freesounder/control-api/.venv/bin/freesounder-ble-provisioning --doctor || true
+		else
+			echo "ble-provisioning is not installed in the shared venv."
+		fi
+		echo "== journalctl -u freesounder-ble-provisioning (last 50) =="
+		journalctl -u freesounder-ble-provisioning -n 50 --no-pager || true
+		;;
 	status)
 		echo "Hostname:    $(hostname)"
 		echo "Configured:  $(tr -d '[:space:]' < /etc/freesounder/role 2>/dev/null || echo missing)"

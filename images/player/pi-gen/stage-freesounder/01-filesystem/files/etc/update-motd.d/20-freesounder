@@ -8,6 +8,7 @@ Imager (OS customisation) when flashing, or complete the first-boot wizard
 on a keyboard and display.
 
   sudo freesounder-setup status
+  sudo freesounder-setup doctor
   sudo freesounder-setup set-role auto|host|room
   sudo freesounder-setup set-host <hostname-or-ip>
   sudo freesounder-setup set-dac none|dacplus|digiampplus

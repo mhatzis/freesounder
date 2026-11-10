@@ -12,6 +12,7 @@ systemctl enable snapclient.service || true
 systemctl enable bluetooth.service || true
 systemctl enable NetworkManager.service || true
 systemctl enable freesounder-ble-provisioning.service
+systemctl enable freesounder-boot-doctor.timer
 
 # The first user is renamed on first boot but keeps supplementary groups.
 if getent passwd pi >/dev/null; then

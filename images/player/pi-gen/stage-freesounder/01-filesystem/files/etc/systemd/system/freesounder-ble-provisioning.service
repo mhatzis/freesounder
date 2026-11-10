@@ -1,15 +1,19 @@
 [Unit]
 Description=FreeSounder Improv Wi-Fi BLE provisioning
 Documentation=https://www.improv-wifi.com/ble/
-After=bluetooth.service NetworkManager.service
+After=bluetooth.service NetworkManager.service hciuart.service
 Wants=bluetooth.service NetworkManager.service
+# hciuart is optional (Trixie may attach hci0 in-kernel). Do not Require it.
 # Independent of snapclient / audio — advertising must not disturb playback.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 ExecStart=/opt/freesounder/control-api/.venv/bin/freesounder-ble-provisioning
-Restart=on-failure
-RestartSec=3
+# Start by unblocking BT even if the first start races firmware attach.
+ExecStartPre=-/usr/sbin/rfkill unblock bluetooth
+Restart=always
+RestartSec=2
 Environment=PYTHONUNBUFFERED=1
 # Keep logs at the process default (INFO). Debug can leak secrets from lower layers.
 

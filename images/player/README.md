@@ -45,6 +45,7 @@ After login:
 
 ```bash
 sudo freesounder-setup status
+sudo freesounder-setup doctor
 sudo freesounder-setup set-role auto    # or host / room
 sudo freesounder-setup set-host <hostname-or-ip-of-the-household-host>
 sudo freesounder-setup set-name Kitchen
@@ -121,3 +122,7 @@ the build machine; it is installed **inside** the image.
   as well, but CamillaDSP is not bundled in this image. Changing DAC still
   needs a reboot. These paths have not been tested on real Pi hardware yet.
 - QEMU system emulation of a Pi 4/5 is not a substitute for a real boot test.
+
+## Bluetooth setup diagnostics
+
+If a new player does not appear over Bluetooth, wait one minute after boot, power off, and read `freesounder-doctor.txt` from the boot partition (the `bootfs` volume) on a computer. The same short status is printed on the HDMI console (tty1). On the device itself, run `sudo freesounder-setup doctor` and `journalctl -u freesounder-ble-provisioning -b --no-pager`.
