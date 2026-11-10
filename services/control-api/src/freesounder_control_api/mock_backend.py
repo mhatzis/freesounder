@@ -153,6 +153,16 @@ class MockMusicBackend:
         )
         return SearchResponse(query=query, items=[item])
 
+    def add_room(self, room_id: str, name: str) -> Room:
+        room = Room(id=room_id, name=name, available=True, volume=30, muted=False, state="idle")
+        self.rooms[room_id] = room
+        self.now[room_id] = NowPlaying(player_id=room_id, state="idle")
+        return room
+
+    def rename_room(self, room_id: str, name: str) -> None:
+        if room_id in self.rooms:
+            self.rooms[room_id] = self.rooms[room_id].model_copy(update={"name": name})
+
     async def browse(self, path: str | None) -> BrowseResponse:
         item = SearchItem(
             uri="library://album/example",

@@ -147,3 +147,77 @@ async def test_backend_protocol_is_mocked() -> None:
         response = await ac.get("/api/v1/rooms")
     assert response.status_code == 200
     assert isinstance(Room.model_validate(response.json()[0]), Room)
+
+
+def test_system_and_unclaimed_players(client: TestClient) -> None:
+    system = client.get("/api/v1/system")
+    assert system.status_code == 200
+    body = system.json()
+    assert body["version"]
+    assert body["mock"] is True
+
+    unclaimed = client.get("/api/v1/players/unclaimed")
+    assert unclaimed.status_code == 200
+    ids = {item["id"] for item in unclaimed.json()}
+    assert "attic-pi" in ids
+
+
+def test_adopt_adds_room(client: TestClient) -> None:
+    adopted = client.post(
+        "/api/v1/players/adopt",
+        json={"id": "attic-pi", "name": "Attic"},
+    )
+    assert adopted.status_code == 200
+    assert adopted.json()["name"] == "Attic"
+    assert adopted.json()["state"] == "configured"
+
+    rooms = {room["id"]: room for room in client.get("/api/v1/rooms").json()}
+    assert "attic-pi" in rooms
+    assert rooms["attic-pi"]["name"] == "Attic"
+
+    leftover = client.get("/api/v1/players/unclaimed").json()
+    assert all(item["id"] != "attic-pi" for item in leftover)
+
+    settings = client.get("/api/v1/players/attic-pi/settings")
+    assert settings.status_code == 200
+    assert settings.json()["name"] == "Attic"
+
+    missing = client.post("/api/v1/players/adopt", json={"name": "Nope"})
+    assert missing.status_code == 422
+
+
+def test_player_settings_roundtrip_and_volume_limit(client: TestClient) -> None:
+    current = client.get("/api/v1/players/kitchen/settings")
+    assert current.status_code == 200
+    assert current.json()["name"] == "Kitchen"
+
+    patched = client.patch(
+        "/api/v1/players/kitchen/settings",
+        json={
+            "name": "Kitchen 2",
+            "bass": 5,
+            "treble": -4,
+            "balance": -3,
+            "loudness": True,
+            "volume_limit": 50,
+        },
+    )
+    assert patched.status_code == 200
+    body = patched.json()
+    assert body["name"] == "Kitchen 2"
+    assert body["bass"] == 5
+    assert body["loudness"] is True
+    assert body["volume_limit"] == 50
+
+    rooms = {room["id"]: room for room in client.get("/api/v1/rooms").json()}
+    assert rooms["kitchen"]["name"] == "Kitchen 2"
+
+    assert client.post("/api/v1/players/kitchen/volume", json={"level": 80}).status_code == 204
+    kitchen = next(r for r in client.get("/api/v1/rooms").json() if r["id"] == "kitchen")
+    assert kitchen["volume"] == 50
+
+    missing = client.get("/api/v1/players/does-not-exist/settings")
+    assert missing.status_code == 404
+
+    bad = client.patch("/api/v1/players/kitchen/settings", json={"bass": 20})
+    assert bad.status_code == 422

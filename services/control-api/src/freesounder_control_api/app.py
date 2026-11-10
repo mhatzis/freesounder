@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from typing import Any
 
-from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from freesounder_control_api import __version__
@@ -17,15 +17,27 @@ from freesounder_control_api.config import Settings, load_settings
 from freesounder_control_api.mdns import MdnsAdvertiser
 from freesounder_control_api.mock_backend import MockMusicBackend
 from freesounder_control_api.models import (
+    AdoptBody,
     BrowseResponse,
     CreateGroupBody,
     EventMessage,
     Health,
     JoinLeaveBody,
     NowPlaying,
+    PlayerSettings,
+    PlayerSettingsPatch,
     Room,
     SearchResponse,
+    SystemInfo,
+    UnclaimedPlayer,
     VolumeBody,
+)
+from freesounder_control_api.players import (
+    LanPlayerIndex,
+    MockPlayerIndex,
+    PlayerIndex,
+    PlayerNotFound,
+    local_ip,
 )
 
 logger = logging.getLogger(__name__)
@@ -34,9 +46,15 @@ logger = logging.getLogger(__name__)
 class Hub:
     """Shared backend, settings and WebSocket subscribers."""
 
-    def __init__(self, settings: Settings, backend: MusicBackend) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        backend: MusicBackend,
+        players: PlayerIndex,
+    ) -> None:
         self.settings = settings
         self.backend = backend
+        self.players = players
         self.subscribers: set[WebSocket] = set()
 
     async def broadcast(self, event: str, data: Any) -> None:
@@ -64,6 +82,7 @@ def create_backend(settings: Settings) -> MusicBackend:
 def create_app(
     settings: Settings | None = None,
     backend: MusicBackend | None = None,
+    players: PlayerIndex | None = None,
     *,
     enable_mdns: bool | None = None,
 ) -> FastAPI:
@@ -71,7 +90,21 @@ def create_app(
 
     settings = settings or load_settings()
     backend = backend or create_backend(settings)
-    hub = Hub(settings, backend)
+    if players is None:
+        if settings.mock_ma or isinstance(backend, MockMusicBackend):
+            players = MockPlayerIndex()
+            if isinstance(backend, MockMusicBackend):
+                def _on_adopted(player: UnclaimedPlayer) -> None:
+                    backend.add_room(player.id, player.name)
+
+                players.bind_adopt(_on_adopted)
+                # Seed settings for the two default mock rooms if missing.
+                if hasattr(players, "settings"):
+                    for room in backend.rooms.values():
+                        players.settings.setdefault(room.id, PlayerSettings(name=room.name))
+        else:
+            players = LanPlayerIndex()
+    hub = Hub(settings, backend, players)
     advertiser = MdnsAdvertiser(settings)
 
     @asynccontextmanager
@@ -170,7 +203,13 @@ def create_app(
 
     @app.post("/api/v1/players/{player_id}/volume", status_code=204)
     async def set_volume(player_id: str, body: VolumeBody) -> None:
-        await backend.set_volume(player_id, body.level)
+        level = body.level
+        try:
+            player_settings = await players.get_settings(player_id)
+            level = min(level, player_settings.volume_limit)
+        except PlayerNotFound:
+            pass
+        await backend.set_volume(player_id, level)
         await hub.broadcast("rooms", [r.model_dump() for r in await backend.list_rooms()])
 
     @app.post("/api/v1/groups/{group_id}/volume", status_code=204)
@@ -188,6 +227,55 @@ def create_app(
     @app.get("/api/v1/browse", response_model=BrowseResponse)
     async def browse(path: str | None = None) -> BrowseResponse:
         return await backend.browse(path)
+
+    @app.get("/api/v1/system", response_model=SystemInfo)
+    async def system() -> SystemInfo:
+        return SystemInfo(
+            name=settings.mdns_name,
+            version=__version__,
+            role="host",
+            mock=settings.mock_ma or isinstance(backend, MockMusicBackend),
+        )
+
+    @app.get("/api/v1/players/unclaimed", response_model=list[UnclaimedPlayer])
+    async def list_unclaimed() -> list[UnclaimedPlayer]:
+        return await players.list_unclaimed()
+
+    @app.post("/api/v1/players/adopt", response_model=UnclaimedPlayer)
+    async def adopt_player(body: AdoptBody) -> UnclaimedPlayer:
+        if not body.id and not body.url:
+            raise HTTPException(status_code=422, detail="Provide a player id or agent url")
+        household = settings.mdns_name
+        # The player needs a reachable host address, not just the mDNS instance name.
+        host_addr = local_ip()
+        try:
+            result = await players.adopt(body, host_addr or household)
+        except PlayerNotFound as exc:
+            raise HTTPException(status_code=404, detail=f"Player not found: {exc}") from exc
+        await hub.broadcast("rooms", [r.model_dump() for r in await backend.list_rooms()])
+        return result
+
+    @app.get("/api/v1/players/{player_id}/settings", response_model=PlayerSettings)
+    async def get_player_settings(player_id: str) -> PlayerSettings:
+        try:
+            return await players.get_settings(player_id)
+        except PlayerNotFound as exc:
+            # Fall back to the room's display name if the backend knows the room.
+            rooms = {room.id: room for room in await backend.list_rooms()}
+            if player_id in rooms:
+                return PlayerSettings(name=rooms[player_id].name)
+            raise HTTPException(status_code=404, detail=f"Player not found: {exc}") from exc
+
+    @app.patch("/api/v1/players/{player_id}/settings", response_model=PlayerSettings)
+    async def patch_player_settings(player_id: str, body: PlayerSettingsPatch) -> PlayerSettings:
+        try:
+            result = await players.patch_settings(player_id, body)
+        except PlayerNotFound as exc:
+            raise HTTPException(status_code=404, detail=f"Player not found: {exc}") from exc
+        if body.name and isinstance(backend, MockMusicBackend):
+            backend.rename_room(player_id, body.name)
+        await hub.broadcast("rooms", [r.model_dump() for r in await backend.list_rooms()])
+        return result
 
     @app.websocket("/api/v1/ws")
     async def websocket(ws: WebSocket) -> None:

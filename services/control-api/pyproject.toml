@@ -1,6 +1,6 @@
 [project]
 name = "freesounder-control-api"
-version = "0.1.0"
+version = "0.2.0"
 description = "freesounder control API: a facade over Music Assistant on the household host."
 readme = "README.md"
 license = { text = "Apache-2.0" }

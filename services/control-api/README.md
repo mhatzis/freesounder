@@ -4,9 +4,12 @@ Python 3.13+ FastAPI facade over Music Assistant, using the official
 [`music-assistant-client`](https://pypi.org/project/music-assistant-client/) package
 (1.8.0 when this was written; requires Python ≥ 3.13, Apache-2.0).
 
-The API is meant to run on every player. Catalogue, queue, grouping and transport
-calls are proxied to the household-host Music Assistant instance. Setup and
-discovery stay local.
+The household **host** advertises this API as `_freesounder._tcp`. The Flutter
+app talks only to this surface — never to Music Assistant, Snapcast, or a
+player agent directly. Catalogue, queue, grouping and transport calls are
+proxied to Music Assistant. Adopting a new Pi and per-player tone settings are
+proxied to the [player agent](../player-agent) on that board
+(`_freesounder-player._tcp`).
 
 ## Run
 
@@ -49,10 +52,19 @@ Set `FREESOUNDER_MOCK_MA=true` to serve in-memory rooms with no Music Assistant.
 - `POST /api/v1/groups/{group_id}/volume` — group master volume
 - `GET /api/v1/search?q=`
 - `GET /api/v1/browse?path=`
+- `GET /api/v1/system` — household name, version, mock flag
+- `GET /api/v1/players/unclaimed` — new Pis advertising `_freesounder-player._tcp`
+- `POST /api/v1/players/adopt` — `{ "id": "...", "name": "Kitchen" }` or `{ "url": "http://...", "name": "Kitchen" }`
+- `GET /api/v1/players/{player_id}/settings`
+- `PATCH /api/v1/players/{player_id}/settings` — name, volume_limit (1–100), bass/treble/balance (−10..+10 dB), loudness, dac (`none` / `dacplus` / `digiampplus`)
 - `WebSocket /api/v1/ws` — `rooms`, `now_playing`, `health` events
 
 Grouping is implemented with Music Assistant sync-group commands (`players.group`,
 `ungroup`, `create_group_player`, `group_volume`), not a second grouping model.
+
+`POST /api/v1/players/{id}/volume` is capped at that player's `volume_limit`.
+Tone controls are applied on the player by the agent (ALSA LADSPA Eq10X2), not
+in Music Assistant.
 
 ## Tests
 

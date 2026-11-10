@@ -94,3 +94,60 @@ class EventMessage(BaseModel):
     type: Literal["event"] = "event"
     event: str
     data: Any = None
+
+
+DacChoice = Literal["none", "dacplus", "digiampplus"]
+
+
+class PlayerSettings(BaseModel):
+    """Per-player name, tone controls, volume cap and DAC."""
+
+    name: str
+    volume_limit: int = Field(default=100, ge=1, le=100)
+    bass: float = Field(default=0, ge=-10, le=10)
+    treble: float = Field(default=0, ge=-10, le=10)
+    balance: float = Field(default=0, ge=-10, le=10)
+    loudness: bool = False
+    dac: DacChoice = "none"
+    dac_reboot_required: bool = False
+
+
+class PlayerSettingsPatch(BaseModel):
+    """Partial update for player settings."""
+
+    name: str | None = None
+    volume_limit: int | None = Field(default=None, ge=1, le=100)
+    bass: float | None = Field(default=None, ge=-10, le=10)
+    treble: float | None = Field(default=None, ge=-10, le=10)
+    balance: float | None = Field(default=None, ge=-10, le=10)
+    loudness: bool | None = None
+    dac: DacChoice | None = None
+
+
+class UnclaimedPlayer(BaseModel):
+    """A player agent on the LAN that has not joined this household yet."""
+
+    id: str
+    name: str
+    address: str
+    port: int = 8090
+    role: str | None = None
+    state: str = "unconfigured"
+    url: str
+
+
+class AdoptBody(BaseModel):
+    """Adopt a discovered (or manually addressed) player into this household."""
+
+    name: str = Field(min_length=1)
+    id: str | None = None
+    url: str | None = None
+
+
+class SystemInfo(BaseModel):
+    """The household this control API represents."""
+
+    name: str
+    version: str
+    role: str = "host"
+    mock: bool = False
