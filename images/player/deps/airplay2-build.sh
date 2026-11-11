@@ -33,9 +33,21 @@ t = p.read_text()
 t = t.replace("debhelper-compat (= 14)", "debhelper-compat (= 13)")
 t = re.sub(r"^[ \t]*dh-sequence-single-binary,?[ \t]*\n", "", t, flags=re.M)
 t = re.sub(r",?[ \t]*dh-sequence-single-binary", "", t)
+# Compat 14 adds ${shlibs:Depends} and ${misc:Depends} implicitly; 13 does not.
+paras = t.split("\n\n")
+for i, para in enumerate(paras):
+    if not para.lstrip().startswith("Package:"):
+        continue
+    if re.search(r"^Depends:", para, flags=re.M):
+        if "${shlibs:Depends}" not in para:
+            para = re.sub(r"^Depends:[ \t]*", "Depends: ${shlibs:Depends}, ${misc:Depends}, ", para, count=1, flags=re.M)
+    else:
+        para = para.rstrip("\n") + "\nDepends: ${shlibs:Depends}, ${misc:Depends}"
+    paras[i] = para
+t = "\n\n".join(paras)
 p.write_text(t)
 PY
-		sed -n "/^Build-Depends/,/^[A-Z]/p" debian/control
+		cat debian/control
 		# Satisfy Build-Depends from trixie.
 		mk-build-deps -i -r -t "apt-get -y --no-install-recommends" debian/control
 		dch --local "~fs13" --distribution trixie "Rebuild for Raspberry Pi OS trixie (FreeSounder)."
@@ -47,3 +59,6 @@ rm -f "$OUT"/*-dbgsym_*.deb "$OUT"/*-build-deps_*.deb
 ls -l "$OUT"
 for deb in "$OUT"/*.deb; do dpkg-deb -I "$deb" | sed -n '/Package:/p;/Version:/p;/Depends:/p'; done
 dpkg-deb -c "$OUT"/shairport-sync_*.deb | grep -E 'bin/shairport-sync$'
+# Runtime libraries must be declared, or the image installs a binary that cannot start.
+dpkg-deb -f "$OUT"/shairport-sync_*.deb Depends | grep -q libplist
+dpkg-deb -f "$OUT"/nqptp_*.deb Depends | grep -q libc6

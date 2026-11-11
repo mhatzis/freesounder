@@ -17,6 +17,14 @@ printf '{"airplay": %s, "snapcast": "%s", "go_librespot": "%s", "shairport_sync"
 	"$(cat go-librespot-version)" \
 	"$(dpkg-query -W -f='${Version}' shairport-sync)" > /etc/freesounder/features.json
 cat /etc/freesounder/features.json
-shairport-sync -V || true
+# Every audio binary must find its libraries (fail the build, not the first boot).
+for bin in /usr/bin/snapserver /usr/bin/snapclient /usr/bin/shairport-sync /usr/local/bin/go-librespot /usr/bin/nqptp; do
+	[[ -x "$bin" ]] || continue
+	if ldd "$bin" | grep 'not found'; then
+		echo "missing libraries for $bin" >&2
+		exit 1
+	fi
+done
+shairport-sync -V
 cd /
 rm -rf /tmp/fs-debs
