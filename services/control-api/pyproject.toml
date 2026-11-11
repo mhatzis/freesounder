@@ -1,6 +1,6 @@
 [project]
 name = "freesounder-control-api"
-version = "0.3.0"
+version = "0.3.1"
 description = "freesounder control API: a facade over Music Assistant on the household host."
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -12,7 +12,8 @@ dependencies = [
   "pydantic>=2.9",
   "pydantic-settings>=2.6",
   "zeroconf>=0.136",
-  "music-assistant-client>=1.8.0",
+  "music-assistant-client==1.8.0",
+  "music-assistant-models==1.1.236",
   "aiohttp>=3.8.6",
 ]
 

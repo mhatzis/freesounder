@@ -20,6 +20,11 @@ class Room(BaseModel):
     member_ids: list[str] = Field(default_factory=list)
     powered: bool | None = None
     state: str | None = None
+    # "freesounder" = a FreeSounder player (Snapcast client) or a group of them;
+    # "other" = AirPlay/Chromecast/etc. speakers Music Assistant found on the LAN.
+    # /api/v1/rooms lists only "freesounder"; others are at /api/v1/other-speakers.
+    kind: str = "freesounder"
+    provider: str | None = None
 
 
 class NowPlaying(BaseModel):

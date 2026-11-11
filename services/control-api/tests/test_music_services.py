@@ -346,6 +346,8 @@ async def test_ma_adapter_lists_and_starts_oauth_with_mocked_client() -> None:
         providers=[instance],
         players=SimpleNamespace(players=[], get=MagicMock(return_value=None)),
         subscribe=MagicMock(),
+        # MA 2.10.9 flow commands are sent directly (see ma_compat).
+        send_command=AsyncMock(return_value=step.to_dict()),
     )
     backend = SimpleNamespace(_client=client, client=client, _loop=None)
     services = MaMusicServices(backend)
@@ -362,7 +364,10 @@ async def test_ma_adapter_lists_and_starts_oauth_with_mocked_client() -> None:
     assert listing[0].values.get("refresh_token") is None
 
     session = await services.start_music_service_auth(StartAuthBody(domain="spotify"))
-    config_api.setup_provider.assert_awaited_once_with("spotify")
+    client.send_command.assert_awaited_once_with(
+        "config/providers/setup", provider_domain="spotify"
+    )
+    config_api.setup_provider.assert_not_awaited()
     assert session.status == "awaiting_browser"
     assert session.auth_url.startswith("https://accounts.spotify.com/")
     assert session.flow_id == "flow-1"

@@ -8,6 +8,7 @@ from typing import Any
 
 from music_assistant_models.enums import EventType
 
+from freesounder_control_api import ma_compat
 from freesounder_control_api.backend import MusicAssistantUnavailable
 from freesounder_control_api.models import (
     AddMusicServiceBody,
@@ -396,9 +397,9 @@ class MaMusicServices:
             if instance_id:
                 config = await self._config_for(instance_id)
                 domain = str(_attr(config, "domain"))
-                step = await self.client.config.reconfigure_provider(instance_id)
+                step = await ma_compat.reconfigure_provider(self.client, instance_id)
             else:
-                step = await self.client.config.setup_provider(domain)
+                step = await ma_compat.setup_provider(self.client, domain)
         except MusicAssistantUnavailable:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -428,7 +429,7 @@ class MaMusicServices:
             "progress",
         }:
             try:
-                step = await self.client.config.get_setup_flow(session.flow_id)
+                step = await ma_compat.get_setup_flow(self.client, session.flow_id)
                 session = session_from_step(
                     session_id=session.session_id,
                     domain=session.domain,
@@ -447,7 +448,7 @@ class MaMusicServices:
         if not session.flow_id:
             raise MusicServiceError(400, "This sign-in session has no form to submit")
         try:
-            step = await self.client.config.submit_setup_flow(session.flow_id, body.values)
+            step = await ma_compat.submit_setup_flow(self.client, session.flow_id, body.values)
         except MusicAssistantUnavailable:
             raise
         except Exception as exc:  # noqa: BLE001
@@ -470,7 +471,7 @@ class MaMusicServices:
         session = await self.get_music_service_auth(session_id)
         if session.flow_id:
             try:
-                await self.client.config.abort_setup_flow(session.flow_id)
+                await ma_compat.abort_setup_flow(self.client, session.flow_id)
             except Exception:  # noqa: BLE001
                 logger.debug("abort_setup_flow failed", exc_info=True)
         session = session.model_copy(update={"status": "aborted", "error": "Cancelled"})

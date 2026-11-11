@@ -118,3 +118,43 @@ def test_host_serves_immediately_while_music_assistant_is_down() -> None:
     assert rooms.json() == []
     assert system.json()["ma_connected"] is False
     assert play.status_code == 503
+
+
+def test_airplay_players_are_not_rooms_and_snapclient_uses_adopt_name(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from freesounder_control_api import backend as backend_mod
+    from freesounder_control_api.backend import _player_to_room, room_display_name
+
+    name_file = tmp_path / "name"
+    name_file.write_text("Living Room\n")
+    monkeypatch.setattr(backend_mod, "LOCAL_NAME_FILE", name_file)
+
+    snap = SimpleNamespace(player_id="snap-1", display_name="fs-living-room", provider="snapcast")
+    fresh = SimpleNamespace(player_id="snap-0", display_name="fs-new", provider="snapcast")
+    remote = SimpleNamespace(player_id="snap-2", display_name="fs-kitchen", provider="snapcast")
+    apple_tv = SimpleNamespace(player_id="ap-1", display_name="Lounge Apple TV", provider="airplay")
+
+    assert _player_to_room(snap).name == "Living Room"
+    assert _player_to_room(snap).kind == "freesounder"
+    assert _player_to_room(fresh).name == "Living Room"
+    assert _player_to_room(remote).name == "Kitchen"
+    tv = _player_to_room(apple_tv)
+    assert (tv.kind, tv.provider, tv.name) == ("other", "airplay", "Lounge Apple TV")
+    assert room_display_name("Study Speaker", name_file) == "Study Speaker"
+
+
+async def test_ma_backend_hides_other_speakers_from_rooms():
+    from types import SimpleNamespace
+
+    from freesounder_control_api.ma_backend import MusicAssistantBackend
+
+    backend = MusicAssistantBackend("ws://127.0.0.1:8095/ws")
+    players = [
+        SimpleNamespace(player_id="snap-1", display_name="Kitchen", provider="snapcast"),
+        SimpleNamespace(player_id="ap-1", display_name="Apple TV", provider="airplay"),
+    ]
+    backend._client = SimpleNamespace(players=SimpleNamespace(players=players))
+    backend.is_connected = lambda: True  # type: ignore[method-assign]
+    assert [room.id for room in await backend.list_rooms()] == ["snap-1"]
+    assert [room.id for room in await backend.list_other_speakers()] == ["ap-1"]

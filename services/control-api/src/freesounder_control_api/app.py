@@ -230,6 +230,7 @@ def create_app(
                 "health": "/health",
                 "system": "/api/v1/system",
                 "rooms": "/api/v1/rooms",
+                "other_speakers": "/api/v1/other-speakers",
                 "players": "/api/v1/players",
                 "docs": "/docs",
             },
@@ -247,6 +248,13 @@ def create_app(
     @app.get("/api/v1/rooms", response_model=list[Room])
     async def list_rooms() -> list[Room]:
         return await backend.list_rooms()
+
+    @app.get("/api/v1/other-speakers", response_model=list[Room])
+    async def list_other_speakers() -> list[Room]:
+        """AirPlay / Chromecast speakers Music Assistant found (not FreeSounder rooms)."""
+
+        lister = getattr(backend, "list_other_speakers", None)
+        return await lister() if lister is not None else []
 
     @app.get("/api/v1/groups", response_model=list[Room])
     async def list_groups() -> list[Room]:

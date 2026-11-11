@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 import aiohttp
 from music_assistant_client import MusicAssistantClient
 
+from freesounder_control_api import ma_compat
 from freesounder_control_api.backend import (
     MusicAssistantUnavailable,
     _flatten_search,
@@ -68,6 +69,8 @@ class MusicAssistantBackend:
         self._music_services = MaMusicServices(self)
         self.state = "starting"
         self.detail: str | None = "Connecting to Music Assistant"
+        self.snapcast_ok = False
+        self.snapcast_detail: str | None = None
 
     @property
     def client(self) -> MusicAssistantClient:
@@ -91,7 +94,7 @@ class MusicAssistantBackend:
 
     def status(self) -> tuple[str, str | None]:
         if self.is_connected():
-            return "connected", None
+            return "connected", self.snapcast_detail
         return self.state, self.detail
 
     def _current_token(self) -> str | None:
@@ -208,16 +211,22 @@ class MusicAssistantBackend:
             await self._client.send_command("config/onboard_complete")
         except Exception as exc:  # noqa: BLE001
             logger.debug("onboard_complete skipped: %s", exc)
+        await self._ensure_snapcast()
+
+    async def _ensure_snapcast(self) -> None:
+        if self._client is None:
+            return
         try:
-            configs = await self._client.config.get_provider_configs(provider_domain="snapcast")
-            if not configs:
-                await self._client.config.save_provider_config(
-                    provider_domain="snapcast",
-                    values={"snapcast_use_external_server": False},
-                )
-                logger.info("Enabled the Music Assistant Snapcast provider (built-in server)")
-        except Exception:  # noqa: BLE001
+            result = await ma_compat.ensure_snapcast(self._client)
+        except Exception as exc:  # noqa: BLE001
+            self.snapcast_ok = False
+            self.snapcast_detail = f"Snapcast provider not enabled: {type(exc).__name__}: {exc}"
             logger.warning("Could not ensure the Snapcast provider", exc_info=True)
+            return
+        if not self.snapcast_ok:
+            logger.info("Music Assistant Snapcast provider: %s", result)
+        self.snapcast_ok = True
+        self.snapcast_detail = None
 
     async def run_forever(self, retry_seconds: float = 5.0) -> None:
         """Keep a Music Assistant connection open, reconnecting when it drops."""
@@ -234,6 +243,8 @@ class MusicAssistantBackend:
                 except Exception as exc:  # noqa: BLE001
                     self._set("unavailable", f"{type(exc).__name__}: {exc}")
                     logger.warning("Music Assistant connect failed", exc_info=True)
+            elif self._auto_setup and not self.snapcast_ok:
+                await self._ensure_snapcast()
             await asyncio.sleep(retry_seconds)
 
     async def disconnect(self) -> None:
@@ -258,12 +269,22 @@ class MusicAssistantBackend:
             # Fresh host: Music Assistant may still be pulling or starting.
             return []
         players = list(self.client.players.players)
-        return [_player_to_room(player) for player in players]
+        rooms = [_player_to_room(player) for player in players]
+        return [room for room in rooms if room.kind == "freesounder"]
+
+    async def list_other_speakers(self) -> list[Room]:
+        """AirPlay/Chromecast/etc. players MA discovered: not FreeSounder rooms."""
+
+        if not self.is_connected():
+            return []
+        rooms = [_player_to_room(player) for player in self.client.players.players]
+        return [room for room in rooms if room.kind != "freesounder"]
 
     def snapshot_rooms(self) -> list[Room]:
         if self._client is None:
             return []
-        return [_player_to_room(player) for player in self._client.players.players]
+        rooms = [_player_to_room(player) for player in self._client.players.players]
+        return [room for room in rooms if room.kind == "freesounder"]
 
     async def create_group(
         self,

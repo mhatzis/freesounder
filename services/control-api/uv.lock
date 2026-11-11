@@ -241,12 +241,13 @@ wheels = [
 
 [[package]]
 name = "freesounder-control-api"
-version = "0.3.0"
+version = "0.3.1"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
     { name = "fastapi" },
     { name = "music-assistant-client" },
+    { name = "music-assistant-models" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "uvicorn", extra = ["standard"] },
@@ -265,7 +266,8 @@ dev = [
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.8.6" },
     { name = "fastapi", specifier = ">=0.115" },
-    { name = "music-assistant-client", specifier = ">=1.8.0" },
+    { name = "music-assistant-client", specifier = "==1.8.0" },
+    { name = "music-assistant-models", specifier = "==1.1.236" },
     { name = "pydantic", specifier = ">=2.9" },
     { name = "pydantic-settings", specifier = ">=2.6" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },

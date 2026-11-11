@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import re
+import socket
+from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from freesounder_control_api.models import (
@@ -126,6 +129,48 @@ class MusicBackend(Protocol):
     async def set_spotify_connect(self, player_id: str, enabled: bool) -> SpotifyConnectStatus: ...
 
 
+FREESOUNDER_PROVIDERS = ("snapcast",)
+LOCAL_NAME_FILE = Path("/etc/freesounder/name")
+
+
+def _is_freesounder_provider(provider: str | None) -> bool:
+    if not provider:
+        # Mock/test players carry no provider; treat them as rooms.
+        return True
+    return provider.split("--")[0].lower() in FREESOUNDER_PROVIDERS
+
+
+def _slug(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+
+
+def room_display_name(name: str, local_name_file: Path | None = None) -> str:
+    """Show a Snapcast client by its adopt name rather than its hostname.
+
+    snapclient reports the board's hostname (`fs-new` before adopt, `fs-<slug of
+    the adopt name>` after). The local board's adopt name is in
+    /etc/freesounder/name; other boards get their slug turned back into words.
+    """
+
+    path = local_name_file or LOCAL_NAME_FILE
+    try:
+        local = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        local = ""
+    lowered = name.strip().lower()
+    if local and lowered in {
+        "fs-new",
+        socket.gethostname().lower(),
+        f"fs-{_slug(local)}",
+        _slug(local),
+    }:
+        return local
+    match = re.fullmatch(r"fs-([a-z0-9][a-z0-9-]*)", lowered)
+    if match and lowered != "fs-new":
+        return " ".join(part.capitalize() for part in match.group(1).split("-"))
+    return name
+
+
 def _player_to_room(player: Any) -> Room:
     """Map a music_assistant_models.player.Player (or similar) to a Room."""
 
@@ -150,9 +195,15 @@ def _player_to_room(player: Any) -> Room:
     state = getattr(getattr(player, "state", None), "value", getattr(player, "state", None))
     if state is not None:
         state = str(state)
+    provider = str(getattr(player, "provider", "") or "") or None
+    kind = "freesounder" if is_group or _is_freesounder_provider(provider) else "other"
+    if kind == "freesounder" and not is_group:
+        name = room_display_name(str(name))
     return Room(
         id=str(player_id),
         name=str(name),
+        kind=kind,
+        provider=provider,
         available=available,
         volume=int(volume) if volume is not None else None,
         muted=bool(muted) if muted is not None else None,
