@@ -166,3 +166,30 @@ def test_developer_ssh_uses_helper(tmp_env: AgentSettings, tmp_path: Path) -> No
         disabled = client.post("/api/v1/developer/ssh", json={"enabled": False})
         assert disabled.status_code == 200
         assert disabled.json()["enabled"] is False
+
+
+def test_first_player_adopt_as_host_creates_system(
+    client: TestClient, tmp_env: AgentSettings, tmp_path: Path
+) -> None:
+    response = client.post(
+        "/api/v1/agent/adopt",
+        json={"name": "Lounge", "host": "192.168.1.24", "role": "host"},
+    )
+    assert response.status_code == 200
+    info = response.json()
+    assert info["role"] == "host"
+    assert info["effective_role"] == "host"
+    assert info["state"] == "configured"
+    assert (tmp_env.config_dir / "role").read_text().strip() == "host"
+    # The hook runs as a background task after the reply has been sent.
+    assert (tmp_path / "applied").is_file()
+
+
+def test_join_existing_adopt_as_room(client: TestClient, tmp_env: AgentSettings) -> None:
+    response = client.post(
+        "/api/v1/agent/adopt",
+        json={"name": "Kitchen", "host": "192.168.1.24"},
+    )
+    assert response.status_code == 200
+    assert response.json()["role"] == "room"
+    assert (tmp_env.config_dir / "host").read_text().strip() == "192.168.1.24"

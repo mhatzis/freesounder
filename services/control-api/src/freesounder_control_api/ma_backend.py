@@ -3,11 +3,27 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import logging
+from pathlib import Path
+from urllib.parse import urlparse
 
+import aiohttp
 from music_assistant_client import MusicAssistantClient
 
-from freesounder_control_api.backend import _flatten_search, _player_to_room, dict_to_search_items
+from freesounder_control_api.backend import (
+    MusicAssistantUnavailable,
+    _flatten_search,
+    _player_to_room,
+    dict_to_search_items,
+)
+from freesounder_control_api.ma_bootstrap import (
+    BootstrapError,
+    is_local_server,
+    obtain_token,
+    read_secret,
+)
 from freesounder_control_api.ma_music_services import MaMusicServices
 from freesounder_control_api.models import (
     AddMusicServiceBody,
@@ -31,32 +47,199 @@ logger = logging.getLogger(__name__)
 class MusicAssistantBackend:
     """Facade over MusicAssistantClient controllers (players, player_queues, music)."""
 
-    def __init__(self, server_url: str, token: str | None = None) -> None:
+    def __init__(
+        self,
+        server_url: str,
+        token: str | None = None,
+        *,
+        token_file: Path | None = None,
+        admin_file: Path | None = None,
+        auto_setup: bool = False,
+        status_file: Path | None = None,
+    ) -> None:
         self._server_url = server_url
         self._token = token or None
+        self._token_file = token_file
+        self._admin_file = admin_file
+        self._auto_setup = auto_setup and is_local_server(server_url)
+        self._status_file = status_file
         self._client: MusicAssistantClient | None = None
         self._listen_task: asyncio.Task[None] | None = None
         self._music_services = MaMusicServices(self)
+        self.state = "starting"
+        self.detail: str | None = "Connecting to Music Assistant"
 
     @property
     def client(self) -> MusicAssistantClient:
-        if self._client is None:
-            raise RuntimeError("Music Assistant client is not connected")
+        if self._client is None or not self.is_connected():
+            raise MusicAssistantUnavailable(
+                f"Music Assistant is {self.state.replace('_', ' ')}: {self.detail}",
+                state=self.state if self.state != "connected" else "unavailable",
+                detail=self.detail,
+            )
         return self._client
 
-    async def connect(self) -> None:
-        self._client = MusicAssistantClient(self._server_url, None, token=self._token)
-        ready = asyncio.Event()
-        self._listen_task = asyncio.create_task(self._client.start_listening(ready))
+    def is_connected(self) -> bool:
+        client = self._client
+        if client is None:
+            return False
+        if self._listen_task is not None and self._listen_task.done():
+            return False
+        connection = getattr(client, "connection", None)
+        connected = getattr(connection, "connected", True)
+        return bool(connected)
+
+    def status(self) -> tuple[str, str | None]:
+        if self.is_connected():
+            return "connected", None
+        return self.state, self.detail
+
+    def _current_token(self) -> str | None:
+        if self._token:
+            return self._token
+        if self._token_file is not None:
+            return read_secret(self._token_file)
+        return None
+
+    def _launcher_detail(self) -> str | None:
+        """What run-music-assistant last reported (loading, waiting for network...)."""
+
+        if self._status_file is None:
+            return None
         try:
-            await asyncio.wait_for(ready.wait(), timeout=30)
-        except TimeoutError:
-            logger.warning("Music Assistant start_listening did not signal ready within 30s")
-        self._music_services.attach_events()
+            data = json.loads(self._status_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return str(data.get("detail") or data.get("state") or "") or None
+
+    async def _listening(self) -> bool:
+        parsed = urlparse(self._server_url)
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or (443 if parsed.scheme in {"https", "wss"} else 80)
+        try:
+            _, writer = await asyncio.wait_for(asyncio.open_connection(host, port), 3)
+        except (OSError, TimeoutError):
+            return False
+        writer.close()
+        with contextlib.suppress(Exception):
+            await writer.wait_closed()
+        return True
+
+    def _set(self, state: str, detail: str | None) -> MusicAssistantUnavailable:
+        self.state = state
+        self.detail = detail
+        return MusicAssistantUnavailable(f"Music Assistant is {state}: {detail}", state, detail)
+
+    async def connect(self, wait_seconds: float = 15.0) -> None:
+        """One connection attempt. Raises MusicAssistantUnavailable on failure.
+
+        Music Assistant runs in Docker and can take minutes on a fresh host
+        (loading the bundled image, first start), so callers use run_forever()
+        rather than blocking startup on this.
+        """
+
+        if not await self._listening():
+            raise self._set(
+                "starting",
+                self._launcher_detail() or f"Waiting for Music Assistant at {self._server_url}",
+            )
+        token = self._current_token()
+        if token is None and self._auto_setup and self._admin_file and self._token_file:
+            token = await self._bootstrap()
+        try:
+            await self._connect_with(token, wait_seconds)
+        except MusicAssistantUnavailable as exc:
+            can_retry = self._auto_setup and self._admin_file and self._token_file
+            if exc.state == "auth_required" and can_retry and not self._token:
+                token = await self._bootstrap()
+                await self._connect_with(token, wait_seconds)
+            else:
+                raise
+        self.state, self.detail = "connected", None
+        logger.info("Connected to Music Assistant at %s", self._server_url)
+        await self._after_connect()
+
+    async def _bootstrap(self) -> str:
+        assert self._admin_file is not None and self._token_file is not None
+        try:
+            return await obtain_token(self._server_url, self._admin_file, self._token_file)
+        except BootstrapError as exc:
+            raise self._set("auth_required", str(exc)) from exc
+        except (aiohttp.ClientError, OSError, TimeoutError) as exc:
+            raise self._set("starting", f"Music Assistant setup not ready: {exc}") from exc
+
+    async def _connect_with(self, token: str | None, wait_seconds: float) -> None:
+        client = MusicAssistantClient(self._server_url, None, token=token)
+        ready = asyncio.Event()
+        listen = asyncio.create_task(client.start_listening(ready))
+        waiter = asyncio.create_task(ready.wait())
+        try:
+            await asyncio.wait(
+                {listen, waiter},
+                timeout=wait_seconds,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            waiter.cancel()
+        if ready.is_set() and not listen.done():
+            self._client = client
+            self._listen_task = listen
+            self._music_services.attach_events()
+            return
+        reason = "did not finish connecting in time"
+        if listen.done() and not listen.cancelled() and listen.exception() is not None:
+            reason = f"{type(listen.exception()).__name__}: {listen.exception()}"
+        listen.cancel()
+        with contextlib.suppress(BaseException):
+            await listen
+        with contextlib.suppress(Exception):
+            await client.disconnect()
+        lowered = reason.lower()
+        if "auth" in lowered or "token" in lowered:
+            raise self._set("auth_required", f"Music Assistant rejected the login: {reason}")
+        raise self._set("unavailable", f"Music Assistant at {self._server_url}: {reason}")
+
+    async def _after_connect(self) -> None:
+        """Host only: finish onboarding and make sure Snapcast players exist."""
+
+        if not self._auto_setup or self._client is None:
+            return
+        try:
+            await self._client.send_command("config/onboard_complete")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("onboard_complete skipped: %s", exc)
+        try:
+            configs = await self._client.config.get_provider_configs(provider_domain="snapcast")
+            if not configs:
+                await self._client.config.save_provider_config(
+                    provider_domain="snapcast",
+                    values={"snapcast_use_external_server": False},
+                )
+                logger.info("Enabled the Music Assistant Snapcast provider (built-in server)")
+        except Exception:  # noqa: BLE001
+            logger.warning("Could not ensure the Snapcast provider", exc_info=True)
+
+    async def run_forever(self, retry_seconds: float = 5.0) -> None:
+        """Keep a Music Assistant connection open, reconnecting when it drops."""
+
+        while True:
+            if not self.is_connected():
+                if self._client is not None:
+                    with contextlib.suppress(Exception):
+                        await self.disconnect()
+                try:
+                    await self.connect()
+                except MusicAssistantUnavailable as exc:
+                    logger.info("Music Assistant %s: %s", exc.state, exc.detail)
+                except Exception as exc:  # noqa: BLE001
+                    self._set("unavailable", f"{type(exc).__name__}: {exc}")
+                    logger.warning("Music Assistant connect failed", exc_info=True)
+            await asyncio.sleep(retry_seconds)
 
     async def disconnect(self) -> None:
         if self._client is not None:
-            await self._client.disconnect()
+            with contextlib.suppress(Exception):
+                await self._client.disconnect()
         if self._listen_task is not None:
             self._listen_task.cancel()
             try:
@@ -65,11 +248,15 @@ class MusicAssistantBackend:
                 pass
             self._listen_task = None
         self._client = None
+        self._music_services.detach_events()
 
     async def health_connected(self) -> bool:
-        return self._client is not None
+        return self.is_connected()
 
     async def list_rooms(self) -> list[Room]:
+        if not self.is_connected():
+            # Fresh host: Music Assistant may still be pulling or starting.
+            return []
         players = list(self.client.players.players)
         return [_player_to_room(player) for player in players]
 

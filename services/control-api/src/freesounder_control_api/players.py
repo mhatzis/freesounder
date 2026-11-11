@@ -64,6 +64,29 @@ class PlayerNotFound(KeyError):
     """No agent (or mock player) matches the requested id."""
 
 
+class AgentError(RuntimeError):
+    """A player agent was unreachable, timed out, or answered with an error."""
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+def local_addresses() -> set[str]:
+    """Loopback plus this machine's IPv4 addresses (best effort)."""
+
+    found = {"127.0.0.1", "localhost", "::1", local_ip()}
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            found.add(str(info[4][0]))
+    except OSError:
+        pass
+    return found
+
+
+ADOPT_TIMEOUT_SECONDS = 20.0
+
+
 class MockPlayerIndex:
     """In-memory agents used when the control API runs with the mock backend."""
 
@@ -210,16 +233,31 @@ class LanPlayerIndex:
     async def list_unclaimed(self) -> list[UnclaimedPlayer]:
         return [agent for agent in await self.list_agents() if agent.state == "unconfigured"]
 
+    def is_local(self, url: str) -> bool:
+        return url.rstrip("/") == self._local_agent_url or _host_of(url) in local_addresses()
+
     async def adopt(self, body: AdoptBody, household_host: str) -> UnclaimedPlayer:
         url = await self._resolve_url(body.id, body.url)
-        payload = {"name": body.name, "host": household_host, "role": "room"}
-        data = await _request_json("POST", f"{url}/api/v1/agent/adopt", json=payload)
+        local = self.is_local(url)
+        if local:
+            # The app passes this board's LAN IP; talk to our own agent on loopback.
+            url = self._local_agent_url
+        # Adopting this board's own agent makes it the household host. Never
+        # demote the host to a room just because the caller left role unset.
+        role = body.role or ("host" if local else "room")
+        payload = {"name": body.name, "host": household_host, "role": role}
+        data = await _request_json(
+            "POST",
+            f"{url}/api/v1/agent/adopt",
+            json=payload,
+            timeout=ADOPT_TIMEOUT_SECONDS,
+        )
         return UnclaimedPlayer(
             id=str(data.get("id") or body.id or body.name),
             name=str(data.get("name") or body.name),
             address=_host_of(url),
             port=_port_of(url),
-            role=str(data.get("role") or "room"),
+            role=str(data.get("role") or role),
             state=str(data.get("state") or "configured"),
             url=url,
         )
@@ -283,14 +321,33 @@ async def _fetch_agent(base_url: str) -> UnclaimedPlayer | None:
     )
 
 
-async def _request_json(method: str, url: str, json: dict | None = None) -> dict[str, Any]:
-    timeout = aiohttp.ClientTimeout(total=5)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.request(method, url, json=json) as response:
-            if response.status >= 400:
-                body = await response.text()
-                raise PlayerNotFound(f"{url} -> HTTP {response.status}: {body}")
-            return await response.json()
+async def _request_json(
+    method: str,
+    url: str,
+    json: dict | None = None,
+    *,
+    timeout: float = 5.0,  # noqa: ASYNC109 - passed to aiohttp.ClientTimeout
+) -> dict[str, Any]:
+    client_timeout = aiohttp.ClientTimeout(total=timeout)
+    try:
+        async with aiohttp.ClientSession(timeout=client_timeout) as session:
+            async with session.request(method, url, json=json) as response:
+                if response.status == 404:
+                    body = await response.text()
+                    raise PlayerNotFound(f"{url} -> HTTP 404: {body[:200]}")
+                if response.status >= 400:
+                    body = await response.text()
+                    raise AgentError(
+                        f"{method} {url} -> HTTP {response.status}: {body[:200]}",
+                        status=response.status,
+                    )
+                return await response.json()
+    except (PlayerNotFound, AgentError):
+        raise
+    except TimeoutError as exc:
+        raise AgentError(f"{method} {url} timed out after {timeout:g}s") from exc
+    except (aiohttp.ClientError, OSError, ValueError) as exc:
+        raise AgentError(f"{method} {url} failed: {type(exc).__name__}: {exc}") from exc
 
 
 def _host_of(url: str) -> str:

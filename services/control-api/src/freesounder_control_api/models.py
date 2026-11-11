@@ -86,6 +86,9 @@ class Health(BaseModel):
     ma_connected: bool
     version: str
     mock: bool = False
+    # connected | starting | auth_required | unavailable
+    ma_state: str = "connected"
+    ma_detail: str | None = None
 
 
 class EventMessage(BaseModel):
@@ -142,6 +145,10 @@ class AdoptBody(BaseModel):
     name: str = Field(min_length=1)
     id: str | None = None
     url: str | None = None
+    # "host" when the app creates a new system on this board (first player);
+    # "room" when joining an existing system. None: host for this board's own
+    # agent, room for any other player.
+    role: Literal["host", "room"] | None = None
 
 
 class SystemInfo(BaseModel):
@@ -151,6 +158,10 @@ class SystemInfo(BaseModel):
     version: str
     role: str = "host"
     mock: bool = False
+    ma_connected: bool | None = None
+    ma_state: str | None = None
+    ma_detail: str | None = None
+    address: str | None = None
 
 
 SSH_API_WARNING = (

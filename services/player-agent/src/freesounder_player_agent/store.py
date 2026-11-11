@@ -122,8 +122,20 @@ class PlayerStore:
             camilla_path=self._settings.camilla_conf,
         )
 
-    def apply(self, settings: PlayerSettings, *, dac_changed: bool = False) -> None:
+    def apply(
+        self,
+        settings: PlayerSettings,
+        *,
+        dac_changed: bool = False,
+        run_hook: bool = True,
+    ) -> None:
         self.save_settings(settings)
+        if run_hook:
+            self.run_hook(dac_changed=dac_changed)
+
+    def run_hook(self, *, dac_changed: bool = False) -> None:
+        """Run the apply hook (hostname, runtime config, service restarts)."""
+
         command = self._settings.apply_command
         if not command:
             return
@@ -134,16 +146,22 @@ class PlayerStore:
         except (OSError, subprocess.SubprocessError):
             logger.warning("Apply hook failed: %s", command, exc_info=True)
 
-    def adopt(self, body: AdoptBody) -> AgentInfo:
+    def adopt(self, body: AdoptBody, *, run_hook: bool = True) -> AgentInfo:
+        """Record the household and role. With run_hook=False the caller runs
+        run_hook() after replying: the hook renames the host and restarts the
+        control API, which may be the very process waiting on this reply."""
+
         (self._settings.config_dir / "host").write_text(body.host + "\n", encoding="utf-8")
         (self._settings.config_dir / "role").write_text(body.role + "\n", encoding="utf-8")
         current = self.load_settings()
         updated = current.model_copy(update={"name": body.name})
         self.mark_configured()
-        self.apply(updated)
+        self.apply(updated, run_hook=run_hook)
         return self.info()
 
-    def patch_settings(self, patch: PlayerSettingsPatch) -> PlayerSettings:
+    def patch_settings(
+        self, patch: PlayerSettingsPatch, *, run_hook: bool = True
+    ) -> PlayerSettings:
         current = self.load_settings()
         updates = patch.model_dump(exclude_none=True)
         dac_changed = "dac" in updates and updates["dac"] != current.dac
@@ -151,7 +169,7 @@ class PlayerStore:
         if dac_changed:
             updated = updated.model_copy(update={"dac_reboot_required": True})
         self.mark_configured()
-        self.apply(updated, dac_changed=dac_changed)
+        self.apply(updated, dac_changed=dac_changed, run_hook=run_hook)
         return updated
 
     def info(self) -> AgentInfo:

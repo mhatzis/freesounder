@@ -21,6 +21,18 @@ from freesounder_control_api.models import (
 )
 
 
+class MusicAssistantUnavailable(RuntimeError):
+    """Music Assistant is not connected (still starting, pulling, or down).
+
+    state is one of: starting, auth_required, unavailable. detail says why.
+    """
+
+    def __init__(self, message: str, state: str = "unavailable", detail: str | None = None):
+        super().__init__(message)
+        self.state = state
+        self.detail = detail or message
+
+
 @runtime_checkable
 class MusicBackend(Protocol):
     """Operations the control API needs from Music Assistant (or a mock)."""

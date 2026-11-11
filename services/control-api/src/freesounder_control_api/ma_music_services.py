@@ -8,6 +8,7 @@ from typing import Any
 
 from music_assistant_models.enums import EventType
 
+from freesounder_control_api.backend import MusicAssistantUnavailable
 from freesounder_control_api.models import (
     AddMusicServiceBody,
     AuthSession,
@@ -106,6 +107,11 @@ class MaMusicServices:
         )
         self._subscribed = True
 
+    def detach_events(self) -> None:
+        """Forget the subscription so a reconnect subscribes again."""
+
+        self._subscribed = False
+
     def _on_event(self, event: Any) -> None:
         typ = getattr(event, "event", None)
         typ_name = str(getattr(typ, "value", typ) or "")
@@ -199,6 +205,8 @@ class MaMusicServices:
     async def _config_for(self, instance_id: str) -> Any:
         try:
             return await self.client.config.get_provider_config(instance_id)
+        except MusicAssistantUnavailable:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise MusicServiceError(404, f"Music service not found: {instance_id}") from exc
 
@@ -264,6 +272,8 @@ class MaMusicServices:
             configs = await self.client.config.get_provider_configs(include_values=True)
         except TypeError:
             configs = await self.client.config.get_provider_configs()
+        except MusicAssistantUnavailable:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise MusicServiceError(502, f"Music Assistant is not reachable: {exc}") from exc
         services: list[MusicService] = []
@@ -329,6 +339,8 @@ class MaMusicServices:
                 values=body.values,
                 instance_id=None,
             )
+        except MusicAssistantUnavailable:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise MusicServiceError(400, str(exc)) from exc
         instance_id = str(_attr(config, "instance_id"))
@@ -353,6 +365,8 @@ class MaMusicServices:
                 values=values,
                 instance_id=instance_id,
             )
+        except MusicAssistantUnavailable:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise MusicServiceError(400, str(exc)) from exc
         await self._emit(
@@ -364,6 +378,8 @@ class MaMusicServices:
         await self._config_for(instance_id)
         try:
             await self.client.config.remove_provider_config(instance_id)
+        except MusicAssistantUnavailable:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise MusicServiceError(400, str(exc)) from exc
         await self._emit(
@@ -383,6 +399,8 @@ class MaMusicServices:
                 step = await self.client.config.reconfigure_provider(instance_id)
             else:
                 step = await self.client.config.setup_provider(domain)
+        except MusicAssistantUnavailable:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise MusicServiceError(400, f"Could not start sign-in: {exc}") from exc
         session = session_from_step(
@@ -430,6 +448,8 @@ class MaMusicServices:
             raise MusicServiceError(400, "This sign-in session has no form to submit")
         try:
             step = await self.client.config.submit_setup_flow(session.flow_id, body.values)
+        except MusicAssistantUnavailable:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise MusicServiceError(400, str(exc)) from exc
         session = session_from_step(
@@ -612,6 +632,8 @@ class MaMusicServices:
                 values={CONF_CONNECTED_PLAYERS: ids},
                 instance_id=instance_id,
             )
+        except MusicAssistantUnavailable:
+            raise
         except Exception as exc:  # noqa: BLE001
             raise MusicServiceError(400, str(exc)) from exc
         return await self.spotify_connect_status()

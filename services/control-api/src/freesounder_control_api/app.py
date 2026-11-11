@@ -10,10 +10,10 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from freesounder_control_api import __version__
-from freesounder_control_api.backend import MusicBackend
+from freesounder_control_api.backend import MusicAssistantUnavailable, MusicBackend
 from freesounder_control_api.config import Settings, load_settings
 from freesounder_control_api.mdns import MdnsAdvertiser
 from freesounder_control_api.mock_backend import MockMusicBackend
@@ -48,6 +48,7 @@ from freesounder_control_api.models import (
 from freesounder_control_api.music_catalog import CALLBACK_PATH, CALLBACK_SCHEME
 from freesounder_control_api.music_sessions import MusicServiceError
 from freesounder_control_api.players import (
+    AgentError,
     LanPlayerIndex,
     MockPlayerIndex,
     PlayerIndex,
@@ -91,7 +92,21 @@ def create_backend(settings: Settings) -> MusicBackend:
         return MockMusicBackend()
     from freesounder_control_api.ma_backend import MusicAssistantBackend
 
-    return MusicAssistantBackend(settings.ma_url, settings.ma_token)
+    return MusicAssistantBackend(
+        settings.ma_url,
+        settings.ma_token,
+        token_file=settings.ma_token_file,
+        admin_file=settings.ma_admin_file,
+        auto_setup=settings.ma_auto_setup,
+        status_file=settings.ma_status_file,
+    )
+
+
+def backend_status(backend: MusicBackend, connected: bool) -> tuple[str, str | None]:
+    status = getattr(backend, "status", None)
+    if callable(status):
+        return status()
+    return ("connected", None) if connected else ("unavailable", None)
 
 
 def create_app(
@@ -132,8 +147,16 @@ def create_app(
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         del app
-        with suppress(Exception):
-            await backend.connect()
+        # Never block startup on Music Assistant: on a fresh host it can take
+        # minutes to pull and start, and the app must reach /health, /system and
+        # adopt meanwhile. run_forever() keeps retrying in the background.
+        connector: asyncio.Task[None] | None = None
+        run_forever = getattr(backend, "run_forever", None)
+        if callable(run_forever):
+            connector = asyncio.create_task(run_forever())
+        else:
+            with suppress(Exception):
+                await backend.connect()
         should_advertise = settings.mdns_enabled if enable_mdns is None else enable_mdns
         if should_advertise:
             with suppress(Exception):
@@ -143,6 +166,10 @@ def create_app(
         poll.cancel()
         with suppress(asyncio.CancelledError):
             await poll
+        if connector is not None:
+            connector.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await connector
         await advertiser.stop()
         with suppress(Exception):
             await backend.disconnect()
@@ -160,15 +187,62 @@ def create_app(
     )
     app.state.hub = hub
 
+    @app.exception_handler(AgentError)
+    async def _agent_error(request: Request, exc: AgentError) -> JSONResponse:
+        del request
+        return JSONResponse(status_code=502, content={"detail": f"Player agent error: {exc}"})
+
+    @app.exception_handler(MusicAssistantUnavailable)
+    async def _not_ready(request: Request, exc: MusicAssistantUnavailable) -> JSONResponse:
+        del request
+        return JSONResponse(
+            status_code=503,
+            content={"detail": str(exc), "ma_state": exc.state, "ma_detail": exc.detail},
+        )
+
     @app.get("/health", response_model=Health)
     async def health() -> Health:
         connected = await backend.health_connected()
+        state, detail = backend_status(backend, connected)
         return Health(
             status="ok" if connected else "degraded",
             ma_connected=connected,
             version=__version__,
             mock=settings.mock_ma or isinstance(backend, MockMusicBackend),
+            ma_state=state,
+            ma_detail=detail,
         )
+
+    @app.get("/")
+    async def root() -> dict[str, Any]:
+        """Friendly landing for a browser pointed at the player."""
+
+        connected = await backend.health_connected()
+        state, detail = backend_status(backend, connected)
+        return {
+            "service": "FreeSounder control API",
+            "name": settings.mdns_name,
+            "version": __version__,
+            "status": "ok" if connected else "degraded",
+            "music_assistant": {"state": state, "detail": detail},
+            "address": local_ip(),
+            "links": {
+                "health": "/health",
+                "system": "/api/v1/system",
+                "rooms": "/api/v1/rooms",
+                "players": "/api/v1/players",
+                "docs": "/docs",
+            },
+        }
+
+    @app.get("/api/v1/players", response_model=list[UnclaimedPlayer])
+    async def list_players() -> list[UnclaimedPlayer]:
+        """Every player agent this host can see (adopted or not), for diagnostics."""
+
+        list_all = getattr(players, "list_agents", None)
+        if callable(list_all):
+            return await list_all()
+        return await players.list_unclaimed()
 
     @app.get("/api/v1/rooms", response_model=list[Room])
     async def list_rooms() -> list[Room]:
@@ -252,11 +326,17 @@ def create_app(
 
     @app.get("/api/v1/system", response_model=SystemInfo)
     async def system() -> SystemInfo:
+        connected = await backend.health_connected()
+        state, detail = backend_status(backend, connected)
         return SystemInfo(
             name=settings.mdns_name,
             version=__version__,
             role="host",
             mock=settings.mock_ma or isinstance(backend, MockMusicBackend),
+            ma_connected=connected,
+            ma_state=state,
+            ma_detail=detail,
+            address=local_ip(),
         )
 
     @app.get("/api/v1/players/unclaimed", response_model=list[UnclaimedPlayer])
@@ -274,7 +354,10 @@ def create_app(
             result = await players.adopt(body, host_addr or household)
         except PlayerNotFound as exc:
             raise HTTPException(status_code=404, detail=f"Player not found: {exc}") from exc
-        await hub.broadcast("rooms", [r.model_dump() for r in await backend.list_rooms()])
+        except AgentError as exc:
+            raise HTTPException(status_code=502, detail=f"Player agent error: {exc}") from exc
+        with suppress(Exception):
+            await hub.broadcast("rooms", [r.model_dump() for r in await backend.list_rooms()])
         return result
 
     @app.get("/api/v1/players/{player_id}/settings", response_model=PlayerSettings)

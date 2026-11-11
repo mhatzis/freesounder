@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from freesounder_player_agent import __version__
@@ -66,8 +66,11 @@ def create_app(
         return store.info()
 
     @app.post("/api/v1/agent/adopt", response_model=AgentInfo)
-    async def adopt(body: AdoptBody) -> AgentInfo:
-        info = store.adopt(body)
+    async def adopt(body: AdoptBody, background: BackgroundTasks) -> AgentInfo:
+        # Reply first, then run the hook: it renames the host and restarts the
+        # control API that is usually the caller of this request.
+        info = store.adopt(body, run_hook=False)
+        background.add_task(store.run_hook)
         with suppress(Exception):
             await advertiser.update()
         return info
@@ -77,8 +80,12 @@ def create_app(
         return store.load_settings()
 
     @app.patch("/api/v1/settings", response_model=PlayerSettings)
-    async def patch_settings(body: PlayerSettingsPatch) -> PlayerSettings:
-        result = store.patch_settings(body)
+    async def patch_settings(
+        body: PlayerSettingsPatch, background: BackgroundTasks
+    ) -> PlayerSettings:
+        current_dac = store.load_settings().dac
+        result = store.patch_settings(body, run_hook=False)
+        background.add_task(store.run_hook, dac_changed=result.dac != current_dac)
         with suppress(Exception):
             await advertiser.update()
         return result
