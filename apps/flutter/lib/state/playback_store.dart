@@ -741,6 +741,35 @@ class PlaybackStore extends Notifier<PlaybackState> {
     );
   }
 
+  /// Returns a one-line result for the room settings sheet.
+  Future<String> testTone(String playerId) async {
+    if (state.mockMode) {
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      return 'Test tone played (demo)';
+    }
+    final client = _client;
+    if (client == null) {
+      throw ControlApiException('Not connected to a system');
+    }
+    final result = await client.testTone(playerId);
+    return describeToneResult(result);
+  }
+
+  Future<Map<String, dynamic>> roomAudio(String playerId) async {
+    if (state.mockMode) {
+      return const {
+        'output': {'pcm': 'hdmi:CARD=vc4hdmi0,DEV=0', 'kind': 'hdmi', 'reason': 'HDMI0 (display connected)'},
+        'chain': {'eq': 'flat', 'ok': true},
+        'snapclient': {'connected': true, 'volume': 40, 'muted': false, 'stream': 'Radio'},
+      };
+    }
+    final client = _client;
+    if (client == null) {
+      throw ControlApiException('Not connected to a system');
+    }
+    return client.roomAudio(playerId);
+  }
+
   Future<PlayerSettings> loadSettings(String playerId) async {
     if (state.mockMode) {
       final existing = _mock.settings[playerId] ??
@@ -842,4 +871,38 @@ String? _normaliseUrl(String raw) {
     return uri.replace(port: 8080).toString().replaceFirst(RegExp(r'/$'), '');
   }
   return value.replaceFirst(RegExp(r'/$'), '');
+}
+
+/// "Played on HDMI0 (display connected)" or the failure reason.
+String describeToneResult(Map<String, dynamic> result) {
+  final audio = (result['audio'] as Map?)?.cast<String, dynamic>() ?? const {};
+  final output = (audio['output'] as Map?)?.cast<String, dynamic>() ?? const {};
+  final where = (output['reason'] as String?)?.isNotEmpty == true ? output['reason'] as String : output['pcm'] ?? 'the speaker';
+  if (result['ok'] == true) {
+    if (output['kind'] == 'null') {
+      return 'No speaker found: this Pi has no audio board and no HDMI display with sound connected.';
+    }
+    return 'Test tone played on $where. If you heard nothing, check the TV or amplifier input and volume.';
+  }
+  return 'Test tone failed on $where: ${result['detail'] ?? 'unknown error'}';
+}
+
+/// Short lines for the room settings "Audio output" panel.
+List<String> describeRoomAudio(Map<String, dynamic> audio) {
+  final output = (audio['output'] as Map?)?.cast<String, dynamic>() ?? const {};
+  final chain = (audio['chain'] as Map?)?.cast<String, dynamic>();
+  final hw = (audio['hw'] as Map?)?.cast<String, dynamic>();
+  final snap = (audio['snapclient'] as Map?)?.cast<String, dynamic>();
+  final stream = (audio['stream'] as Map?)?.cast<String, dynamic>();
+  return [
+    'Output: ${output['reason'] ?? output['pcm'] ?? 'unknown'}',
+    if (output['pcm'] != null) 'Device: ${output['pcm']}${hw != null ? ' (${hw['state'] ?? '?'})' : ''}',
+    if (chain != null)
+      chain['ok'] == false
+          ? 'Sound chain: FAILED (${chain['detail']})'
+          : 'Sound chain: OK${chain['eq'] == 'bypassed' ? ', tone controls unavailable' : ''}',
+    if (snap != null)
+      'Player: ${snap['connected'] == true ? 'connected' : 'not connected'}, volume ${snap['volume'] ?? '?'}${snap['muted'] == true ? ', muted' : ''}',
+    if (stream != null) 'Stream: ${stream['id']} ${stream['status'] ?? ''}'.trim(),
+  ];
 }

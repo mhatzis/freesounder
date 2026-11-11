@@ -9,6 +9,8 @@ freesounder-setup - inspect or configure this player
 Usage:
   freesounder-setup status              # room, household, group, sources
   freesounder-setup doctor              # BLE / network / services diagnostics
+  freesounder-setup audio               # output device, EQ chain, snapclient and stream state
+  freesounder-setup test-tone           # play left / right / both tones on this speaker
   freesounder-setup set-name <room>     # rename the room (also fs-<room> hostname)
   freesounder-setup set-dac auto|none|dacplus|digiampplus|hifiberry-dac|iqaudio-dacplus
   freesounder-setup reset               # forget the household and room (factory reset)
@@ -40,6 +42,33 @@ case "$cmd" in
 		fi
 		api http://127.0.0.1:8080/api/v2/doctor || true
 		echo
+		;;
+	audio)
+		cat /etc/freesounder/audio-output 2>/dev/null || echo "no output chosen yet"
+		id=$(cat /etc/freesounder/player-id 2>/dev/null || true)
+		if [[ -n "$id" ]]; then
+			api "http://127.0.0.1:8080/api/v2/rooms/${id}/audio" || true
+			echo
+		fi
+		echo "snapclient: $(systemctl is-active snapclient.service 2>/dev/null)"
+		cat /run/freesounder/snapclient.env 2>/dev/null | grep -v '^FS_PLAYER_ID' || true
+		for f in /proc/asound/card*/pcm*p/sub0/status; do
+			[[ -r "$f" ]] && echo "$f: $(head -1 "$f")"
+		done
+		;;
+	test-tone)
+		need_root
+		id=$(cat /etc/freesounder/player-id 2>/dev/null || true)
+		echo "Playing: left 440 Hz, right 660 Hz, then both 880 Hz..."
+		if [[ -n "$id" ]] && api --max-time 45 -X POST "http://127.0.0.1:8080/api/v2/rooms/${id}/test-tone" -d '{}'; then
+			echo
+		else
+			# freesounderd is not answering: do it by hand.
+			systemctl stop snapclient.service || true
+			/usr/lib/freesounder/select-audio-output || true
+			speaker-test -D freesounder -c 2 -t sine -f 440 -l 1 -p 1000000 || echo "speaker-test failed (see the error above)"
+			systemctl start snapclient.service || true
+		fi
 		;;
 	set-name)
 		need_root

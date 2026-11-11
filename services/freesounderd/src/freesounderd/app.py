@@ -358,6 +358,20 @@ def create_app(
         engine.kick()
         return result
 
+    @app.post("/api/v2/rooms/{rid}/test-tone")
+    async def test_tone(rid: str) -> Any:
+        """Play a short left / right / both tone on this room's speaker."""
+        if rid != engine.id:
+            return await engine.forward(rid, "POST", f"/api/v2/rooms/{rid}/test-tone", {}, wait=45)
+        return await engine.test_tone()
+
+    @app.get("/api/v2/rooms/{rid}/audio")
+    async def room_audio(rid: str) -> Any:
+        """Active ALSA output, EQ chain self-test, kernel PCM state, snapclient state."""
+        if rid != engine.id:
+            return await engine.forward(rid, "GET", f"/api/v2/rooms/{rid}/audio")
+        return engine._audio_status()
+
     @app.get("/api/v2/rooms/{rid}/developer/ssh", response_model=SshDeveloperStatus)
     async def get_ssh(rid: str) -> Any:
         if rid != engine.id:

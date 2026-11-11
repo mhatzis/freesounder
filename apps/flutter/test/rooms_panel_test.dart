@@ -152,6 +152,35 @@ void main() {
     expect(find.byKey(const Key('balance-slider')), findsOneWidget);
     expect(find.byKey(const Key('loudness-switch')), findsOneWidget);
     expect(find.text('Bass boost'), findsOneWidget);
+
+    await tester.scrollUntilVisible(find.byKey(const Key('test-tone-button')), 200,
+        scrollable: find.byType(Scrollable).last);
+    await tester.tap(find.byKey(const Key('test-tone-button')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('test-tone-result')), findsOneWidget);
+    expect(find.textContaining('Output: HDMI0'), findsOneWidget);
+  });
+
+  test('test tone results read plainly', () {
+    expect(
+      describeToneResult({
+        'ok': false,
+        'detail': 'Broken configuration',
+        'audio': {
+          'output': {'pcm': 'hdmi:CARD=vc4hdmi1,DEV=0', 'reason': 'HDMI1 (display connected)'},
+        },
+      }),
+      'Test tone failed on HDMI1 (display connected): Broken configuration',
+    );
+    expect(
+      describeToneResult({
+        'ok': true,
+        'audio': {
+          'output': {'pcm': 'null', 'kind': 'null'},
+        },
+      }),
+      contains('No speaker found'),
+    );
   });
 
   testWidgets('add player wizard lists a demo Pi and can adopt it', (tester) async {

@@ -48,6 +48,9 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
   var _sshBusy = false;
   SshDeveloperStatus? _ssh;
   String? _error;
+  var _toneBusy = false;
+  String? _toneResult;
+  List<String>? _audioLines;
 
   @override
   void initState() {
@@ -126,6 +129,34 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
     }
   }
 
+
+  Future<void> _testTone() async {
+    setState(() {
+      _toneBusy = true;
+      _toneResult = null;
+    });
+    final store = ref.read(playbackProvider.notifier);
+    String result;
+    try {
+      result = await store.testTone(widget.roomId);
+    } on Object catch (err) {
+      result = 'Test tone failed: ${userMessageFor(err)}';
+    }
+    List<String>? lines;
+    try {
+      lines = describeRoomAudio(await store.roomAudio(widget.roomId));
+    } on Object {
+      lines = null;
+    }
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _toneBusy = false;
+      _toneResult = result;
+      _audioLines = lines;
+    });
+  }
 
   void _onVersionTap() {
     setState(() {
@@ -285,6 +316,24 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
                         style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
                       ),
                     ],
+                  ],
+                  const SizedBox(height: 16),
+                  OutlinedButton.icon(
+                    key: const Key('test-tone-button'),
+                    onPressed: _toneBusy ? null : _testTone,
+                    icon: _toneBusy
+                        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.graphic_eq),
+                    label: Text(_toneBusy ? 'Playing test tone…' : 'Play test tone'),
+                  ),
+                  if (_toneResult != null) ...[
+                    const SizedBox(height: 8),
+                    Text(_toneResult!, key: const Key('test-tone-result'), style: text.bodySmall),
+                  ],
+                  if (_audioLines != null) ...[
+                    const SizedBox(height: 4),
+                    for (final line in _audioLines!)
+                      Text(line, style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant)),
                   ],
                   const SizedBox(height: 20),
                   GestureDetector(

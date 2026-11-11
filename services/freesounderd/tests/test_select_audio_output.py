@@ -49,13 +49,14 @@ pytestmark = pytest.mark.skipif(
 
 def test_pi5_hdmi1_connected(tmp_path):
     got = _run(tmp_path, PI5_HDMI_ONLY, {1: "disconnected", 2: "connected"})
-    assert got["pcm"] == "default:CARD=vc4hdmi1"
+    assert got["pcm"] == "hdmi:CARD=vc4hdmi1,DEV=0"
+    assert got["kind"] == "hdmi"
     assert got["card"] == "1"
 
 
 def test_pi5_hdmi0_connected(tmp_path):
     got = _run(tmp_path, PI5_HDMI_ONLY, {1: "connected", 2: "disconnected"})
-    assert got["pcm"] == "default:CARD=vc4hdmi0"
+    assert got["pcm"] == "hdmi:CARD=vc4hdmi0,DEV=0"
 
 
 def test_no_display_falls_back_to_null_sink(tmp_path):
@@ -68,6 +69,7 @@ def test_dac_wins_over_hdmi(tmp_path):
     got = _run(tmp_path, cards, {1: "connected"})
     assert got["pcm"] == "default:CARD=sndrpihifiberry"
     assert got["card"] == "2"
+    assert got["kind"] == "card"
 
 
 def test_no_cards_at_all(tmp_path):

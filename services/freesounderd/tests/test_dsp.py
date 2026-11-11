@@ -43,7 +43,9 @@ def test_alsa_and_camilla_render_and_write(tmp_path) -> None:
     alsa = render_alsa_conf(settings)
     assert "pcm.freesounder" in alsa
     assert "label Eq10X2" in alsa
-    assert "ttable.0.0 1.0" in alsa
+    # Balance -4 (left 1.0, right 0.6) times the EQ make-up gain.
+    assert "ttable.0.0 0.66" in alsa
+    assert "ttable.1.1 0.396" in alsa
     camilla = render_camilla_yaml(settings)
     assert "type: Lowshelf" in camilla
     assert "type: Highshelf" in camilla
@@ -66,9 +68,12 @@ def test_selected_audio_output_feeds_alsa_chain(tmp_path):
     from freesounderd.dsp import read_audio_output
 
     output = tmp_path / "audio-output"
-    assert read_audio_output(output) == ("default", "0")
-    output.write_text("pcm=default:CARD=vc4hdmi1\ncard=1\nreason=HDMI1 (display connected)\n")
-    assert read_audio_output(output) == ("default:CARD=vc4hdmi1", "1")
+    assert read_audio_output(output)["pcm"] == "default"
+    output.write_text(
+        "pcm=hdmi:CARD=vc4hdmi1,DEV=0\ncard=1\nkind=hdmi\nreason=HDMI1 (display connected)\n"
+    )
+    got = read_audio_output(output)
+    assert (got["pcm"], got["card"], got["kind"]) == ("hdmi:CARD=vc4hdmi1,DEV=0", "1", "hdmi")
 
     alsa_path = tmp_path / "99-freesounder.conf"
     write_dsp_configs(
@@ -78,7 +83,8 @@ def test_selected_audio_output_feeds_alsa_chain(tmp_path):
         output_file=output,
     )
     text = alsa_path.read_text()
-    assert 'slave.pcm "default:CARD=vc4hdmi1"' in text
+    assert 'pcm "hdmi:CARD=vc4hdmi1,DEV=0"' in text
+    assert "rate 48000" in text and "format S16_LE" in text
     assert "card 1" in text
 
     output.write_text("pcm=null\ncard=0\n")
@@ -86,3 +92,90 @@ def test_selected_audio_output_feeds_alsa_chain(tmp_path):
         PlayerSettings(), alsa_path=alsa_path, camilla_path=tmp_path / "c.yml", output_file=output
     )
     assert 'slave.pcm "null"' in alsa_path.read_text()
+
+
+def _block(text: str, name: str) -> str:
+    start = text.index(f"pcm.{name} {{")
+    return text[start : text.index("\n}", start)]
+
+
+def test_ladspa_is_wrapped_in_plug_on_both_sides() -> None:
+    """Regression (v0.6.0 silence): ladspa -> route directly cannot be opened."""
+
+    text = render_alsa_conf(PlayerSettings(bass=3), slave_pcm="default:CARD=x")
+    assert 'slave.pcm "freesounder_post"' in _block(text, "freesounder_eq")
+    post = _block(text, "freesounder_post")
+    assert "type plug" in post and 'slave.pcm "freesounder_bal"' in post
+    assert "pcm.freesounder_selftest_eq" in text
+
+
+def test_flat_tone_controls_skip_the_eq() -> None:
+    text = render_alsa_conf(PlayerSettings(), slave_pcm="default:CARD=x")
+    assert "ladspa" not in text
+    assert "ttable.0.0 1.0" in text
+    off = render_alsa_conf(PlayerSettings(bass=2), slave_pcm="default:CARD=x", eq=False)
+    assert "ladspa" not in off
+    assert "self-test" in off
+
+
+def test_apply_falls_back_without_eq_when_the_chain_fails(tmp_path) -> None:
+    from freesounderd.dsp import apply
+
+    calls = []
+
+    def fake_test():
+        calls.append(1)
+        return (len(calls) > 1, "Broken configuration" if len(calls) == 1 else "ok")
+
+    alsa = tmp_path / "a.conf"
+    status = apply(
+        PlayerSettings(bass=4),
+        alsa_path=alsa,
+        camilla_path=tmp_path / "c.yml",
+        status_path=tmp_path / "chain.json",
+        test=fake_test,
+    )
+    assert status["eq"] == "bypassed" and status["ok"] is True
+    assert status["eq_error"] == "Broken configuration"
+    assert "ladspa" not in alsa.read_text()
+    assert (tmp_path / "chain.json").is_file()
+
+
+def test_real_alsa_chain_opens(tmp_path) -> None:
+    """With alsa-utils and caps installed, the rendered chain really opens."""
+
+    import os
+    import shutil
+    import subprocess
+
+    import pytest
+
+    if shutil.which("aplay") is None or not os.path.exists("/usr/lib/ladspa/caps.so"):
+        pytest.skip("needs aplay and caps")
+    for kind, pcm in (("card", "null"), ("hdmi", "null")):
+        conf = render_alsa_conf(PlayerSettings(bass=4, balance=2), slave_pcm=pcm, kind=kind)
+        home = tmp_path / kind
+        home.mkdir()
+        (home / ".asoundrc").write_text(conf)
+        for device in ("freesounder", "freesounder_selftest"):
+            proc = subprocess.run(
+                [
+                    "aplay",
+                    "-q",
+                    "-D",
+                    device,
+                    "-t",
+                    "raw",
+                    "-f",
+                    "S16_LE",
+                    "-r",
+                    "44100",
+                    "-c",
+                    "2",
+                ],
+                input=b"\0" * 17640,
+                env={**os.environ, "HOME": str(home)},
+                capture_output=True,
+                check=False,
+            )
+            assert proc.returncode == 0, proc.stderr.decode()

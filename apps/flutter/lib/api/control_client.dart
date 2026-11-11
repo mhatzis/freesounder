@@ -118,6 +118,18 @@ class ControlApiClient {
       _send('POST', '/api/v2/groups/$roomOrGroupId/radio', station.toPlayJson());
 
   /// Seek the group's Spotify playback (milliseconds).
+  /// Plays left / right / both tones through this room's full audio chain.
+  Future<Map<String, dynamic>> testTone(String playerId) async {
+    final data = await _send('POST', '/api/v2/rooms/$playerId/test-tone', null, true);
+    return (data as Map?)?.cast<String, dynamic>() ?? const {};
+  }
+
+  /// Active output device, EQ chain self-test, snapclient and stream state.
+  Future<Map<String, dynamic>> roomAudio(String playerId) async {
+    final data = await _send('GET', '/api/v2/rooms/$playerId/audio');
+    return (data as Map?)?.cast<String, dynamic>() ?? const {};
+  }
+
   Future<void> seek(String roomOrGroupId, int positionMs) =>
       _send('POST', '/api/v2/groups/$roomOrGroupId/seek', {'position_ms': positionMs});
 

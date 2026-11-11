@@ -23,6 +23,7 @@ import httpx
 
 from freesounderd import __version__, peers
 from freesounderd.artwork import AirplayArt, ArtLookup, split_stream_title
+from freesounderd.audio import audio_state, play_tone
 from freesounderd.config import DaemonSettings
 from freesounderd.discovery import Discovery, local_ip
 from freesounderd.radio import RadioBrowser, RadioPlayer
@@ -167,6 +168,8 @@ class Engine:
         self._model = board_model()
         self._task: asyncio.Task[None] | None = None
         self.notices: list[dict[str, Any]] = []
+        self._tone_lock = asyncio.Lock()
+        self._tone_active = False
         self.snap_local = SnapcastRpc(settings.snapserver_rpc, self.http)
         self.spotify = LibrespotClient(settings.librespot_api, self.http)
         self.radio = RadioPlayer(
@@ -816,6 +819,9 @@ class Engine:
 
     async def _target_snapclient(self, host: str) -> None:
         env = f'FS_PLAYER_ID={self.id}\nSNAPCLIENT_URL="tcp://{host}:1704"\n'
+        if self._tone_active:
+            # A test tone owns the output; snapclient comes back afterwards.
+            return
         if not self.settings.manage_system:
             if self._snap_target != host:
                 self._snap_target = host
@@ -886,6 +892,7 @@ class Engine:
             "airplay": self.airplay_version,
             "hat": detected_hat(),
             "net": self._net,
+            "audio": self._audio_status(),
             "updated": time.time(),
         }
         with contextlib.suppress(OSError):
@@ -1261,6 +1268,70 @@ class Engine:
         with contextlib.suppress(OSError):
             self.store.save_radio_favourites(recents)
 
+    def _audio_status(self) -> dict[str, Any]:
+        if not self.settings.manage_system:
+            return {}
+        try:
+            state = audio_state()
+        except Exception:  # noqa: BLE001 - status must never break the loop
+            logger.debug("audio state failed", exc_info=True)
+            return {}
+        state["tone"] = self._tone_active
+        server = self._server_status or {}
+        for gid, client in clients_of(server) if server else []:
+            if client.get("id") == self.id:
+                vol = (client.get("config") or {}).get("volume") or {}
+                group = next((g for g in server.get("groups", []) if g.get("id") == gid), {})
+                state["snapclient"] = {
+                    "connected": bool(client.get("connected")),
+                    "volume": vol.get("percent"),
+                    "muted": bool(vol.get("muted")) or bool(group.get("muted")),
+                    "stream": group.get("stream_id"),
+                }
+                stream = next(
+                    (x for x in server.get("streams", []) if x.get("id") == group.get("stream_id")),
+                    None,
+                )
+                if stream is not None:
+                    state["stream"] = {"id": stream.get("id"), "status": stream.get("status")}
+        if self.is_leader and self.source == "radio":
+            state["radio"] = {"running": self.radio.running, "restarts": self.radio.restarts}
+        return state
+
+    async def test_tone(self, seconds: float = 3.0) -> dict[str, Any]:
+        """Stop snapclient, play a tone through the full ALSA chain, start it again."""
+
+        if self._tone_lock.locked():
+            raise EngineError(409, "A test tone is already playing")
+        async with self._tone_lock:
+            self._tone_active = True
+            try:
+                if not self.settings.manage_system:
+                    self.system.calls.append(("test-tone", str(seconds)))
+                    return {"ok": True, "detail": "played", "audio": {}}
+                await self.system.systemctl("stop", SNAPCLIENT_UNIT)
+                # select-audio-output also re-checks HDMI and self-tests the chain.
+                proc = await asyncio.create_subprocess_exec(
+                    "/usr/lib/freesounder/select-audio-output",
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(proc.wait(), timeout=30)
+                wav = self.settings.run_dir / "test-tone.wav"
+                ok, detail = await play_tone(wav, seconds=seconds)
+            finally:
+                self._tone_active = False
+                await self.system.systemctl("start", SNAPCLIENT_UNIT)
+                self.kick()
+        audio = self._audio_status()
+        output = audio.get("output") or {}
+        self._notice(
+            f"Test tone {'played' if ok else 'failed'} on {output.get('pcm', '?')}"
+            + ("" if ok else f": {detail}")
+        )
+        return {"ok": ok, "detail": detail, "audio": audio}
+
     async def doctor(self) -> dict[str, Any]:
         units = {}
         for unit in (
@@ -1294,4 +1365,5 @@ class Engine:
             "hat": detected_hat(),
             "net": self._net,
             "notices": self.notices,
+            "audio": self._audio_status(),
         }

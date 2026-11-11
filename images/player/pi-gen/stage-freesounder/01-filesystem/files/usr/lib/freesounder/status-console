@@ -175,6 +175,59 @@ except Exception as exc:
 PY
 }
 
+audio_block() {
+	PY=python3
+	if [[ -x /opt/freesounder/venv/bin/python ]]; then
+		PY=/opt/freesounder/venv/bin/python
+	fi
+	SNAP=$(systemctl is-active snapclient.service 2>/dev/null)
+	SNAP="$SNAP" "$PY" - <<'PY'
+import json
+import os
+from pathlib import Path
+
+out = {}
+try:
+    for line in Path("/etc/freesounder/audio-output").read_text().splitlines():
+        k, _, v = line.partition("=")
+        out[k] = v
+except OSError:
+    pass
+try:
+    st = json.loads(Path("/run/freesounder/status.json").read_text())
+except (OSError, ValueError):
+    st = {}
+audio = st.get("audio") or {}
+chain = audio.get("chain") or {}
+hw = audio.get("hw") or {}
+snap = audio.get("snapclient") or {}
+stream = audio.get("stream") or {}
+target = st.get("snapclient_target") or "?"
+print(f"  output     : {out.get('pcm', 'not chosen yet')} - {out.get('reason', '')}")
+eq = chain.get("eq", "?")
+ok = chain.get("ok")
+note = "" if ok in (None, True) else f"  FAILED: {chain.get('detail', '')}"
+if chain.get("eq_error"):
+    note += f"  (EQ off: {chain['eq_error']})"
+print(f"  ALSA chain : EQ {eq}{note}")
+if hw:
+    fmt = " ".join(str(hw[k]) for k in ("format", "rate") if hw.get(k))
+    print(f"  device     : {hw.get('device', '?')} {hw.get('state', '?')} {fmt}".rstrip())
+vol = snap.get("volume")
+mute = " MUTED" if snap.get("muted") else ""
+conn = "connected" if snap.get("connected") else "not connected"
+print(f"  snapclient : {os.environ.get('SNAP', '?')}, {conn} to {target}, volume {vol}{mute}")
+src = st.get("source", "?")
+radio = audio.get("radio")
+extra = ""
+if radio is not None:
+    extra = "  decoder " + ("running" if radio.get("running") else "NOT running")
+    if radio.get("restarts"):
+        extra += f" (restarts {radio['restarts']})"
+print(f"  stream     : {stream.get('id', '?')} {stream.get('status', '')} - source {src}, {st.get('play_state', '?')}{extra}")
+PY
+}
+
 while true; do
 	host=$(hostname -s 2>/dev/null || echo fs-new)
 	pretty=$(room_name)
@@ -197,6 +250,9 @@ $(ble_block)
 
 Wi-Fi
 $(wifi_block)
+
+Audio
+$(audio_block)
 
 Services
 $(services_block)
