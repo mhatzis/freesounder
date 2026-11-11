@@ -87,3 +87,36 @@ List<String> decodeImprovResult(List<int> frame) {
   }
   return decodeImprovStrings(parsed.data);
 }
+
+const improvStateAuthorizationRequired = 0x01;
+const improvErrorInvalidRpc = 0x01;
+const improvErrorUnknownRpc = 0x02;
+const improvErrorNotAuthorized = 0x04;
+const improvErrorBadHostname = 0x05;
+
+/// Bytes per GATT write: ATT MTU minus the 3-byte header, never below the
+/// 20 bytes every link supports, capped so a slow link does not stall.
+int writeChunkSize(int mtu) {
+  final size = mtu - 3;
+  if (size < 20) {
+    return 20;
+  }
+  return size > 182 ? 182 : size;
+}
+
+/// Friendly text for an Improv error-state byte.
+String friendlyImprovError(int code) {
+  switch (code) {
+    case improvErrorInvalidRpc:
+    case improvErrorUnknownRpc:
+      return 'The player did not understand the app. Update the app and the player, then try again.';
+    case improvErrorUnableToConnect:
+      return 'The player could not join that network. Check the password and try again.';
+    case improvErrorNotAuthorized:
+      return 'The player needs you to confirm setup on the device first.';
+    case improvErrorBadHostname:
+      return 'That name is not allowed. Try a shorter name using letters and numbers.';
+    default:
+      return 'The player reported a setup problem. Try again.';
+  }
+}

@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../api/ble_steps.dart';
+import '../api/connection_prefs.dart';
 import '../api/nearby.dart';
 import '../models/player_settings.dart';
 import '../state/playback_store.dart';
@@ -45,6 +47,7 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
   var _loading = true;
   var _working = false;
   String? _error;
+  String? _debug;
   String _progress = 'Connecting…';
   StreamSubscription<List<NearbyPlayer>>? _bleSub;
   NearbyTransport? _cachedTransport;
@@ -87,6 +90,7 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
       _step = _WizardStep.find;
       _loading = true;
       _error = null;
+      _debug = null;
       _ble = const [];
     });
     await _bleSub?.cancel();
@@ -96,25 +100,28 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
       }
       setState(() => _ble = players);
     });
+    String? bleError;
     try {
       await _transport.startScan();
-      final online = await ref.read(playbackProvider.notifier).listUnclaimed();
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _online = online;
-        _loading = false;
-      });
     } on Object catch (err) {
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _loading = false;
-        _error = err.toString();
-      });
+      bleError = friendlyError(err, fallback: 'Could not search over Bluetooth. Search again.');
+      _debug = debugDetail(err);
     }
+    // Players already on the network are listed even if Bluetooth failed.
+    var online = const <UnclaimedPlayer>[];
+    try {
+      online = await ref.read(playbackProvider.notifier).listUnclaimed();
+    } on Object catch (err) {
+      _debug ??= debugDetail(err);
+    }
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _online = online;
+      _loading = false;
+      _error = bleError;
+    });
   }
 
   Future<void> _refreshFind() async {
@@ -125,6 +132,7 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
     setState(() {
       _selected = player;
       _error = null;
+      _debug = null;
       _working = true;
     });
     if (!player.needsWifi) {
@@ -139,6 +147,7 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
     }
     try {
       await _transport.stopScan();
+      await _transport.disconnect();
       await _transport.connect(player);
       final info = await _transport.deviceInfo();
       if (_name.text.isEmpty) {
@@ -164,9 +173,11 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
       if (!mounted) {
         return;
       }
+      unawaited(_transport.disconnect());
       setState(() {
         _working = false;
-        _error = err.toString();
+        _error = friendlyError(err);
+        _debug = debugDetail(err);
       });
     }
   }
@@ -255,7 +266,8 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
       }
       setState(() {
         _working = false;
-        _error = err.toString();
+        _error = friendlyError(err);
+        _debug = debugDetail(err);
         _progress = 'Could not finish setup.';
       });
     }
@@ -302,7 +314,8 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
       }
       setState(() {
         _working = false;
-        _error = err.toString();
+        _error = friendlyError(err, fallback: 'Could not add the player. Try again.');
+        _debug = debugDetail(err);
       });
     }
   }
@@ -335,7 +348,27 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
               if (_step == _WizardStep.adopt) _adoptStep(scheme, text),
               if (_error != null && _step != _WizardStep.progress) ...[
                 const SizedBox(height: 8),
-                Text(_error!, style: text.bodySmall?.copyWith(color: scheme.error)),
+                Text(_error!, key: const Key('add-player-error'), style: text.bodySmall?.copyWith(color: scheme.error)),
+                if (_step == _WizardStep.find && _selected != null && (_selected?.needsWifi ?? false) && !_working)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton(
+                      key: const Key('retry-player'),
+                      onPressed: () => _pick(_selected!),
+                      child: const Text('Try again'),
+                    ),
+                  ),
+              ],
+              if (ref.watch(developerModeProvider)) ...[
+                const SizedBox(height: 8),
+                Text(
+                  'BLE: ${_debug ?? _transport.lastDebug}',
+                  key: const Key('ble-debug-line'),
+                  style: text.labelSmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                    fontFamily: 'monospace',
+                  ),
+                ),
               ],
               const SizedBox(height: 8),
             ],

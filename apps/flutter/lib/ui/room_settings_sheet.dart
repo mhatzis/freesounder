@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../api/connection_prefs.dart';
+
 import '../app_version.dart';
 import '../models/player_settings.dart';
 import '../state/playback_store.dart';
@@ -128,6 +130,9 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
         _developerUnlocked = true;
       }
     });
+    if (_developerUnlocked) {
+      ref.read(developerModeProvider.notifier).set(true);
+    }
   }
 
   Future<void> _toggleSsh(bool enabled) async {

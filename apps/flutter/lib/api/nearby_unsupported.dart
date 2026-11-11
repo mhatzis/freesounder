@@ -40,4 +40,7 @@ class _UnsupportedNearbyTransport implements NearbyTransport {
 
   @override
   Future<String?> phoneSsid() async => null;
+
+  @override
+  String get lastDebug => 'Bluetooth is not supported on this platform';
 }

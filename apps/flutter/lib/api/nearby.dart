@@ -109,6 +109,9 @@ abstract class NearbyTransport {
 
   /// Best-effort current phone SSID, if the OS allows it.
   Future<String?> phoneSsid();
+
+  /// Last Bluetooth step and error, for the developer-mode detail line.
+  String get lastDebug;
 }
 
 /// Demo / test fake: one nearby unprovisioned player and two networks.
@@ -198,6 +201,9 @@ class DemoNearbyTransport implements NearbyTransport {
 
   @override
   Future<String?> phoneSsid() async => 'Home';
+
+  @override
+  String get lastDebug => 'Demo transport';
 }
 
 final nearbyTransportProvider = Provider<NearbyTransport>((ref) {
@@ -207,3 +213,33 @@ final nearbyTransportProvider = Provider<NearbyTransport>((ref) {
   }
   return createPlatformNearbyTransport();
 });
+
+/// Wi-Fi list from an Improv SCAN_WIFI result: [ssid, rssi, auth]*.
+List<WifiCandidate> parseWifiScan(List<String> strings) {
+  final networks = <WifiCandidate>[];
+  for (var i = 0; i + 2 < strings.length; i += 3) {
+    final ssid = strings[i];
+    if (ssid.isEmpty) {
+      continue;
+    }
+    networks.add(
+      WifiCandidate(ssid: ssid, rssi: int.tryParse(strings[i + 1]) ?? 0, auth: strings[i + 2]),
+    );
+  }
+  return networks;
+}
+
+/// Decide the outcome from the WIFI_SETTINGS RPC result alone: a redirect
+/// URL means joined; anything else is a failure reason.
+ProvisionResult provisionResultFrom(List<String> strings, {String? playerId}) {
+  final first = strings.isNotEmpty ? strings.first : '';
+  if (first.startsWith('http://') || first.startsWith('https://')) {
+    final match = RegExp(r'https?://(\[[^\]]+\]|[^:/]+)').firstMatch(first);
+    return ProvisionResult(ok: true, redirect: first, ip: match?.group(1), playerId: playerId);
+  }
+  return ProvisionResult(
+    ok: false,
+    reason: first.isEmpty ? 'unable_to_connect' : first,
+    playerId: playerId,
+  );
+}

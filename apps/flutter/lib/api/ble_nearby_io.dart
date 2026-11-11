@@ -6,13 +6,25 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:network_info_plus/network_info_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import 'ble_steps.dart';
 import 'improv.dart';
 import 'nearby.dart';
 
 NearbyTransport createBleNearbyTransport() => BleNearbyTransport();
 
 /// Live Improv client over flutter_blue_plus. Never logs a Wi-Fi password.
+///
+/// Every step has its own timeout and fails with a [NearbyException] naming
+/// the step, so the UI never spins forever and never shows a raw exception.
 class BleNearbyTransport implements NearbyTransport {
+  static const connectTimeout = Duration(seconds: 15);
+  static const discoverTimeout = Duration(seconds: 15);
+  static const notifyTimeout = Duration(seconds: 10);
+  static const deviceInfoTimeout = Duration(seconds: 10);
+  static const scanWifiTimeout = Duration(seconds: 30);
+  static const sendWifiTimeout = Duration(seconds: 60);
+  static const nameTimeout = Duration(seconds: 10);
+
   final _controller = StreamController<List<NearbyPlayer>>.broadcast();
   final _found = <String, NearbyPlayer>{};
   StreamSubscription<List<ScanResult>>? _scanSub;
@@ -21,14 +33,31 @@ class BleNearbyTransport implements NearbyTransport {
   BluetoothCharacteristic? _rpcResult;
   BluetoothCharacteristic? _currentState;
   BluetoothCharacteristic? _errorState;
+  StreamSubscription<List<int>>? _stateSub;
   DeviceInfo _info = const DeviceInfo();
+  int _lastState = 0;
+  String _lastDebug = '';
 
   @override
   Stream<List<NearbyPlayer>> get players => _controller.stream;
 
   @override
+  String get lastDebug => _lastDebug;
+
+  void _onStep(BleStep step, String? error) {
+    _lastDebug = error == null ? '${step.label}…' : '${step.label} failed: $error';
+  }
+
+  @override
   Future<void> startScan() async {
+    _onStep(BleStep.radio, null);
     await _ensurePermissions();
+    try {
+      await awaitRadioOn(FlutterBluePlus.adapterState.map(_radio));
+    } on NearbyException catch (err) {
+      _onStep(BleStep.radio, err.detail);
+      rethrow;
+    }
     _found.clear();
     await _scanSub?.cancel();
     _scanSub = FlutterBluePlus.scanResults.listen((results) {
@@ -40,15 +69,25 @@ class BleNearbyTransport implements NearbyTransport {
       }
       _controller.add(_found.values.toList());
     });
-    await FlutterBluePlus.startScan(
-      withServices: [Guid(improvServiceUuid)],
-      timeout: const Duration(seconds: 8),
+    await runStep(
+      BleStep.scan,
+      () => FlutterBluePlus.startScan(
+        withServices: [Guid(improvServiceUuid)],
+        timeout: const Duration(seconds: 8),
+      ),
+      timeout: const Duration(seconds: 10),
+      onStep: _onStep,
     );
+    _lastDebug = 'Scanning: ${_found.length} found';
   }
 
   @override
   Future<void> stopScan() async {
-    await FlutterBluePlus.stopScan();
+    try {
+      await FlutterBluePlus.stopScan();
+    } on Object {
+      // Not scanning, or the radio went away. Nothing to stop.
+    }
     await _scanSub?.cancel();
     _scanSub = null;
   }
@@ -56,10 +95,37 @@ class BleNearbyTransport implements NearbyTransport {
   @override
   Future<void> connect(NearbyPlayer player) async {
     await stopScan();
+    try {
+      await _connectOnce(player);
+    } on NearbyException catch (err) {
+      if (err.step != BleStep.connect && err.step != BleStep.discover) {
+        rethrow;
+      }
+      // One quiet retry: iOS sometimes drops the first link or returns an
+      // empty service list straight after connecting.
+      await _teardown();
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      await _connectOnce(player);
+    }
+    _info = DeviceInfo(playerId: player.id, deviceName: player.name);
+    _lastDebug = 'Connected (MTU ${_device?.mtuNow ?? 23}, state $_lastState)';
+  }
+
+  Future<void> _connectOnce(NearbyPlayer player) async {
     final device = BluetoothDevice.fromId(player.id);
     _device = device;
-    await device.connect(timeout: const Duration(seconds: 15));
-    final services = await device.discoverServices();
+    await runStep(
+      BleStep.connect,
+      () => device.connect(timeout: connectTimeout),
+      timeout: connectTimeout + const Duration(seconds: 2),
+      onStep: _onStep,
+    );
+    final services = await runStep(
+      BleStep.discover,
+      () => device.discoverServices(timeout: discoverTimeout.inSeconds),
+      timeout: discoverTimeout + const Duration(seconds: 2),
+      onStep: _onStep,
+    );
     BluetoothService? improv;
     for (final service in services) {
       if (service.uuid == Guid(improvServiceUuid)) {
@@ -68,7 +134,12 @@ class BleNearbyTransport implements NearbyTransport {
       }
     }
     if (improv == null) {
-      throw StateError('Improv service not found on ${player.name}');
+      _onStep(BleStep.discover, 'Improv service missing (${services.length} services)');
+      throw NearbyException(
+        BleStep.discover,
+        friendlyStepMessage(BleStep.discover),
+        detail: 'Improv service $improvServiceUuid not found',
+      );
     }
     for (final char in improv.characteristics) {
       final uuid = char.uuid;
@@ -76,28 +147,46 @@ class BleNearbyTransport implements NearbyTransport {
         _rpcCommand = char;
       } else if (uuid == Guid(improvRpcResultUuid)) {
         _rpcResult = char;
-        await char.setNotifyValue(true);
       } else if (uuid == Guid(improvCurrentStateUuid)) {
         _currentState = char;
-        await char.setNotifyValue(true);
       } else if (uuid == Guid(improvErrorStateUuid)) {
         _errorState = char;
-        await char.setNotifyValue(true);
       }
     }
     if (_rpcCommand == null || _rpcResult == null || _currentState == null) {
-      throw StateError('Improv characteristics missing on ${player.name}');
+      throw NearbyException(
+        BleStep.discover,
+        friendlyStepMessage(BleStep.discover),
+        detail: 'characteristics missing: '
+            '${[
+              if (_rpcCommand == null) 'rpc-command',
+              if (_rpcResult == null) 'rpc-result',
+              if (_currentState == null) 'state',
+            ].join(', ')}',
+      );
     }
-    try {
-      _info = await deviceInfo();
-    } on Object {
-      _info = DeviceInfo(playerId: player.id, deviceName: player.name);
-    }
+    await runStep(
+      BleStep.notify,
+      () async {
+        await _rpcResult!.setNotifyValue(true, timeout: notifyTimeout.inSeconds);
+        await _currentState!.setNotifyValue(true, timeout: notifyTimeout.inSeconds);
+        await _errorState?.setNotifyValue(true, timeout: notifyTimeout.inSeconds);
+      },
+      timeout: notifyTimeout * 3,
+      onStep: _onStep,
+    );
+    await _stateSub?.cancel();
+    _stateSub = _currentState!.onValueReceived.listen((value) {
+      if (value.isNotEmpty) {
+        _lastState = value.first;
+      }
+    });
+    _lastState = await _readByte(_currentState);
   }
 
   @override
   Future<DeviceInfo> deviceInfo() async {
-    final frame = await _rpc(improvCmdDeviceInfo, const []);
+    final frame = await _rpc(BleStep.deviceInfo, improvCmdDeviceInfo, const [], deviceInfoTimeout);
     final strings = decodeImprovResult(frame);
     _info = DeviceInfo(
       firmwareName: strings.isNotEmpty ? strings[0] : 'FreeSounder',
@@ -111,29 +200,14 @@ class BleNearbyTransport implements NearbyTransport {
 
   @override
   Future<List<WifiCandidate>> scanWifi() async {
-    final frame = await _rpc(improvCmdScanWifi, const []);
-    final strings = decodeImprovResult(frame);
-    final networks = <WifiCandidate>[];
-    for (var i = 0; i + 2 < strings.length; i += 3) {
-      final ssid = strings[i];
-      if (ssid.isEmpty) {
-        continue;
-      }
-      networks.add(
-        WifiCandidate(
-          ssid: ssid,
-          rssi: int.tryParse(strings[i + 1]) ?? 0,
-          auth: strings[i + 2],
-        ),
-      );
-    }
-    return networks;
+    final frame = await _rpc(BleStep.scanWifi, improvCmdScanWifi, const [], scanWifiTimeout);
+    return parseWifiScan(decodeImprovResult(frame));
   }
 
   @override
   Future<void> identify() async {
     try {
-      await _rpc(improvCmdIdentify, const []);
+      await _rpc(BleStep.deviceInfo, improvCmdIdentify, const [], deviceInfoTimeout);
     } on Object {
       // Identify is best-effort (LED only).
     }
@@ -148,38 +222,31 @@ class BleNearbyTransport implements NearbyTransport {
     final name = roomName?.trim();
     if (name != null && name.isNotEmpty) {
       try {
-        await _rpc(improvCmdDeviceName, utf8.encode(name));
+        await _rpc(BleStep.sendWifi, improvCmdDeviceName, utf8.encode(name), nameTimeout);
       } on Object {
         // Room name over BLE is optional; adopt will set it later.
       }
     }
     final payload = encodeWifiSettings(ssid: ssid, password: password);
-    final frame = await _rpc(improvCmdWifiSettings, payload, waitForState: true);
-    final strings = decodeImprovResult(frame);
-    final state = await _readByte(_currentState);
-    final error = await _readByte(_errorState);
-    if (state == improvStateProvisioned) {
-      final redirect = strings.isNotEmpty ? strings.first : '';
-      return ProvisionResult(
-        ok: true,
-        redirect: redirect,
-        ip: _ipFromRedirect(redirect),
-        playerId: _info.playerId,
-      );
-    }
-    final reason = strings.isNotEmpty ? strings.first : 'unable_to_connect';
-    return ProvisionResult(
-      ok: false,
-      reason: error == improvErrorUnableToConnect || reason.isNotEmpty ? reason : 'unable_to_connect',
-      playerId: _info.playerId,
-    );
+    // The RPC result decides success: the player may stop advertising and
+    // drop the link right after it joins Wi-Fi, so never read state after.
+    final frame = await _rpc(BleStep.sendWifi, improvCmdWifiSettings, payload, sendWifiTimeout);
+    final result = provisionResultFrom(decodeImprovResult(frame), playerId: _info.playerId);
+    _lastDebug = result.ok ? 'Wi-Fi sent: joined' : 'Wi-Fi sent: ${result.reason}';
+    return result;
   }
 
   @override
   Future<void> disconnect() async {
     await stopScan();
+    await _teardown();
+  }
+
+  Future<void> _teardown() async {
+    await _stateSub?.cancel();
+    _stateSub = null;
     try {
-      await _device?.disconnect();
+      await _device?.disconnect().timeout(const Duration(seconds: 5));
     } on Object {
       // Ignore disconnect errors after the radio has already gone quiet.
     }
@@ -206,52 +273,46 @@ class BleNearbyTransport implements NearbyTransport {
     }
   }
 
-  Future<List<int>> _rpc(
-    int command,
-    List<int> data, {
-    bool waitForState = false,
-  }) async {
+  Future<List<int>> _rpc(BleStep step, int command, List<int> data, Duration timeout) async {
     final commandChar = _rpcCommand;
     final resultChar = _rpcResult;
     if (commandChar == null || resultChar == null) {
-      throw StateError('Not connected to a player');
+      throw NearbyException(step, 'Not connected to the player. Tap it to try again.',
+          detail: 'no GATT session');
     }
-    final completer = Completer<List<int>>();
-    late final StreamSubscription<List<int>> sub;
-    sub = resultChar.onValueReceived.listen((value) {
-      if (value.isEmpty) {
-        return;
-      }
-      if (!completer.isCompleted) {
-        completer.complete(List<int>.from(value));
-      }
-    });
-    StreamSubscription<List<int>>? stateSub;
-    if (waitForState && _currentState != null) {
-      stateSub = _currentState!.onValueReceived.listen((value) {
-        if (value.isEmpty || completer.isCompleted) {
-          return;
+    return runStep(step, () async {
+      final completer = Completer<List<int>>();
+      final sub = resultChar.onValueReceived.listen((value) {
+        if (value.isNotEmpty && !completer.isCompleted) {
+          completer.complete(List<int>.from(value));
         }
-        // Result characteristic is notified in the same state change.
       });
-    }
-    try {
-      final frame = encodeImprovRpc(command, data);
-      // Write without logging. Split if the MTU is small.
-      const chunk = 20;
-      if (frame.length <= chunk) {
-        await commandChar.write(frame, withoutResponse: false);
-      } else {
+      StreamSubscription<List<int>>? errorSub;
+      final errorChar = _errorState;
+      if (errorChar != null) {
+        errorSub = errorChar.onValueReceived.listen((value) {
+          if (value.isEmpty || value.first == improvErrorNone || completer.isCompleted) {
+            return;
+          }
+          completer.completeError(
+            NearbyException(step, friendlyImprovError(value.first),
+                detail: 'Improv error 0x${value.first.toRadixString(16).padLeft(2, '0')}'),
+          );
+        });
+      }
+      try {
+        final frame = encodeImprovRpc(command, data);
+        final chunk = writeChunkSize(_device?.mtuNow ?? 23);
         for (var i = 0; i < frame.length; i += chunk) {
           final end = i + chunk > frame.length ? frame.length : i + chunk;
-          await commandChar.write(frame.sublist(i, end), withoutResponse: true);
+          await commandChar.write(frame.sublist(i, end), withoutResponse: false, timeout: 10);
         }
+        return await completer.future;
+      } finally {
+        await sub.cancel();
+        await errorSub?.cancel();
       }
-      return await completer.future.timeout(const Duration(seconds: 45));
-    } finally {
-      await sub.cancel();
-      await stateSub?.cancel();
-    }
+    }, timeout: timeout, onStep: _onStep);
   }
 
   Future<int> _readByte(BluetoothCharacteristic? char) async {
@@ -259,7 +320,7 @@ class BleNearbyTransport implements NearbyTransport {
       return 0;
     }
     try {
-      final value = await char.read();
+      final value = await char.read(timeout: 5);
       return value.isEmpty ? 0 : value.first;
     } on Object {
       return 0;
@@ -270,17 +331,14 @@ class BleNearbyTransport implements NearbyTransport {
     final name = result.advertisementData.advName.isNotEmpty
         ? result.advertisementData.advName
         : result.device.platformName;
-    if (!name.startsWith('FreeSounder-')) {
-      final uuids = result.advertisementData.serviceUuids;
-      final hasImprov = uuids.any((u) => u == Guid(improvServiceUuid));
-      if (!hasImprov) {
-        return null;
-      }
+    final uuids = result.advertisementData.serviceUuids;
+    final hasImprov = uuids.any((u) => u == Guid(improvServiceUuid));
+    if (!hasImprov && !name.startsWith('FreeSounder-') && !name.startsWith('FS-')) {
+      return null;
     }
-    final display = name.isEmpty ? 'FreeSounder' : name;
     return NearbyPlayer(
       id: result.device.remoteId.str,
-      name: display,
+      name: displayNameForAdvert(name),
       needsWifi: true,
       subtitle: 'Needs Wi-Fi',
     );
@@ -297,7 +355,21 @@ class BleNearbyTransport implements NearbyTransport {
   }
 }
 
-String? _ipFromRedirect(String redirect) {
-  final match = RegExp(r'https?://(\[[^\]]+\]|[^:/]+)').firstMatch(redirect);
-  return match?.group(1);
+RadioState _radio(BluetoothAdapterState state) {
+  switch (state) {
+    case BluetoothAdapterState.unknown:
+      return RadioState.unknown;
+    case BluetoothAdapterState.unavailable:
+      return RadioState.unavailable;
+    case BluetoothAdapterState.unauthorized:
+      return RadioState.unauthorized;
+    case BluetoothAdapterState.turningOn:
+      return RadioState.turningOn;
+    case BluetoothAdapterState.on:
+      return RadioState.on;
+    case BluetoothAdapterState.turningOff:
+      return RadioState.turningOff;
+    case BluetoothAdapterState.off:
+      return RadioState.off;
+  }
 }

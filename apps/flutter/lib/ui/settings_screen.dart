@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../api/connection_prefs.dart';
+import '../app_version.dart';
 import '../state/playback_store.dart';
 import 'add_player_sheet.dart';
 import 'music_services_screen.dart';
@@ -16,6 +18,7 @@ class SettingsScreen extends ConsumerStatefulWidget {
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   late final TextEditingController _host;
   var _busy = false;
+  var _versionTaps = 0;
 
   @override
   void initState() {
@@ -29,6 +32,16 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   void dispose() {
     _host.dispose();
     super.dispose();
+  }
+
+  void _onVersionTap() {
+    _versionTaps += 1;
+    if (_versionTaps == 7) {
+      ref.read(developerModeProvider.notifier).set(true);
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        const SnackBar(content: Text('Developer mode on')),
+      );
+    }
   }
 
   Future<void> _run(Future<void> Function() action) async {
@@ -179,6 +192,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             const SizedBox(height: 16),
             const LinearProgressIndicator(),
           ],
+          const SizedBox(height: 16),
+          ListTile(
+            key: const Key('app-version-tile'),
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.info_outline),
+            title: Text('FreeSounder $appVersion'),
+            subtitle: ref.watch(developerModeProvider)
+                ? const Text('Developer mode on (Bluetooth details shown during setup)')
+                : null,
+            onTap: _onVersionTap,
+          ),
         ],
       ),
     );

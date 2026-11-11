@@ -1,13 +1,16 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:freesounder/api/ble_steps.dart';
+import 'package:freesounder/api/connection_prefs.dart';
 import 'package:freesounder/api/nearby.dart';
 import 'package:freesounder/state/playback_store.dart';
 import 'package:freesounder/ui/add_player_sheet.dart';
 
-Widget _host({NearbyTransport? transport, String? phoneSsid}) {
+Widget _host({NearbyTransport? transport, String? phoneSsid, bool developer = false}) {
   return ProviderScope(
     overrides: [
+      if (developer) developerModeProvider.overrideWith(_DevOn.new),
       appConfigProvider.overrideWithValue(
         const AppConfig(forceDemo: true, discoveryTimeout: Duration.zero),
       ),
@@ -112,4 +115,80 @@ void main() {
     expect(find.textContaining('Wrong password'), findsWidgets);
     expect(find.byKey(const Key('wifi-retry')), findsOneWidget);
   });
+
+  testWidgets('radio not ready shows friendly text and still lists online players', (tester) async {
+    tester.view.physicalSize = const Size(400, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(_host(transport: _FailingTransport(failScan: true)));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Bluetooth is not ready yet'), findsOneWidget);
+    expect(find.textContaining('PlatformException'), findsNothing);
+    expect(find.byKey(const Key('unclaimed-attic-pi')), findsOneWidget);
+    expect(find.byKey(const Key('ble-debug-line')), findsNothing);
+  });
+
+  testWidgets('a silent player fails at a named step with retry, no endless spinner', (tester) async {
+    tester.view.physicalSize = const Size(400, 900);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final transport = _FailingTransport();
+    await tester.pumpWidget(_host(transport: transport, developer: true));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('nearby-demo-ble-porch')));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('stopped answering'), findsOneWidget);
+    expect(find.byKey(const Key('retry-player')), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    final debug = tester.widget<Text>(find.byKey(const Key('ble-debug-line')));
+    expect(debug.data, contains('Reading player details'));
+    expect(debug.data, contains('timed out'));
+
+    transport.failInfo = false;
+    await tester.tap(find.byKey(const Key('retry-player')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('wifi-continue')), findsOneWidget);
+  });
+}
+
+class _DevOn extends DeveloperModeNotifier {
+  @override
+  bool build() => true;
+}
+
+class _FailingTransport extends DemoNearbyTransport {
+  _FailingTransport({this.failScan = false}) : super(delay: Duration.zero);
+
+  final bool failScan;
+  bool failInfo = true;
+
+  @override
+  Future<void> startScan() async {
+    if (failScan) {
+      throw const NearbyException(
+        BleStep.radio,
+        'Bluetooth is not ready yet. Wait a moment and search again.',
+        detail: 'PlatformException(startScan, CBManagerStateUnknown)',
+      );
+    }
+    await super.startScan();
+  }
+
+  @override
+  Future<DeviceInfo> deviceInfo() async {
+    if (failInfo) {
+      throw NearbyException(
+        BleStep.deviceInfo,
+        friendlyStepMessage(BleStep.deviceInfo, timedOut: true),
+        detail: 'timed out after 10s',
+      );
+    }
+    return super.deviceInfo();
+  }
 }
