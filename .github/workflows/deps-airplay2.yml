@@ -1,0 +1,30 @@
+name: AirPlay 2 packages (trixie arm64)
+
+# Rebuilds Debian sid's shairport-sync (built --with-airplay-2) and nqptp for
+# Raspberry Pi OS trixie arm64. trixie only ships shairport-sync 4.3.7 without
+# AirPlay 2 and has no nqptp. The image build downloads the debs from the
+# workflow artifact (see images/player/deps/airplay2.env).
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["dev/**"]
+    paths:
+      - ".github/workflows/deps-airplay2.yml"
+      - "images/player/deps/airplay2-build.sh"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    container: debian:trixie
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build shairport-sync and nqptp
+        run: bash images/player/deps/airplay2-build.sh out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: airplay2-trixie-arm64
+          path: out/*.deb
+          if-no-files-found: error
+          retention-days: 90
