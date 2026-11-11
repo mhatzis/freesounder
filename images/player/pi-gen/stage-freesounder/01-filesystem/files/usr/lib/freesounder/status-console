@@ -44,7 +44,11 @@ role() {
 }
 
 ble_block() {
-	python3 - <<'PY'
+	PY=python3
+	if [[ -x /opt/freesounder/control-api/.venv/bin/python ]]; then
+		PY=/opt/freesounder/control-api/.venv/bin/python
+	fi
+	"$PY" - <<'PY'
 import json
 from pathlib import Path
 
@@ -55,17 +59,28 @@ try:
 except (OSError, json.JSONDecodeError):
     status = {}
 
+live = {}
+try:
+    from freesounder_ble_provisioning.status import read_live_adapter
+
+    live = read_live_adapter()
+except Exception:
+    live = {}
+
 hci = "missing"
 hci0 = Path("/sys/class/bluetooth/hci0")
-if hci0.is_dir():
-    addr = ""
-    try:
-        addr = (hci0 / "address").read_text(encoding="utf-8").strip()
-    except OSError:
-        pass
+if hci0.is_dir() or live.get("adapter"):
+    addr = live.get("address") or ""
+    if not addr and hci0.is_dir():
+        try:
+            addr = (hci0 / "address").read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
     hci = "present" + (f" {addr}" if addr else "")
 
 powered = status.get("powered")
+if powered is None:
+    powered = live.get("powered")
 pwr = {True: "yes", False: "no"}.get(powered, "?")
 
 rfkill = status.get("rfkill") or "unknown"

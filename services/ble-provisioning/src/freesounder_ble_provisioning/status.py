@@ -73,3 +73,99 @@ def try_write_bootfs_doctor(text: str, filename: str = BOOTFS_DOCTOR) -> str | N
         except OSError:
             continue
     return None
+
+
+def read_live_adapter(
+    *,
+    sys_class_bluetooth: Path = Path("/sys/class/bluetooth"),
+    run=None,
+) -> dict[str, Any]:
+    """Adapter address and Powered state from sysfs and BlueZ D-Bus.
+
+    Used by the tty1 status screen even when RegisterAdvertisement failed
+    before the service could cache properties.
+    """
+
+    info: dict[str, Any] = {"address": "", "powered": None, "adapter": ""}
+    hci0 = sys_class_bluetooth / "hci0"
+    if hci0.is_dir():
+        info["adapter"] = "hci0"
+        try:
+            info["address"] = (hci0 / "address").read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
+        # Some kernels export a 'name' and flags; Powered is a BlueZ property.
+        flags = _read_optional(hci0 / "flags")
+        if flags and "UP" in flags.split():
+            info["powered"] = True
+        elif flags and "DOWN" in flags.split():
+            info["powered"] = False
+
+    powered = _busctl_adapter_property("Powered", run=run)
+    if powered is not None:
+        info["powered"] = powered
+    address = _busctl_adapter_property("Address", run=run)
+    if isinstance(address, str) and address:
+        info["address"] = address
+    return info
+
+
+def _read_optional(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def _busctl_adapter_property(name: str, *, run=None, adapter: str = "/org/bluez/hci0"):
+    import subprocess
+
+    argv = [
+        "busctl",
+        "--system",
+        "get-property",
+        "org.bluez",
+        adapter,
+        "org.bluez.Adapter1",
+        name,
+    ]
+    try:
+        if run is not None:
+            completed = run(argv)
+            text = completed
+        else:
+            proc = subprocess.run(
+                argv,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            text = (proc.stdout or "").strip()
+            if proc.returncode != 0:
+                return None
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return _parse_busctl_variant(text)
+
+
+def _parse_busctl_variant(text: str):
+    """Parse `busctl get-property` output such as 'b true' or 's \"AA:BB\"'."""
+
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    # When tests inject a value they may pass the already-decoded form.
+    if raw in {"true", "yes", "on"}:
+        return True
+    if raw in {"false", "no", "off"}:
+        return False
+    parts = raw.split(None, 1)
+    if len(parts) < 2:
+        return None
+    typ, value = parts[0], parts[1].strip()
+    if typ == "b":
+        return value.lower() in {"true", "t", "1", "yes"}
+    if typ == "s":
+        return value.strip('"')
+    return value.strip('"')

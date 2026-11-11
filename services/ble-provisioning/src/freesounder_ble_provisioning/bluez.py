@@ -109,9 +109,18 @@ class BlueZPeripheral(PeripheralHandle):
                         "last_error_at": _now(),
                     }
                 )
-                # A BlueZ build without experimental ScanResponse* APIs may
-                # reject the first attempt. Retry without those properties.
-                self._advertisement.use_scan_response = False
+                try:
+                    await adv_mgr.call_unregister_advertisement(ADV_PATH)  # type: ignore[union-attr]
+                except Exception:  # noqa: BLE001
+                    logger.debug("unregister after scan-response failure", exc_info=True)
+                try:
+                    self._bus.unexport(ADV_PATH)
+                except Exception:  # noqa: BLE001
+                    logger.debug("unexport advertisement after scan-response failure", exc_info=True)
+                # Re-export a class that does not expose the experimental
+                # ScanResponse* properties at all, then register again.
+                self._advertisement = ImprovAdvertisementPrimaryOnly(session)
+                self._bus.export(ADV_PATH, self._advertisement)
                 await adv_mgr.call_register_advertisement(ADV_PATH, {})  # type: ignore[union-attr]
             self._started = True
             adapter_info = await _read_adapter_info(self._bus, self._adapter_path)
@@ -145,6 +154,14 @@ class BlueZPeripheral(PeripheralHandle):
                 }
             )
         except Exception as exc:
+            adapter_info: dict[str, Any] = {}
+            if self._bus is not None and self._adapter_path:
+                try:
+                    adapter_info = await _read_adapter_info(self._bus, self._adapter_path)
+                except Exception:  # noqa: BLE001
+                    logger.debug("could not read adapter after failure", exc_info=True)
+            if not adapter_info.get("address") and not adapter_info.get("powered"):
+                adapter_info = {**adapter_info, **_sysfs_adapter_info()}
             _write_ble_status(
                 {
                     "advertising": False,
@@ -153,6 +170,9 @@ class BlueZPeripheral(PeripheralHandle):
                     "last_error_at": _now(),
                     "rfkill": _rfkill_state(),
                     "adapter": self._adapter_path or "",
+                    "adapter_address": adapter_info.get("address") or "",
+                    "powered": adapter_info.get("powered"),
+                    "discoverable": adapter_info.get("discoverable"),
                 }
             )
             await self.stop()
@@ -204,6 +224,7 @@ class BlueZPeripheral(PeripheralHandle):
 # below are defined when this module is imported (packaging always has dbus-next).
 
 from dbus_next import Variant  # noqa: E402
+from dbus_next.constants import PropertyAccess  # noqa: E402
 from dbus_next.service import ServiceInterface, dbus_property, method, signal  # noqa: E402
 
 
@@ -266,15 +287,15 @@ class ImprovService(ServiceInterface):
     def __init__(self) -> None:
         super().__init__("org.bluez.GattService1")
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def UUID(self) -> "s":  # type: ignore[name-defined]
         return SERVICE_UUID
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def Primary(self) -> "b":  # type: ignore[name-defined]
         return True
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def Characteristics(self) -> "ao":  # type: ignore[name-defined]
         return [_char_path(u) for u in _CHAR_ORDER]
 
@@ -316,17 +337,27 @@ class ImprovCharacteristic(ServiceInterface):
     def PropertiesChanged(self, interface: "s", changed: "a{sv}", invalidated: "as") -> None:  # type: ignore[name-defined]
         return
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def UUID(self) -> "s":  # type: ignore[name-defined]
         return self._uuid
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def Service(self) -> "o":  # type: ignore[name-defined]
         return self._service
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def Flags(self) -> "as":  # type: ignore[name-defined]
         return self._flags
+
+    @dbus_property(access=PropertyAccess.READ)
+    def Descriptors(self) -> "ao":  # type: ignore[name-defined]
+        return []
+
+    @dbus_property(access=PropertyAccess.READ)
+    def Value(self) -> "ay":  # type: ignore[name-defined]
+        if self._reader:
+            self._value = self._reader()
+        return bytes(self._value)
 
     @method()
     def ReadValue(self, options: "a{sv}") -> "ay":  # type: ignore[name-defined]
@@ -341,6 +372,7 @@ class ImprovCharacteristic(ServiceInterface):
                 "UUID": Variant("s", self._uuid),
                 "Service": Variant("o", self._service),
                 "Flags": Variant("as", self._flags),
+                "Descriptors": Variant("ao", []),
             }
         }
 
@@ -391,41 +423,64 @@ class ImprovAdvertisement(ServiceInterface):
     def PropertiesChanged(self, interface: "s", changed: "a{sv}", invalidated: "as") -> None:  # type: ignore[name-defined]
         return
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def Type(self) -> "s":  # type: ignore[name-defined]
         return "peripheral"
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def ServiceUUIDs(self) -> "as":  # type: ignore[name-defined]
         return [SERVICE_UUID]
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def ServiceData(self) -> "a{sv}":  # type: ignore[name-defined]
         return self._service_data_dict()
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def ScanResponseManufacturerData(self) -> "a{qv}":  # type: ignore[name-defined]
-        return self._manufacturer_dict() if self.use_scan_response else {}
+        return self._manufacturer_dict()
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def ScanResponseData(self) -> "a{yv}":  # type: ignore[name-defined]
-        return self._scan_response_data() if self.use_scan_response else {}
+        return self._scan_response_data()
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def Discoverable(self) -> "b":  # type: ignore[name-defined]
         return True
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def DiscoverableTimeout(self) -> "q":  # type: ignore[name-defined]
         return 0
 
-    @dbus_property()
+    @dbus_property(access=PropertyAccess.READ)
     def Includes(self) -> "as":  # type: ignore[name-defined]
         return []
 
     @method()
     def Release(self) -> None:
         return
+
+
+class ImprovAdvertisementPrimaryOnly(ImprovAdvertisement):
+    """Same primary PDU, but no experimental ScanResponse* properties.
+
+    Used if RegisterAdvertisement rejects the BlueZ 5.82 experimental APIs
+    even with bluetoothd --experimental. Those properties stay off this
+    class so BlueZ cannot see empty experimental fields.
+    """
+
+    def __init__(self, session: ImprovSession) -> None:
+        super().__init__(session)
+        self.use_scan_response = False
+
+    # Disable the inherited experimental properties so they are not in the
+    # introspected interface at all.
+    @dbus_property(access=PropertyAccess.READ, disabled=True)
+    def ScanResponseManufacturerData(self) -> "a{qv}":  # type: ignore[name-defined]
+        return {}
+
+    @dbus_property(access=PropertyAccess.READ, disabled=True)
+    def ScanResponseData(self) -> "a{yv}":  # type: ignore[name-defined]
+        return {}
 
 
 _CHAR_ORDER = (
@@ -619,3 +674,12 @@ async def _read_adapter_info(bus: Any, adapter_path: str) -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         logger.debug("could not read adapter properties", exc_info=True)
     return info
+
+
+def _sysfs_adapter_info() -> dict[str, Any]:
+    try:
+        from freesounder_ble_provisioning.status import read_live_adapter
+
+        return read_live_adapter()
+    except Exception:  # noqa: BLE001
+        return {"address": "", "powered": None}
