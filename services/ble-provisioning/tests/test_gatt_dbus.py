@@ -197,7 +197,7 @@ async def test_wifi_settings_rpc_chunked_reports_provisioned(bus_address: str) -
         result = await asyncio.wait_for(_next_non_empty(results), timeout=3)
         packet, _rest, invalid = try_parse_rpc(result)
         assert packet is not None and not invalid
-        assert decode_rpc_strings(packet.data) == ["http://192.168.1.20:8090"]
+        assert decode_rpc_strings(packet.data) == ["http://192.168.1.20:8080"]
         seen = []
         while not states.empty():
             seen.append(states.get_nowait()[0])

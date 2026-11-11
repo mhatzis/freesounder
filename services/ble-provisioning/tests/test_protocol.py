@@ -116,7 +116,7 @@ async def test_fragmented_wifi_settings_success() -> None:
     assert session.state is CurrentState.PROVISIONED
     assert session.error is ErrorState.NO_ERROR
     strings = _result_strings(session.rpc_result)
-    assert strings == ["http://192.168.1.20:8090"]
+    assert strings == ["http://192.168.1.20:8080"]
     assert CurrentState.PROVISIONING in changes
 
 

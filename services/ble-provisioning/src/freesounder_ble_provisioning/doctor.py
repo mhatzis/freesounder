@@ -111,10 +111,11 @@ def _unit_lines() -> list[str]:
         "hciuart.service",
         "NetworkManager.service",
         "freesounder-ble-provisioning.service",
-        "docker.service",
-        "freesounder-music-assistant.service",
-        "freesounder-control-api.service",
-        "freesounder-player-agent.service",
+        "freesounderd.service",
+        "snapclient.service",
+        "snapserver.service",
+        "freesounder-spotify.service",
+        "nqptp.service",
     ):
         enabled = _systemctl("is-enabled", unit)
         active = _systemctl("is-active", unit)

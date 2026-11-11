@@ -357,7 +357,7 @@ class ImprovSession:
             self.state = CurrentState.PROVISIONED
             self.error = ErrorState.NO_ERROR
             ip = result.ip or self.network.current_ip() or ""
-            redirect = f"http://{ip}:8090" if ip else ""
+            redirect = f"http://{ip}:8080" if ip else ""
             self.rpc_result = encode_rpc_result(Command.WIFI_SETTINGS, [redirect])
         else:
             self.state = CurrentState.AUTHORIZED

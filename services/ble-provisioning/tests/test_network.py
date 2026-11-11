@@ -283,47 +283,51 @@ def test_status_parsers(tmp_path: Path) -> None:
     assert "'Home' wrong_password: Secrets" in joined
 
 
-def test_services_status_lines_show_ma_starting_and_lan_ip() -> None:
-    from freesounder_ble_provisioning.status import read_services_live, services_status_lines
+def test_services_status_lines_show_daemon_and_group(tmp_path, monkeypatch) -> None:
+    from freesounder_ble_provisioning import status
+
+    st = tmp_path / "status.json"
+    st.write_text(
+        '{"room": "Kitchen", "household": "Home", "household_id": "abcd1234", '
+        '"role": "member", "leader": "Living", "group": "Living + 1", "source": "radio", '
+        '"play_state": "playing", "peers": 1, "airplay": 2}'
+    )
+    monkeypatch.setattr(status, "DAEMON_STATUS_PATH", st)
 
     def run(argv: list[str]) -> str:
-        if argv[0] == "systemctl":
-            return "active"
-        return "running since 2026-11-11T08:00:00Z"
+        return "active" if argv[0] == "systemctl" else ""
 
     def http(url: str):
-        if "8080" in url:
-            return {"version": "0.3.0", "ma_state": "starting", "ma_detail": "Unpacking"}
-        return {"state": "configured"}
+        return {"version": "0.6.0", "state": "ready"}
 
-    live = read_services_live(run=run, http=http, port_open=lambda port, host="127.0.0.1": False)
-    text = "\n".join(services_status_lines(live, "192.168.1.24"))
+    live = status.read_services_live(
+        run=run, http=http, port_open=lambda port, host="127.0.0.1": False
+    )
+    text = "\n".join(status.services_status_lines(live, "192.168.1.24"))
     assert "LAN IP      : 192.168.1.24" in text
-    assert "control API : up :8080" in text
-    assert "API -> MA   : starting - Unpacking" in text
-    assert "player agent: up :8090 (configured)" in text
-    assert ":8095 closed" in text
+    assert "player API  : up :8080 (v0.6.0, ready)" in text
+    assert "room        : Kitchen  household: Home (abcd1234)" in text
+    assert "group       : Living + 1 [member of Living]" in text
+    assert "AirPlay 2" in text
 
 
-def test_services_status_lines_when_nothing_answers() -> None:
-    from freesounder_ble_provisioning.status import read_services_live, services_status_lines
+def test_services_status_lines_when_nothing_answers(tmp_path, monkeypatch) -> None:
+    from freesounder_ble_provisioning import status
 
-    live = read_services_live(
+    monkeypatch.setattr(status, "DAEMON_STATUS_PATH", tmp_path / "missing.json")
+    live = status.read_services_live(
         run=lambda argv: "", http=lambda url: None, port_open=lambda p, h="127.0.0.1": False
     )
-    text = "\n".join(services_status_lines(live, None))
+    text = "\n".join(status.services_status_lines(live, None))
     assert "LAN IP      : none yet" in text
-    assert "control API : not answering" in text
-    assert "player agent: not answering" in text
+    assert "player API  : not answering" in text
 
 
 def test_services_status_lines_show_snapclient_and_snapserver(tmp_path, monkeypatch) -> None:
     from freesounder_ble_provisioning import status
 
     defaults = tmp_path / "snapclient"
-    defaults.write_text(
-        'START_SNAPCLIENT=true\nSNAPCLIENT_OPTS="--host 192.168.1.24 --soundcard freesounder"\n'
-    )
+    defaults.write_text('FS_PLAYER_ID=x\nSNAPCLIENT_URL="tcp://192.168.1.24:1704"\n')
     output = tmp_path / "audio-output"
     output.write_text("pcm=default:CARD=vc4hdmi1\ncard=1\nreason=HDMI1 (display connected)\n")
     monkeypatch.setattr(status, "SNAPCLIENT_DEFAULTS", defaults)

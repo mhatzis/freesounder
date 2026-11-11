@@ -273,11 +273,10 @@ def wifi_status_lines(live: dict[str, Any], saved: dict[str, Any]) -> list[str]:
     return lines
 
 
-# --- Household services: control API, player agent, Music Assistant ---------
+# --- Player services: freesounderd, snapserver/snapclient, sources ---------
 
-MA_STATUS_PATH = Path("/run/freesounder/ma-status.json")
-CONTROL_API_HEALTH = "http://127.0.0.1:8080/health"
-AGENT_HEALTH = "http://127.0.0.1:8090/health"
+DAEMON_HEALTH = "http://127.0.0.1:8080/health"
+DAEMON_STATUS_PATH = Path("/run/freesounder/status.json")
 
 
 def _http_json(url: str, timeout: float = 1.5) -> dict[str, Any] | None:
@@ -311,13 +310,17 @@ def _run_text(argv: list[str], timeout: float = 4.0) -> str:
     return (proc.stdout or "").strip()
 
 
-SNAPCLIENT_DEFAULTS = Path("/etc/default/snapclient")
+SNAPCLIENT_DEFAULTS = Path("/run/freesounder/snapclient.env")
 AUDIO_OUTPUT_PATH = Path("/etc/freesounder/audio-output")
 
 
 def _snap_host(text: str) -> str:
+    import re
     import shlex
 
+    match = re.search(r"SNAPCLIENT_URL=\"?tcp://([^:\"]+)", text)
+    if match:
+        return match.group(1)
     for line in text.splitlines():
         if line.startswith("SNAPCLIENT_OPTS="):
             try:
@@ -340,18 +343,15 @@ def _audio_output(text: str) -> str:
 
 
 def read_services_live(run=_run_text, http=_http_json, port_open=_port_open) -> dict[str, Any]:
-    """Snapshot of the three household services (no secrets)."""
+    """Snapshot of this player's services (no secrets)."""
 
     def unit(name: str) -> str:
         return run(["systemctl", "is-active", name]) or "unknown"
 
     try:
-        ma_status = json.loads(MA_STATUS_PATH.read_text(encoding="utf-8"))
+        daemon_status = json.loads(DAEMON_STATUS_PATH.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        ma_status = {}
-    fmt = "{{.State.Status}} since {{.State.StartedAt}}"
-    container = run(["docker", "inspect", "-f", fmt, "music-assistant"])
-    preload = sorted(str(p) for p in Path("/var/lib/freesounder/ma-image").glob("*.tar"))
+        daemon_status = {}
     snap_host = _snap_host(_read_optional(SNAPCLIENT_DEFAULTS))
     journal = run(
         ["journalctl", "-u", "snapclient.service", "-b", "-n", "40", "--no-pager", "-o", "cat"]
@@ -368,46 +368,45 @@ def read_services_live(run=_run_text, http=_http_json, port_open=_port_open) -> 
         "snapserver_control": port_open(1705, snap_host),
         "snapclient_last_error": snap_errors[-1][:110] if snap_errors else "",
         "audio_output": _audio_output(_read_optional(AUDIO_OUTPUT_PATH)),
-        "control_api_unit": unit("freesounder-control-api.service"),
-        "control_api": http(CONTROL_API_HEALTH),
-        "agent_unit": unit("freesounder-player-agent.service"),
-        "agent": http(AGENT_HEALTH),
-        "ma_unit": unit("freesounder-music-assistant.service"),
-        "ma_status": ma_status,
-        "ma_container": container or "not running",
-        "ma_port": port_open(8095),
-        "ma_preload": preload,
-        "role": _read_optional(Path("/run/freesounder/effective-role")).strip() or "?",
+        "daemon_unit": unit("freesounderd.service"),
+        "daemon": http(DAEMON_HEALTH),
+        "daemon_status": daemon_status,
+        "snapserver_unit": unit("snapserver.service"),
+        "spotify_unit": unit("freesounder-spotify.service"),
+        "nqptp_unit": unit("nqptp.service"),
     }
 
 
 def services_status_lines(live: dict[str, Any], lan_ip: str | None) -> list[str]:
     lines = [f"  LAN IP      : {lan_ip or 'none yet'}"]
-    api = live.get("control_api")
-    if api:
-        version = api.get("version", "?")
-        unit = live.get("control_api_unit")
-        lines.append(f"  control API : up :8080 (v{version}, unit {unit})")
-        state = api.get("ma_state") or ("connected" if api.get("ma_connected") else "unavailable")
-        detail = api.get("ma_detail")
-        lines.append(f"  API -> MA   : {state}" + (f" - {detail}" if detail else ""))
+    daemon = live.get("daemon")
+    st = live.get("daemon_status") or {}
+    if daemon:
+        version = daemon.get("version", "?")
+        lines.append(f"  player API  : up :8080 (v{version}, {daemon.get('state', '?')})")
     else:
-        unit = live.get("control_api_unit")
-        lines.append(f"  control API : not answering on :8080 (unit {unit})")
-    agent = live.get("agent")
-    if agent:
-        lines.append(f"  player agent: up :8090 ({agent.get('state', '?')})")
-    else:
-        lines.append(f"  player agent: not answering on :8090 (unit {live.get('agent_unit')})")
-    ma = live.get("ma_status") or {}
-    ma_line = f"  Music Asst. : unit {live.get('ma_unit')}, container {live.get('ma_container')}"
-    ma_line += ", :8095 open" if live.get("ma_port") else ", :8095 closed"
-    lines.append(ma_line)
-    if ma:
-        launcher = f"{ma.get('state', '?')} - {ma.get('detail', '')}".rstrip(" -")
-        lines.append(f"  MA launcher : {launcher}")
-    if live.get("ma_preload"):
-        lines.append("  MA image    : bundled archive not unpacked yet")
+        lines.append(f"  player API  : not answering on :8080 (unit {live.get('daemon_unit')})")
+    if st:
+        household = st.get("household") or "not set up"
+        if st.get("household_id"):
+            household += f" ({st.get('household_id')})"
+        lines.append(f"  room        : {st.get('room', '?')}  household: {household}")
+        role = st.get("role", "?")
+        if role == "member":
+            role += f" of {st.get('leader') or '?'}"
+        if st.get("relay"):
+            role += " (relaying, own speaker muted)"
+        lines.append(f"  group       : {st.get('group', '?')} [{role}]")
+        lines.append(
+            f"  source      : {st.get('source', 'none')} ({st.get('play_state', 'idle')}), "
+            f"peers online {st.get('peers', 0)}"
+        )
+    airplay = st.get("airplay")
+    airplay_txt = {2: "AirPlay 2", 1: "AirPlay 1"}.get(airplay, "AirPlay off")
+    lines.append(
+        f"  sources     : snapserver {live.get('snapserver_unit')}, spotify "
+        f"{live.get('spotify_unit')}, {airplay_txt} (nqptp {live.get('nqptp_unit')})"
+    )
     if "snapclient_unit" in live:
         snap_unit, snap_host = live.get("snapclient_unit"), live.get("snap_host")
         lines.append(f"  snapclient  : unit {snap_unit} -> {snap_host}")
@@ -415,7 +414,8 @@ def services_status_lines(live: dict[str, Any], lan_ip: str | None) -> list[str]
         control = "open" if live.get("snapserver_control") else "closed"
         lines.append(f"  snapserver  : :1704 {stream}, :1705 {control}")
         lines.append(f"  audio out   : {live.get('audio_output')}")
+        if st.get("hat"):
+            lines.append(f"  HAT         : {st.get('hat')}")
         if live.get("snapclient_last_error"):
             lines.append(f"  snap error  : {live.get('snapclient_last_error')}")
-    lines.append(f"  role        : {live.get('role')}")
     return lines
