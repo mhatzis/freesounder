@@ -120,6 +120,7 @@ class PlayerStore:
             settings,
             alsa_path=self._settings.alsa_conf,
             camilla_path=self._settings.camilla_conf,
+            output_file=self._settings.config_dir / "audio-output",
         )
 
     def apply(

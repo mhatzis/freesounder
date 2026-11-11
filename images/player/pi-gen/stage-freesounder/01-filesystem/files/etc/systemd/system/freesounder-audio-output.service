@@ -1,0 +1,7 @@
+[Unit]
+Description=Re-pick FreeSounder audio output after hotplug
+After=freesounder-role.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/freesounder/select-audio-output --restart-if-changed

@@ -81,7 +81,12 @@ plug in powered speakers (DAC+) or passives (DigiAMP+; check PSU needs).
 ## What is installed
 
 - Raspberry Pi OS Lite, 64-bit (Trixie), hostname `fs-new` until adopted (`fs-<room>` after), SSH disabled
-- `snapclient`, ALSA utilities, Avahi
+- `snapclient`, ALSA utilities, Avahi. `select-audio-output` (run before
+  snapclient starts and on HDMI/sound-card hotplug) points the `freesounder`
+  ALSA chain at a DAC/HAT or USB card, else the HDMI port with a display
+  connected (Pi 5: `vc4hdmi0`/`vc4hdmi1`), else the null sink, so the room
+  always registers with Music Assistant. The choice is in
+  `/etc/freesounder/audio-output`, on tty1 and in the doctor report.
 - Docker Engine (`docker.io`) and a systemd unit that starts Music Assistant
   **only** in the host role
 - freesounder control API (`services/control-api`) in a Python 3.13 venv,

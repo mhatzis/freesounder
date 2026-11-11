@@ -1,0 +1,87 @@
+#!/bin/bash
+# Pick the ALSA device the `freesounder` chain plays to, so snapclient can
+# always open a device and register with Music Assistant:
+#   1. a DAC/HAT or USB card (anything that is not vc4-hdmi),
+#   2. the HDMI port with a display connected (Pi 5: vc4hdmi0 = HDMI0,
+#      vc4hdmi1 = HDMI1; there is no analog jack),
+#   3. otherwise the null sink (silent, but the room still appears).
+# Writes /etc/freesounder/audio-output (pcm=, card=, reason=) and re-renders
+# /etc/alsa/conf.d/99-freesounder.conf. Run before snapclient starts and on
+# HDMI hotplug.
+set -uo pipefail
+
+OUT=/etc/freesounder/audio-output
+CARDS=${FREESOUNDER_ASOUND_CARDS:-/proc/asound/cards}
+DRM=${FREESOUNDER_DRM_DIR:-/sys/class/drm}
+
+pcm=null
+card=0
+reason="no audio device found; using the null sink so the room still registers"
+
+declare -a ids=()
+card_re='^([0-9]+) \[([A-Za-z0-9_]+) *\]: ([^ ]+)'
+while read -r line; do
+	if [[ "$line" =~ $card_re ]]; then
+		ids+=("${BASH_REMATCH[1]}:${BASH_REMATCH[2]}:${BASH_REMATCH[3]}")
+	fi
+done < "$CARDS" 2>/dev/null
+
+hdmi_connected() {
+	# vc4hdmi0 -> HDMI-A-1, vc4hdmi1 -> HDMI-A-2
+	local n=$1 status
+	for status in "$DRM"/card*-HDMI-A-$((n + 1))/status; do
+		[[ -r "$status" ]] && [[ "$(cat "$status")" == "connected" ]] && return 0
+	done
+	return 1
+}
+
+chosen=""
+for entry in "${ids[@]}"; do
+	IFS=: read -r index id driver <<<"$entry"
+	if [[ "$driver" != "vc4-hdmi" && "$id" != vc4hdmi* && "$id" != Headphones ]]; then
+		chosen="$index:$id"
+		reason="sound card $id"
+		break
+	fi
+done
+if [[ -z "$chosen" ]]; then
+	for entry in "${ids[@]}"; do
+		IFS=: read -r index id driver <<<"$entry"
+		if [[ "$id" =~ ^vc4hdmi([0-9]+)$ ]] && hdmi_connected "${BASH_REMATCH[1]}"; then
+			chosen="$index:$id"
+			reason="HDMI$((BASH_REMATCH[1])) (display connected)"
+			break
+		fi
+	done
+fi
+if [[ -z "$chosen" ]]; then
+	for entry in "${ids[@]}"; do
+		IFS=: read -r index id driver <<<"$entry"
+		if [[ "$id" == Headphones ]]; then
+			chosen="$index:$id"
+			reason="headphone jack (no HDMI display connected)"
+			break
+		fi
+	done
+fi
+if [[ -n "$chosen" ]]; then
+	IFS=: read -r index id <<<"$chosen"
+	pcm="default:CARD=$id"
+	card=$index
+fi
+
+new=$(printf 'pcm=%s\ncard=%s\nreason=%s' "$pcm" "$card" "$reason")
+changed=0
+if [[ "$(cat "$OUT" 2>/dev/null)" != "$new" ]]; then
+	install -d "$(dirname "$OUT")"
+	printf '%s\n' "$new" > "$OUT"
+	changed=1
+fi
+echo "freesounder audio output: $pcm ($reason)"
+if [[ -z "${FREESOUNDER_NO_RENDER:-}" ]]; then
+	/usr/lib/freesounder/apply-dsp-config || echo "apply-dsp-config failed" >&2
+fi
+# Hotplug (udev): only bounce snapclient when the device actually changed.
+if [[ "${1:-}" == "--restart-if-changed" && $changed == 1 ]]; then
+	systemctl --no-block try-restart snapclient.service || true
+fi

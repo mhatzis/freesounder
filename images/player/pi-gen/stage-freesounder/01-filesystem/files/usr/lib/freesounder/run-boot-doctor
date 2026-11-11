@@ -39,11 +39,19 @@ REPORT=$(mktemp)
 	echo
 	echo "== journalctl -u freesounder-ble-provisioning (last 50) =="
 	journalctl -u freesounder-ble-provisioning -n 50 --no-pager 2>/dev/null || true
-	for unit in freesounder-music-assistant freesounder-control-api freesounder-player-agent; do
+	for unit in freesounder-music-assistant freesounder-control-api freesounder-player-agent snapclient freesounder-audio-output; do
 		echo
 		echo "== journalctl -u ${unit} (last 30) =="
 		journalctl -u "$unit" -n 30 --no-pager 2>/dev/null || true
 	done
+	echo
+	echo "== audio output (select-audio-output) =="
+	cat /etc/freesounder/audio-output 2>/dev/null || echo "not selected yet"
+	cat /proc/asound/cards 2>/dev/null || echo "no ALSA cards"
+	for status in /sys/class/drm/card*-HDMI-A-*/status; do
+		[ -r "$status" ] && echo "$(basename "$(dirname "$status")"): $(cat "$status")" || true
+	done
+	grep -E '^SNAPCLIENT_OPTS' /etc/default/snapclient 2>/dev/null || true
 	echo
 	echo "== docker ps -a / images =="
 	docker ps -a --format '{{.Names}} {{.Image}} {{.Status}}' 2>/dev/null || echo "docker not answering"

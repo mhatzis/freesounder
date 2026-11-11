@@ -27,6 +27,7 @@ install -m 0755 files/usr/lib/freesounder/detect-role "${ROOTFS_DIR}/usr/lib/fre
 install -m 0755 files/usr/lib/freesounder/apply-runtime-config "${ROOTFS_DIR}/usr/lib/freesounder/apply-runtime-config"
 install -m 0755 files/usr/lib/freesounder/apply-dac-overlay "${ROOTFS_DIR}/usr/lib/freesounder/apply-dac-overlay"
 install -m 0755 files/usr/lib/freesounder/apply-dsp-config "${ROOTFS_DIR}/usr/lib/freesounder/apply-dsp-config"
+install -m 0755 files/usr/lib/freesounder/select-audio-output "${ROOTFS_DIR}/usr/lib/freesounder/select-audio-output"
 install -m 0755 files/usr/lib/freesounder/apply-player-agent "${ROOTFS_DIR}/usr/lib/freesounder/apply-player-agent"
 install -m 0755 files/usr/lib/freesounder/run-music-assistant "${ROOTFS_DIR}/usr/lib/freesounder/run-music-assistant"
 install -m 0755 files/usr/lib/freesounder/run-boot-doctor "${ROOTFS_DIR}/usr/lib/freesounder/run-boot-doctor"
@@ -69,6 +70,13 @@ install -m 0755 files/usr/lib/freesounder/wifi-radio-on "${ROOTFS_DIR}/usr/lib/f
 install -d "${ROOTFS_DIR}/etc/udev/rules.d"
 install -m 0644 files/etc/udev/rules.d/80-freesounder-wlan-unblock.rules \
 	"${ROOTFS_DIR}/etc/udev/rules.d/80-freesounder-wlan-unblock.rules"
+install -m 0644 files/etc/udev/rules.d/81-freesounder-audio-output.rules \
+	"${ROOTFS_DIR}/etc/udev/rules.d/81-freesounder-audio-output.rules"
+install -m 0644 files/etc/systemd/system/freesounder-audio-output.service \
+	"${ROOTFS_DIR}/etc/systemd/system/freesounder-audio-output.service"
+install -d "${ROOTFS_DIR}/etc/systemd/system/snapclient.service.d"
+install -m 0644 files/etc/systemd/system/snapclient.service.d/10-freesounder.conf \
+	"${ROOTFS_DIR}/etc/systemd/system/snapclient.service.d/10-freesounder.conf"
 CMDLINE="${ROOTFS_DIR}/boot/firmware/cmdline.txt"
 if [ -f "${CMDLINE}" ]; then
 	sed -i -e 's/[[:space:]]*cfg80211\.ieee80211_regdom=[^[:space:]]*//g' \

@@ -1,6 +1,6 @@
 [project]
 name = "freesounder-player-agent"
-version = "0.3.0"
+version = "0.3.1"
 description = "Per-player FreeSounder agent: adopt, room settings, and local DSP."
 readme = "README.md"
 license = { text = "Apache-2.0" }

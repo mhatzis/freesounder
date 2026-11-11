@@ -60,3 +60,29 @@ def test_hostname_friendly() -> None:
     assert hostname_friendly("Living Room") == "living-room"
     assert hostname_friendly("  Kitchen!  ") == "kitchen"
     assert hostname_friendly("") == "freesounder"
+
+
+def test_selected_audio_output_feeds_alsa_chain(tmp_path):
+    from freesounder_player_agent.dsp import read_audio_output
+
+    output = tmp_path / "audio-output"
+    assert read_audio_output(output) == ("default", "0")
+    output.write_text("pcm=default:CARD=vc4hdmi1\ncard=1\nreason=HDMI1 (display connected)\n")
+    assert read_audio_output(output) == ("default:CARD=vc4hdmi1", "1")
+
+    alsa_path = tmp_path / "99-freesounder.conf"
+    write_dsp_configs(
+        PlayerSettings(),
+        alsa_path=alsa_path,
+        camilla_path=tmp_path / "camilla.yml",
+        output_file=output,
+    )
+    text = alsa_path.read_text()
+    assert 'slave.pcm "default:CARD=vc4hdmi1"' in text
+    assert "card 1" in text
+
+    output.write_text("pcm=null\ncard=0\n")
+    write_dsp_configs(
+        PlayerSettings(), alsa_path=alsa_path, camilla_path=tmp_path / "c.yml", output_file=output
+    )
+    assert 'slave.pcm "null"' in alsa_path.read_text()

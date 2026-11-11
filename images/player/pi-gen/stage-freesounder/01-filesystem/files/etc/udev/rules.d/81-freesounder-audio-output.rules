@@ -1,0 +1,5 @@
+# Re-pick the FreeSounder audio output when a sound card appears (vc4-hdmi
+# audio can probe after snapclient starts) or an HDMI display is plugged in.
+# udev only queues the oneshot; the work runs outside the udev sandbox.
+ACTION=="add", SUBSYSTEM=="sound", KERNEL=="card[0-9]*", RUN+="/usr/bin/systemctl --no-block start freesounder-audio-output.service"
+ACTION=="change", SUBSYSTEM=="drm", RUN+="/usr/bin/systemctl --no-block start freesounder-audio-output.service"

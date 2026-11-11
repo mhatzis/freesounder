@@ -9,6 +9,8 @@ can switch to it later without a new settings schema.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from freesounder_player_agent.models import PlayerSettings
 
 # Eq10 / Eq10X2 centre frequencies (Hz).
@@ -44,7 +46,32 @@ def balance_gains(balance: float) -> tuple[float, float]:
     return (round(left, 4), round(right, 4))
 
 
-def render_alsa_conf(settings: PlayerSettings, *, slave_pcm: str = "default") -> str:
+AUDIO_OUTPUT_FILE = Path("/etc/freesounder/audio-output")
+
+
+def read_audio_output(path: Path = AUDIO_OUTPUT_FILE) -> tuple[str, str]:
+    """(slave PCM, control card) chosen by select-audio-output.
+
+    The file holds `pcm=<ALSA pcm>` and `card=<card id or index>` lines. Without
+    it the chain uses ALSA's default device and card 0.
+    """
+
+    pcm, card = "default", "0"
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            key, _, value = line.partition("=")
+            if key.strip() == "pcm" and value.strip():
+                pcm = value.strip()
+            elif key.strip() == "card" and value.strip():
+                card = value.strip()
+    except OSError:
+        pass
+    return pcm, card
+
+
+def render_alsa_conf(
+    settings: PlayerSettings, *, slave_pcm: str = "default", ctl_card: str = "0"
+) -> str:
     """ALSA PCM named `freesounder`: EQ → balance → hardware."""
 
     gains = " ".join(str(value) for value in band_gains(settings))
@@ -84,7 +111,7 @@ pcm.freesounder_hw {{
 
 ctl.freesounder {{
     type hw
-    card 0
+    card {ctl_card}
 }}
 """
 
@@ -159,13 +186,21 @@ def write_dsp_configs(
     *,
     alsa_path,
     camilla_path,
-    slave_pcm: str = "default",
+    slave_pcm: str | None = None,
+    output_file: Path = AUDIO_OUTPUT_FILE,
 ) -> None:
-    """Write both DSP configs, creating parent directories as needed."""
+    """Write both DSP configs, creating parent directories as needed.
 
+    The output device comes from select-audio-output (DAC, USB, the connected
+    HDMI port, or a null sink) unless slave_pcm is given.
+    """
+
+    chosen_pcm, card = read_audio_output(output_file)
+    if slave_pcm is not None:
+        chosen_pcm = slave_pcm
     alsa_path.parent.mkdir(parents=True, exist_ok=True)
     camilla_path.parent.mkdir(parents=True, exist_ok=True)
-    alsa_path.write_text(render_alsa_conf(settings, slave_pcm=slave_pcm))
+    alsa_path.write_text(render_alsa_conf(settings, slave_pcm=chosen_pcm, ctl_card=card))
     camilla_path.write_text(render_camilla_yaml(settings))
 
 
