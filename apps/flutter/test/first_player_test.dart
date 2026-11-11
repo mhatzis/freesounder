@@ -12,44 +12,52 @@ import 'package:freesounder/ui/rooms_panel.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
-/// A fake LAN: one or more boards answering agent (8090) and control API (8080).
+/// A fake LAN: boards answering the v2 player API on :8080.
 class FakeLan {
   final requests = <http.Request>[];
-  var agentFailuresLeft = 0;
-  int? adoptStatus;
-  String adoptBody = '{"detail":"boom"}';
+  var infoFailuresLeft = 0;
+  int? setupStatus;
+  String setupBody = '{"detail":"boom"}';
   int? controlAdoptStatus;
+  final ready = <String>{};
 
   MockClient get client => MockClient((request) async {
         requests.add(request);
         final path = request.url.path;
-        final port = request.url.port;
-        if (port == 8090 && path == '/api/v1/agent') {
-          if (agentFailuresLeft > 0) {
-            agentFailuresLeft--;
+        final host = request.url.host;
+        if (request.url.port != 8080) {
+          return http.Response('{"detail":"Not Found"}', 404);
+        }
+        if (path == '/api/v2/info') {
+          if (infoFailuresLeft > 0) {
+            infoFailuresLeft--;
             throw const SocketException('Local network prohibited');
           }
-          return http.Response(jsonEncode({'id': 'pi-1', 'name': 'fs-new', 'state': 'unconfigured'}), 200);
+          return http.Response(
+            jsonEncode({'id': 'pi-$host', 'state': ready.contains(host) ? 'ready' : 'unclaimed', 'version': '0.6.0'}),
+            200,
+          );
         }
-        if (port == 8090 && path == '/api/v1/agent/adopt') {
-          if (adoptStatus != null) {
-            return http.Response(adoptBody, adoptStatus!);
+        if (path == '/api/v2/setup') {
+          if (setupStatus != null) {
+            return http.Response(setupBody, setupStatus!);
           }
+          ready.add(host);
           final body = jsonDecode(request.body) as Map<String, dynamic>;
-          return http.Response(jsonEncode({'id': 'pi-1', 'name': body['name'], 'role': body['role'], 'state': 'configured'}), 200);
+          return http.Response(jsonEncode({'id': 'pi-$host', 'room': body['room'], 'state': 'ready'}), 200);
         }
-        if (port == 8080 && path == '/health') {
-          return http.Response(jsonEncode({'status': 'degraded', 'ma_connected': false, 'ma_state': 'starting', 'ma_detail': 'Unpacking Music Assistant', 'version': '0.3.0'}), 200);
+        if (path == '/health') {
+          return http.Response(jsonEncode({'status': 'ok', 'version': '0.6.0'}), 200);
         }
-        if (port == 8080 && path == '/api/v1/rooms') {
+        if (path == '/api/v2/rooms') {
           return http.Response('[]', 200);
         }
-        if (port == 8080 && path == '/api/v1/players/adopt') {
+        if (path == '/api/v2/players/adopt') {
           if (controlAdoptStatus != null) {
-            return http.Response('{"detail":"Player agent error: timed out"}', controlAdoptStatus!);
+            return http.Response('{"detail":"New player did not answer: timed out"}', controlAdoptStatus!);
           }
           final body = jsonDecode(request.body) as Map<String, dynamic>;
-          return http.Response(jsonEncode({'id': body['id'] ?? 'x', 'name': body['name'], 'url': body['url'] ?? '', 'role': 'room', 'state': 'configured'}), 200);
+          return http.Response(jsonEncode({'id': 'pi-${body['ip']}', 'room': body['room'], 'state': 'ready'}), 200);
         }
         return http.Response('{"detail":"Not Found"}', 404);
       });
@@ -91,33 +99,39 @@ Future<void> settle(ProviderContainer container) async {
 
 void main() {
   group('FirstPlayerSetup.createSystem', () {
-    test('adopts the board as host by IP and waits for its control API', () async {
-      final lan = FakeLan()..agentFailuresLeft = 2; // e.g. the local-network prompt
+    test('names the room on the board by IP and waits for it', () async {
+      final lan = FakeLan()..infoFailuresLeft = 2; // e.g. the local-network prompt
       final progress = <String>[];
       final base = await fastSetup(lan.client).createSystem(ip: '192.168.1.24', name: 'Lounge', onProgress: progress.add);
       expect(base, 'http://192.168.1.24:8080');
-      final adopt = lan.to('/api/v1/agent/adopt').single;
-      expect(adopt.url.toString(), 'http://192.168.1.24:8090/api/v1/agent/adopt');
-      expect(jsonDecode(adopt.body), {'name': 'Lounge', 'host': '192.168.1.24', 'role': 'host'});
-      expect(lan.to('/api/v1/agent').length, 3);
+      final setup = lan.to('/api/v2/setup').single;
+      expect(setup.url.toString(), 'http://192.168.1.24:8080/api/v2/setup');
+      expect(jsonDecode(setup.body), {'room': 'Lounge'});
+      expect(lan.to('/api/v2/info').length, 3);
       expect(lan.to('/health'), isNotEmpty);
       expect(progress.first, contains('192.168.1.24'));
     });
 
+    test('an already set-up board is not set up twice', () async {
+      final lan = FakeLan()..ready.add('192.168.1.24');
+      await fastSetup(lan.client).createSystem(ip: '192.168.1.24', name: 'Lounge');
+      expect(lan.to('/api/v2/setup'), isEmpty);
+    });
+
     test('names the step and HTTP status when the player refuses', () async {
-      final lan = FakeLan()..adoptStatus = 500;
+      final lan = FakeLan()..setupStatus = 500;
       final failure = await fastSetup(lan.client)
           .createSystem(ip: '192.168.1.24', name: 'Lounge')
           .then<AdoptFailure?>((_) => null, onError: (Object e) => e as AdoptFailure);
-      expect(failure!.step, 'Creating your system');
+      expect(failure!.step, 'Setting up the room');
       expect(failure.statusCode, 500);
       expect(failure.reason, 'boom');
-      expect(failure.message, contains('Creating your system failed (HTTP 500)'));
-      expect(failure.debugLine, contains('http://192.168.1.24:8090/api/v1/agent/adopt -> HTTP 500: boom'));
+      expect(failure.message, contains('Setting up the room failed (HTTP 500)'));
+      expect(failure.debugLine, contains('http://192.168.1.24:8080/api/v2/setup -> HTTP 500: boom'));
     });
 
     test('reports the network exception when the player never answers', () async {
-      final lan = FakeLan()..agentFailuresLeft = 1000;
+      final lan = FakeLan()..infoFailuresLeft = 1000;
       final failure = await fastSetup(lan.client)
           .createSystem(ip: '192.168.1.24', name: 'Lounge')
           .then<AdoptFailure?>((_) => null, onError: (Object e) => e as AdoptFailure);
@@ -129,7 +143,7 @@ void main() {
   });
 
   group('PlaybackStore.adoptProvisioned', () {
-    test('first player: no system yet, so it creates one and connects to it', () async {
+    test('first player: nothing connected, so the board is set up and connected', () async {
       final lan = FakeLan();
       final container = containerFor(lan);
       await settle(container);
@@ -139,18 +153,16 @@ void main() {
             name: 'Lounge',
             id: 'pi-1',
             ip: '192.168.1.24',
-            url: 'http://192.168.1.24:8090',
+            url: 'http://192.168.1.24:8080',
           );
       final state = container.read(playbackProvider);
       expect(state.connected, isTrue);
       expect(state.hostUrl, 'http://192.168.1.24:8080');
-      expect(state.systemStarting, isTrue);
-      expect(state.maDetail, 'Unpacking Music Assistant');
-      expect(jsonDecode(lan.to('/api/v1/agent/adopt').single.body)['role'], 'host');
-      expect(lan.to('/api/v1/players/adopt'), isEmpty);
+      expect(lan.to('/api/v2/setup').single.url.host, '192.168.1.24');
+      expect(lan.to('/api/v2/players/adopt'), isEmpty);
     });
 
-    test('join existing: connected to a host, a new board is adopted as a room', () async {
+    test('another player: the connected player hands over the household', () async {
       final lan = FakeLan();
       final container = containerFor(lan);
       await settle(container);
@@ -158,23 +170,21 @@ void main() {
       expect(await store.connectTo('http://192.168.1.10:8080', persist: false), isTrue);
 
       await store.adoptProvisioned(name: 'Kitchen', id: 'pi-2', ip: '192.168.1.77', url: 'http://192.168.1.77:8090');
-      final adopt = lan.to('/api/v1/players/adopt').single;
+      final adopt = lan.to('/api/v2/players/adopt').single;
       expect(adopt.url.host, '192.168.1.10');
-      final body = jsonDecode(adopt.body) as Map<String, dynamic>;
-      expect(body, {'name': 'Kitchen', 'id': 'pi-2', 'url': 'http://192.168.1.77:8090'});
-      expect(body.containsKey('role'), isFalse, reason: 'the host decides; it never demotes itself');
-      expect(lan.to('/api/v1/agent/adopt'), isEmpty);
+      expect(jsonDecode(adopt.body), {'room': 'Kitchen', 'ip': '192.168.1.77'});
+      expect(lan.to('/api/v2/setup'), isEmpty, reason: 'the connected player sets the new one up');
     });
 
-    test('connected to the very board being added: create, not join', () async {
+    test('connected to the very board being added: set it up directly', () async {
       final lan = FakeLan();
       final container = containerFor(lan);
       await settle(container);
       final store = container.read(playbackProvider.notifier);
       await store.connectTo('http://192.168.1.24:8080', persist: false);
       await store.adoptProvisioned(name: 'Lounge', id: 'pi-1', ip: '192.168.1.24');
-      expect(jsonDecode(lan.to('/api/v1/agent/adopt').single.body)['role'], 'host');
-      expect(lan.to('/api/v1/players/adopt'), isEmpty);
+      expect(lan.to('/api/v2/setup').single.url.host, '192.168.1.24');
+      expect(lan.to('/api/v2/players/adopt'), isEmpty);
     });
 
     test('join failure names the step and status', () async {
@@ -184,9 +194,9 @@ void main() {
       final store = container.read(playbackProvider.notifier);
       await store.connectTo('http://192.168.1.10:8080', persist: false);
       final failure = await store
-          .adoptProvisioned(name: 'Kitchen', id: 'pi-2', ip: '192.168.1.77', url: 'http://192.168.1.77:8090')
+          .adoptProvisioned(name: 'Kitchen', id: 'pi-2', ip: '192.168.1.77')
           .then<AdoptFailure?>((_) => null, onError: (Object e) => e as AdoptFailure);
-      expect(failure!.step, 'Adding it to your system');
+      expect(failure!.step, 'Adding it to your home');
       expect(failure.statusCode, 502);
       expect(failure.reason, contains('timed out'));
     });
@@ -201,8 +211,8 @@ void main() {
   test('503 from a starting system becomes a friendly message', () {
     final err = ControlApiException('HTTP 503', statusCode: 503, maState: 'starting', maDetail: 'Unpacking Music Assistant');
     expect(userMessageFor(err), 'Your system is still starting… Unpacking Music Assistant');
-    final old = ControlApiException('HTTP 502: Music Assistant is not reachable', statusCode: 502, detail: 'Music Assistant is not reachable');
-    expect(userMessageFor(old), startsWith('Your system is still starting…'));
+    final plain = ControlApiException('HTTP 503', statusCode: 503);
+    expect(userMessageFor(plain), startsWith('Your system is still starting…'));
   });
 
   test('requests never hang: TimeoutClient gives up', () async {

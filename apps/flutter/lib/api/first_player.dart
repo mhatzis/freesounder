@@ -43,70 +43,66 @@ class AdoptFailure implements Exception {
 
 typedef AdoptProgress = void Function(String message);
 
-/// Turn a freshly provisioned board into the household host (first player).
+/// Set up the first player of a new home (no player connected yet).
 ///
 /// Talks to the board itself by IP (from the Improv redirect), not mDNS: iOS
-/// multicast needs an entitlement and the board renames itself during adopt.
+/// multicast needs an entitlement and the board renames itself to fs-ROOM.
 /// The first request also triggers iOS's local-network permission prompt, so
 /// every step retries for a while instead of failing on the first refusal.
 class FirstPlayerSetup {
   FirstPlayerSetup({
     http.Client? httpClient,
-    this.agentPort = 8090,
     this.apiPort = 8080,
     this.reachTimeout = const Duration(seconds: 90),
     this.retryDelay = const Duration(seconds: 2),
     this.requestTimeout = const Duration(seconds: 8),
-    this.adoptTimeout = const Duration(seconds: 45),
+    this.adoptTimeout = const Duration(seconds: 30),
   }) : _http = httpClient ?? http.Client();
 
   final http.Client _http;
-  final int agentPort;
   final int apiPort;
   final Duration reachTimeout;
   final Duration retryDelay;
   final Duration requestTimeout;
   final Duration adoptTimeout;
 
-  /// Create a system on the board at [ip]. Returns the control API base URL.
+  /// Name the room on the board at [ip]; the board creates the household.
+  /// Returns the player's API base URL.
   Future<String> createSystem({
     required String ip,
     required String name,
     AdoptProgress? onProgress,
   }) async {
-    final agent = 'http://$ip:$agentPort';
     final api = 'http://$ip:$apiPort';
 
     onProgress?.call('Reaching the player at $ip…');
-    final info = await _retryJson('Reaching the player', Uri.parse('$agent/api/v1/agent'));
+    final info = await _retryJson('Reaching the player', Uri.parse('$api/api/v2/info'));
     final playerId = info['id'] as String?;
-
-    onProgress?.call('Creating your system…');
-    // Ask the board's own agent to become the household host. Works on every
-    // image (older control APIs always adopted as a room).
-    final adoptUri = Uri.parse('$agent/api/v1/agent/adopt');
-    try {
-      final response = await _http
-          .post(
-            adoptUri,
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode({'name': name, 'host': ip, 'role': 'host'}),
-          )
-          .timeout(adoptTimeout);
-      _check('Creating your system', adoptUri, response);
-    } on AdoptFailure {
-      rethrow;
-    } on Object catch (err) {
-      throw AdoptFailure('Creating your system', _describe(err), url: adoptUri.toString());
-    }
-
-    onProgress?.call('Starting your system…');
-    // The board restarts its control API to pick up the host role.
-    await Future<void>.delayed(retryDelay * 2);
-    await _retryJson('Starting your system', Uri.parse('$api/health'));
     if (playerId == null) {
       throw AdoptFailure('Reaching the player', 'The player did not report an id');
     }
+    if (info['state'] == 'ready') {
+      // Already set up (for example a retry after the reply was lost).
+      return api;
+    }
+
+    onProgress?.call('Naming $name…');
+    final setupUri = Uri.parse('$api/api/v2/setup');
+    try {
+      final response = await _http
+          .post(
+            setupUri,
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'room': name}),
+          )
+          .timeout(adoptTimeout);
+      _check('Setting up the room', setupUri, response);
+    } on AdoptFailure {
+      rethrow;
+    } on Object catch (err) {
+      throw AdoptFailure('Setting up the room', _describe(err), url: setupUri.toString());
+    }
+    await _retryJson('Connecting to the player', Uri.parse('$api/health'));
     return api;
   }
 
@@ -153,28 +149,29 @@ class FirstPlayerSetup {
   void close() => _http.close();
 }
 
-/// Join a board to the system the app is already connected to.
+/// Add a board to the home the app is connected to: the connected player
+/// hands the new one the household, then the new room shows up in the list.
 Future<void> joinExistingSystem(
   ControlApiClient client, {
   required String name,
   String? id,
   String? url,
+  String? ip,
 }) async {
   try {
-    // No role: the host adopts any other board as a room, and never demotes itself.
-    await client.adoptPlayer(name: name, id: id, url: url);
+    await client.adoptPlayer(name: name, id: id, url: url, ip: ip);
   } on ControlApiException catch (err) {
     throw AdoptFailure(
-      'Adding it to your system',
+      'Adding it to your home',
       err.detail ?? err.message,
       statusCode: err.statusCode,
-      url: err.url ?? '${client.baseUrl}/api/v1/players/adopt',
+      url: err.url ?? '${client.baseUrl}/api/v2/players/adopt',
     );
   } on Object catch (err) {
     throw AdoptFailure(
-      'Adding it to your system',
+      'Adding it to your home',
       _describe(err),
-      url: '${client.baseUrl}/api/v1/players/adopt',
+      url: '${client.baseUrl}/api/v2/players/adopt',
     );
   }
 }

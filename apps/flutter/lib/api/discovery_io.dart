@@ -6,7 +6,8 @@ import '../models/player_settings.dart';
 
 const _serviceName = '_freesounder._tcp.local';
 
-/// Looks up household control APIs advertised as `_freesounder._tcp`.
+/// Looks up FreeSounder players advertised as `_freesounder._tcp` (set-up
+/// players first, then ones that still need setup).
 Future<List<DiscoveredHost>> discoverControlApis({
   Duration timeout = const Duration(seconds: 3),
 }) async {
@@ -27,7 +28,9 @@ Future<List<DiscoveredHost>> discoverControlApis({
         found[host.url] = host;
       }
     }
-    return found.values.toList();
+    final hosts = found.values.toList()
+      ..sort((a, b) => (a.unclaimed ? 1 : 0).compareTo(b.unclaimed ? 1 : 0));
+    return hosts;
   } on Object {
     return found.values.toList();
   } finally {
@@ -58,9 +61,27 @@ Future<DiscoveredHost?> _resolvePtr(MDnsClient client, PtrResourceRecord ptr) as
     ip = record.address.address;
     break;
   }
+  final txt = <String, String>{};
+  await for (final record
+      in client
+          .lookup<TxtResourceRecord>(ResourceRecordQuery.text(domain))
+          .timeout(const Duration(seconds: 1), onTimeout: (sink) => sink.close())) {
+    for (final line in record.text.split('\n')) {
+      final eq = line.indexOf('=');
+      if (eq > 0) {
+        txt[line.substring(0, eq)] = line.substring(eq + 1);
+      }
+    }
+    break;
+  }
   final target = ip ?? host;
-  final name = domain.split('.').first;
-  return DiscoveredHost(url: 'http://$target:$port', name: name.isEmpty ? 'FreeSounder' : name);
+  final fallback = domain.split('.').first;
+  final room = txt['room'];
+  return DiscoveredHost(
+    url: 'http://$target:$port',
+    name: (room != null && room.isNotEmpty) ? room : (fallback.isEmpty ? 'FreeSounder' : fallback),
+    state: txt['state'],
+  );
 }
 
 /// Convenience: first discovered household, or null.

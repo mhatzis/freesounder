@@ -6,7 +6,7 @@ class PlayerSettings {
     this.treble = 0,
     this.balance = 0,
     this.loudness = false,
-    this.dac = 'none',
+    this.dac = 'auto',
     this.dacRebootRequired = false,
   });
 
@@ -27,7 +27,7 @@ class PlayerSettings {
       treble: (json['treble'] as num?)?.toDouble() ?? 0,
       balance: (json['balance'] as num?)?.toDouble() ?? 0,
       loudness: json['loudness'] as bool? ?? false,
-      dac: json['dac'] as String? ?? 'none',
+      dac: json['dac'] as String? ?? 'auto',
       dacRebootRequired: json['dac_reboot_required'] as bool? ?? false,
     );
   }
@@ -100,10 +100,15 @@ class UnclaimedPlayer {
 }
 
 class DiscoveredHost {
-  const DiscoveredHost({required this.url, this.name = 'FreeSounder'});
+  const DiscoveredHost({required this.url, this.name = 'FreeSounder', this.state});
 
   final String url;
   final String name;
+
+  /// `ready` (part of a home) or `unclaimed` (needs setup), from mDNS TXT.
+  final String? state;
+
+  bool get unclaimed => state == 'unclaimed';
 }
 
 

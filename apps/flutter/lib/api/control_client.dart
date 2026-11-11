@@ -4,12 +4,17 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
-import '../models/music_service.dart';
 import '../models/now_playing.dart';
 import '../models/player_settings.dart';
+import '../models/radio_station.dart';
 import '../models/room.dart';
 
-/// HTTP + WebSocket client for services/control-api.
+/// HTTP + WebSocket client for a player's freesounderd v2 API.
+///
+/// Every player is equal: the app talks to any one of them and that player
+/// forwards room or group requests to the right player (the group leader for
+/// playback, the room's own player for its volume and settings). Room ids work
+/// anywhere a group id is expected; the player resolves the room's group.
 class ControlApiClient {
   ControlApiClient({
     required this.baseUrl,
@@ -21,112 +26,131 @@ class ControlApiClient {
   final http.Client _http;
   WebSocketChannel? _channel;
 
+  static const _json = {'Content-Type': 'application/json'};
+
   Uri _uri(String path, [Map<String, String>? query]) {
     final root = baseUrl.endsWith('/') ? baseUrl.substring(0, baseUrl.length - 1) : baseUrl;
     return Uri.parse('$root$path').replace(queryParameters: query);
   }
 
-  Future<SystemHealth> health() async {
-    final response = await _http.get(_uri('/health'));
+  Future<dynamic> _getJson(String path, [Map<String, String>? query]) async {
+    final response = await _http.get(_uri(path, query));
     _ensureOk(response);
-    return SystemHealth.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+    return jsonDecode(response.body);
   }
 
-  Future<List<Room>> listRooms() async {
-    final response = await _http.get(_uri('/api/v1/rooms'));
+  Future<dynamic> _send(String method, String path, [Object? body]) async {
+    final request = http.Request(method, _uri(path))
+      ..headers.addAll(_json)
+      ..body = jsonEncode(body ?? const <String, dynamic>{});
+    final response = await http.Response.fromStream(await _http.send(request));
     _ensureOk(response);
-    final data = jsonDecode(response.body) as List<dynamic>;
+    return response.body.isEmpty ? null : jsonDecode(response.body);
+  }
+
+  Future<SystemHealth> health() async {
+    return SystemHealth.fromJson(await _getJson('/health') as Map<String, dynamic>);
+  }
+
+  /// This player's identity (`state` is `unclaimed` or `ready`).
+  Future<Map<String, dynamic>> info() async => await _getJson('/api/v2/info') as Map<String, dynamic>;
+
+  Future<List<Room>> listRooms() async {
+    final data = await _getJson('/api/v2/rooms') as List<dynamic>;
     return [for (final item in data) Room.fromJson(item as Map<String, dynamic>)];
   }
 
   Future<NowPlaying> nowPlaying(String playerId) async {
-    final response = await _http.get(_uri('/api/v1/now-playing', {'player_id': playerId}));
-    _ensureOk(response);
-    return NowPlaying.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+    final data = await _getJson('/api/v2/now-playing', {'player_id': playerId});
+    return NowPlaying.fromJson(data as Map<String, dynamic>);
   }
 
-  Future<void> play(String playerId) => _post('/api/v1/players/$playerId/play');
+  Future<void> play(String roomOrGroupId) => _send('POST', '/api/v2/groups/$roomOrGroupId/play');
 
-  Future<void> pause(String playerId) => _post('/api/v1/players/$playerId/pause');
+  Future<void> pause(String roomOrGroupId) => _send('POST', '/api/v2/groups/$roomOrGroupId/pause');
 
-  Future<void> next(String playerId) => _post('/api/v1/players/$playerId/next');
+  Future<void> next(String roomOrGroupId) => _send('POST', '/api/v2/groups/$roomOrGroupId/next');
 
-  Future<void> setVolume(String playerId, int level) async {
-    final response = await _http.post(
-      _uri('/api/v1/players/$playerId/volume'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'level': level}),
-    );
-    _ensureOk(response);
+  Future<void> previous(String roomOrGroupId) =>
+      _send('POST', '/api/v2/groups/$roomOrGroupId/previous');
+
+  Future<void> stop(String roomOrGroupId) => _send('POST', '/api/v2/groups/$roomOrGroupId/stop');
+
+  /// One room's volume (0-100).
+  Future<void> setVolume(String playerId, int level) =>
+      _send('POST', '/api/v2/rooms/$playerId/volume', {'volume': level});
+
+  Future<void> setMuted(String playerId, bool muted) =>
+      _send('POST', '/api/v2/rooms/$playerId/volume', {'muted': muted});
+
+  /// Group volume: moves every room in the group by the same amount.
+  Future<void> setGroupVolume(String groupId, int level) =>
+      _send('POST', '/api/v2/groups/$groupId/volume', {'volume': level});
+
+  /// Put [playerId] into [groupId] (a group id or any room id in that group).
+  Future<void> joinGroup(String groupId, String playerId) =>
+      _send('POST', '/api/v2/rooms/$playerId/join', {'group': groupId});
+
+  /// Take [playerId] out of its group. A playing leader keeps serving the
+  /// others ("relay mode") until the music stops.
+  Future<void> leaveGroup(String groupId, String playerId) =>
+      _send('POST', '/api/v2/rooms/$playerId/leave');
+
+  Future<void> setGroupMembers(String groupId, List<String> memberIds) =>
+      _send('PUT', '/api/v2/groups/$groupId/members', {'members': memberIds});
+
+  Future<List<RadioStation>> searchRadio({String? query, String? country, String? tag}) async {
+    final data = await _getJson('/api/v2/radio/search', {
+      if (query != null && query.isNotEmpty) 'q': query,
+      'country': ?country,
+      'tag': ?tag,
+    }) as List<dynamic>;
+    return [for (final item in data) RadioStation.fromJson(item as Map<String, dynamic>)];
   }
 
-  Future<void> joinGroup(String groupId, String playerId) async {
-    final response = await _http.post(
-      _uri('/api/v1/groups/$groupId/join'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'player_id': playerId}),
-    );
-    _ensureOk(response);
+  Future<List<RadioStation>> recentRadio() async {
+    final data = await _getJson('/api/v2/radio/favourites') as List<dynamic>;
+    return [for (final item in data) RadioStation.fromJson(item as Map<String, dynamic>)];
   }
 
-  Future<void> leaveGroup(String groupId, String playerId) async {
-    final response = await _http.post(
-      _uri('/api/v1/groups/$groupId/leave'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'player_id': playerId}),
-    );
-    _ensureOk(response);
-  }
+  Future<void> playRadio(String roomOrGroupId, RadioStation station) =>
+      _send('POST', '/api/v2/groups/$roomOrGroupId/radio', station.toPlayJson());
 
   Future<List<UnclaimedPlayer>> listUnclaimed() async {
-    final response = await _http.get(_uri('/api/v1/players/unclaimed'));
-    _ensureOk(response);
-    final data = jsonDecode(response.body) as List<dynamic>;
+    final data = await _getJson('/api/v2/players/unclaimed') as List<dynamic>;
     return [for (final item in data) UnclaimedPlayer.fromJson(item as Map<String, dynamic>)];
   }
 
-  /// Adopt a player through this system's host. Leave [role] null to let the
-  /// host decide (its own board becomes the host, any other board a room).
-  Future<UnclaimedPlayer> adoptPlayer({
+  /// Ask this (set up) player to set up a new player into the household.
+  /// The household key goes player to player; the app never sees it.
+  Future<Map<String, dynamic>> adoptPlayer({
     required String name,
     String? id,
     String? url,
     String? role,
+    String? ip,
   }) async {
-    final response = await _http.post(
-      _uri('/api/v1/players/adopt'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({
-        'name': name,
-        'id': ?id,
-        'url': ?url,
-        'role': ?role,
-      }),
-    );
-    _ensureOk(response);
-    return UnclaimedPlayer.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+    // The new player always serves the v2 API on :8080, whatever port the
+    // Improv redirect named, so send its address rather than the URL.
+    final host = ip ?? (url == null ? null : Uri.tryParse(url.contains('://') ? url : 'http://$url')?.host);
+    final body = (host != null && host.isNotEmpty) ? {'room': name, 'ip': host} : {'room': name, 'url': ?url};
+    final data = await _send('POST', '/api/v2/players/adopt', body);
+    return data as Map<String, dynamic>;
   }
 
   Future<PlayerSettings> getSettings(String playerId) async {
-    final response = await _http.get(_uri('/api/v1/players/$playerId/settings'));
-    _ensureOk(response);
-    return PlayerSettings.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+    final data = await _getJson('/api/v2/rooms/$playerId/settings');
+    return PlayerSettings.fromJson(data as Map<String, dynamic>);
   }
 
   Future<PlayerSettings> patchSettings(String playerId, Map<String, dynamic> patch) async {
-    final response = await _http.patch(
-      _uri('/api/v1/players/$playerId/settings'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode(patch),
-    );
-    _ensureOk(response);
-    return PlayerSettings.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+    final data = await _send('PATCH', '/api/v2/rooms/$playerId/settings', patch);
+    return PlayerSettings.fromJson(data as Map<String, dynamic>);
   }
 
   Future<SshDeveloperStatus> getSsh(String playerId) async {
-    final response = await _http.get(_uri('/api/v1/players/$playerId/developer/ssh'));
-    _ensureOk(response);
-    return SshDeveloperStatus.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+    final data = await _getJson('/api/v2/rooms/$playerId/developer/ssh');
+    return SshDeveloperStatus.fromJson(data as Map<String, dynamic>);
   }
 
   Future<SshDeveloperStatus> setSsh(
@@ -135,118 +159,18 @@ class ControlApiClient {
     bool confirm = false,
     String? publicKey,
   }) async {
-    final response = await _http.post(
-      _uri('/api/v1/players/$playerId/developer/ssh'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({
-        'enabled': enabled,
-        'confirm': confirm,
-        if (publicKey != null && publicKey.isNotEmpty) 'public_key': publicKey,
-      }),
-    );
-    _ensureOk(response);
-    return SshDeveloperStatus.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
-  }
-
-  Future<MusicServicesCatalog> musicServicesCatalog() async {
-    final response = await _http.get(_uri('/api/v1/music-services/catalog'));
-    _ensureOk(response);
-    return MusicServicesCatalog.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
-  }
-
-  Future<List<MusicService>> listMusicServices() async {
-    final response = await _http.get(_uri('/api/v1/music-services'));
-    _ensureOk(response);
-    final data = jsonDecode(response.body) as List<dynamic>;
-    return [for (final item in data) MusicService.fromJson(item as Map<String, dynamic>)];
-  }
-
-  Future<MusicService> getMusicService(String instanceId) async {
-    final response = await _http.get(_uri('/api/v1/music-services/$instanceId'));
-    _ensureOk(response);
-    return MusicService.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
-  }
-
-  Future<Map<String, dynamic>> addMusicService(String domain, {Map<String, dynamic> values = const {}}) async {
-    final response = await _http.post(
-      _uri('/api/v1/music-services'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'domain': domain, 'values': values}),
-    );
-    _ensureOk(response);
-    return jsonDecode(response.body) as Map<String, dynamic>;
-  }
-
-  Future<MusicService> updateMusicService(String instanceId, Map<String, dynamic> values) async {
-    final response = await _http.patch(
-      _uri('/api/v1/music-services/$instanceId'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'values': values}),
-    );
-    _ensureOk(response);
-    return MusicService.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
-  }
-
-  Future<void> removeMusicService(String instanceId) async {
-    final response = await _http.delete(_uri('/api/v1/music-services/$instanceId'));
-    _ensureOk(response);
-  }
-
-  Future<AuthSession> startMusicServiceAuth({String? domain, String? instanceId}) async {
-    final response = await _http.post(
-      _uri('/api/v1/music-services/auth'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({
-        if (domain != null) 'domain': domain,
-        if (instanceId != null) 'instance_id': instanceId,
-      }),
-    );
-    _ensureOk(response);
-    return AuthSession.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
-  }
-
-  Future<AuthSession> getMusicServiceAuth(String sessionId) async {
-    final response = await _http.get(_uri('/api/v1/music-services/auth/$sessionId'));
-    _ensureOk(response);
-    return AuthSession.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
-  }
-
-  Future<AuthSession> submitMusicServiceAuth(String sessionId, Map<String, dynamic> values) async {
-    final response = await _http.post(
-      _uri('/api/v1/music-services/auth/$sessionId/submit'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'values': values}),
-    );
-    _ensureOk(response);
-    return AuthSession.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
-  }
-
-  Future<AuthSession> abortMusicServiceAuth(String sessionId) async {
-    final response = await _http.post(_uri('/api/v1/music-services/auth/$sessionId/abort'));
-    _ensureOk(response);
-    return AuthSession.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
-  }
-
-  Future<SpotifyConnectStatus> spotifyConnectStatus() async {
-    final response = await _http.get(_uri('/api/v1/music-services/spotify-connect'));
-    _ensureOk(response);
-    return SpotifyConnectStatus.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
-  }
-
-  Future<SpotifyConnectStatus> setSpotifyConnect(String playerId, bool enabled) async {
-    final response = await _http.post(
-      _uri('/api/v1/music-services/spotify-connect/$playerId'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'enabled': enabled}),
-    );
-    _ensureOk(response);
-    return SpotifyConnectStatus.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+    final data = await _send('POST', '/api/v2/rooms/$playerId/developer/ssh', {
+      'enabled': enabled,
+      'confirm': confirm,
+      if (publicKey != null && publicKey.isNotEmpty) 'public_key': publicKey,
+    });
+    return SshDeveloperStatus.fromJson(data as Map<String, dynamic>);
   }
 
   Stream<Map<String, dynamic>> connectEvents() {
     final httpUri = Uri.parse(baseUrl);
     final scheme = httpUri.scheme == 'https' ? 'wss' : 'ws';
-    final wsUri = httpUri.replace(scheme: scheme, path: '/api/v1/ws');
+    final wsUri = httpUri.replace(scheme: scheme, path: '/api/v2/ws');
     _channel = WebSocketChannel.connect(wsUri);
     return _channel!.stream.map((raw) {
       if (raw is String) {
@@ -259,11 +183,6 @@ class ControlApiClient {
   Future<void> close() async {
     await _channel?.sink.close();
     _http.close();
-  }
-
-  Future<void> _post(String path) async {
-    final response = await _http.post(_uri(path));
-    _ensureOk(response);
   }
 
   void _ensureOk(http.Response response) => ensureOk(response);
@@ -312,7 +231,7 @@ class ControlApiException implements Exception {
   final int? statusCode;
   final String? detail;
 
-  /// Set when the system answered 503 because Music Assistant is not ready.
+  /// Set by pre-v2 systems that answered 503 while Music Assistant started.
   final String? maState;
   final String? maDetail;
   final String? url;
@@ -323,30 +242,36 @@ class ControlApiException implements Exception {
   String toString() => 'ControlApiException: $message';
 }
 
-/// /health from the control API. Older players omit the ma_state fields.
+/// /health from a player. `state` is `unclaimed` or `ready`.
 class SystemHealth {
   const SystemHealth({
     required this.ok,
-    required this.maConnected,
-    required this.maState,
+    this.state,
+    this.maState,
     this.maDetail,
     this.version,
+    this.api,
   });
 
   final bool ok;
-  final bool maConnected;
-  final String maState;
+  final String? state;
+
+  /// Only set by pre-v2 (Music Assistant) systems.
+  final String? maState;
   final String? maDetail;
   final String? version;
+  final String? api;
+
+  bool get maConnected => maState == null || maState == 'connected';
 
   factory SystemHealth.fromJson(Map<String, dynamic> json) {
-    final connected = json['ma_connected'] as bool? ?? false;
     return SystemHealth(
       ok: json['status'] == 'ok',
-      maConnected: connected,
-      maState: json['ma_state'] as String? ?? (connected ? 'connected' : 'unavailable'),
+      state: json['state'] as String?,
+      maState: json['ma_state'] as String?,
       maDetail: json['ma_detail'] as String?,
       version: json['version'] as String?,
+      api: json['api'] as String?,
     );
   }
 }

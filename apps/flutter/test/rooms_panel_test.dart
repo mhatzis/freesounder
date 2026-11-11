@@ -51,6 +51,35 @@ void main() {
     expect(container.read(playbackProvider).activeRoomId, 'lounge');
   });
 
+  testWidgets('group sheet groups two rooms as "Kitchen + 1" and ungroups', (tester) async {
+    tester.view.physicalSize = const Size(500, 1000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(_host(const Scaffold(body: RoomsPanel())));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('room-group-kitchen')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('group-member-lounge')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Kitchen + 1'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('group-apply')));
+    await tester.pumpAndSettle();
+
+    final container = ProviderScope.containerOf(tester.element(find.byType(RoomsPanel)));
+    final rooms = container.read(playbackProvider).rooms;
+    expect(rooms.firstWhere((r) => r.id == 'lounge').groupName, 'Kitchen + 1');
+    expect(rooms.firstWhere((r) => r.id == 'lounge').isGrouped, isTrue);
+    expect(find.textContaining('Kitchen + 1'), findsWidgets);
+
+    await tester.tap(find.byKey(const Key('room-group-lounge')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('group-leave')));
+    await tester.pumpAndSettle();
+    expect(container.read(playbackProvider).rooms.firstWhere((r) => r.id == 'lounge').isGrouped, isFalse);
+  });
+
   testWidgets('narrow shell shows mini-player rooms chip and sheet', (tester) async {
     tester.view.physicalSize = const Size(400, 800);
     tester.view.devicePixelRatio = 1.0;
@@ -190,7 +219,7 @@ void main() {
     await tester.pumpAndSettle();
 
     await tester.ensureVisible(find.byKey(const Key('player-version-tap')));
-    expect(find.text('FreeSounder 0.5.3'), findsOneWidget);
+    expect(find.text('FreeSounder 0.6.0'), findsOneWidget);
     expect(find.byKey(const Key('ssh-developer-switch')), findsNothing);
 
     for (var i = 0; i < 7; i++) {

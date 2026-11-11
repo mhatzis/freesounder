@@ -143,9 +143,17 @@ class _RoomTile extends ConsumerWidget {
                   Text(
                     [
                       if (room.volume != null) '${room.volume}',
-                      if (room.groupId != null) 'Grouped',
+                      if (room.isGrouped) room.groupName ?? 'Grouped',
+                      if (room.relayingFor != null) 'Playing for ${room.relayingFor}',
                     ].join(' · '),
+                    key: Key('room-status-${room.id}'),
                     style: Theme.of(context).textTheme.labelSmall?.copyWith(color: scheme.onSurfaceVariant),
+                  ),
+                  IconButton(
+                    key: Key('room-group-${room.id}'),
+                    tooltip: 'Group with other rooms',
+                    icon: Icon(room.isGrouped ? Icons.link : Icons.add_link, size: 20),
+                    onPressed: () => showGroupSheet(context, room),
                   ),
                   IconButton(
                     key: Key('room-settings-${room.id}'),
@@ -245,12 +253,135 @@ String emptyRoomsTitle(PlaybackState state) {
 String emptyRoomsDetail(PlaybackState state) {
   if (state.systemStarting) {
     final detail = state.maDetail;
-    if (state.maState == 'auth_required') {
-      return 'Music Assistant needs to be linked. ${detail ?? ''}'.trim();
-    }
-    return (detail == null || detail.isEmpty)
-        ? 'Music Assistant is getting ready. The first start can take a few minutes.'
-        : detail;
+    return (detail == null || detail.isEmpty) ? 'Your player is getting ready.' : detail;
   }
-  return 'Your players appear here once Music Assistant has found them.';
+  return 'Your players appear here as soon as they are on the network.';
+}
+
+/// Choose which rooms play together with [room]. [room]'s group leads.
+Future<void> showGroupSheet(BuildContext context, Room room) {
+  return showModalBottomSheet<void>(
+    context: context,
+    showDragHandle: true,
+    isScrollControlled: true,
+    builder: (_) => _GroupSheet(room: room),
+  );
+}
+
+class _GroupSheet extends ConsumerStatefulWidget {
+  const _GroupSheet({required this.room});
+
+  final Room room;
+
+  @override
+  ConsumerState<_GroupSheet> createState() => _GroupSheetState();
+}
+
+class _GroupSheetState extends ConsumerState<_GroupSheet> {
+  late Set<String> _selected;
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _selected = {widget.room.id, ...widget.room.memberIds};
+  }
+
+  Future<void> _apply() async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    final store = ref.read(playbackProvider.notifier);
+    try {
+      if (_selected.length <= 1 && widget.room.isGrouped) {
+        await store.leaveGroup(widget.room.id);
+      } else {
+        await store.setGroupMembers(widget.room.id, _selected.toList());
+      }
+      if (mounted) {
+        Navigator.of(context).pop();
+      }
+    } on Object catch (err) {
+      setState(() => _error = err.toString());
+    } finally {
+      if (mounted) {
+        setState(() => _busy = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final rooms = ref.watch(playbackProvider).rooms;
+    final text = Theme.of(context).textTheme;
+    final others = rooms.where((r) => r.id != widget.room.id).toList();
+    final count = _selected.length;
+    final title = count > 1 ? '${widget.room.name} + ${count - 1}' : widget.room.name;
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text('Play together', style: text.titleLarge),
+            const SizedBox(height: 4),
+            Text(
+              'Spotify and AirPlay show this group as "$title".',
+              key: const Key('group-sheet-name'),
+              style: text.bodySmall,
+            ),
+            const SizedBox(height: 8),
+            if (others.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 16),
+                child: Text('Add a second player to group rooms.'),
+              ),
+            for (final other in others)
+              CheckboxListTile(
+                key: Key('group-member-${other.id}'),
+                contentPadding: EdgeInsets.zero,
+                value: _selected.contains(other.id),
+                title: Text(other.name),
+                subtitle: other.isGrouped && !widget.room.memberIds.contains(other.id)
+                    ? Text('Now in ${other.groupName ?? 'another group'}')
+                    : null,
+                onChanged: _busy
+                    ? null
+                    : (v) => setState(() {
+                          if (v == true) {
+                            _selected.add(other.id);
+                          } else {
+                            _selected.remove(other.id);
+                          }
+                        }),
+              ),
+            if (widget.room.isGrouped)
+              TextButton(
+                key: const Key('group-leave'),
+                onPressed: _busy
+                    ? null
+                    : () async {
+                        setState(() => _selected = {widget.room.id});
+                        await _apply();
+                      },
+                child: Text('Take ${widget.room.name} out of the group'),
+              ),
+            if (_error != null)
+              Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+            const SizedBox(height: 8),
+            FilledButton(
+              key: const Key('group-apply'),
+              onPressed: _busy ? null : _apply,
+              child: _busy
+                  ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Text('Done'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }

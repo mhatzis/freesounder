@@ -212,7 +212,7 @@ class DemoNearbyTransport implements NearbyTransport {
     return ProvisionResult(
       ok: true,
       ip: '192.168.1.80',
-      redirect: 'http://192.168.1.80:8090',
+      redirect: 'http://192.168.1.80:8080',
       playerId: 'demo-ble-porch',
     );
   }

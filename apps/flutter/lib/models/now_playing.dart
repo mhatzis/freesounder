@@ -8,6 +8,8 @@ class NowPlaying {
     this.state = 'idle',
     this.position,
     this.duration,
+    this.source,
+    this.groupName,
   });
 
   final String playerId;
@@ -18,6 +20,10 @@ class NowPlaying {
   final String state;
   final double? position;
   final double? duration;
+
+  /// none, radio, spotify or airplay.
+  final String? source;
+  final String? groupName;
 
   bool get isPlaying => state == 'playing';
   bool get isPaused => state == 'paused';
@@ -32,6 +38,8 @@ class NowPlaying {
       state: json['state'] as String? ?? 'idle',
       position: (json['position'] as num?)?.toDouble(),
       duration: (json['duration'] as num?)?.toDouble(),
+      source: json['source'] as String?,
+      groupName: json['group_name'] as String?,
     );
   }
 
@@ -45,6 +53,8 @@ class NowPlaying {
       state: state ?? this.state,
       position: position,
       duration: duration,
+      source: source,
+      groupName: groupName,
     );
   }
 }

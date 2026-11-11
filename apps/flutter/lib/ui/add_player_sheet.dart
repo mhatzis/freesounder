@@ -322,7 +322,7 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
             address: result.ip,
           );
       final store = ref.read(playbackProvider.notifier);
-      // With no system yet there is no host to list unclaimed players.
+      // With no player connected yet there is nobody to list unclaimed players.
       final unclaimed = (store.client == null && !ref.read(playbackProvider).mockMode)
           ? null
           : await _waitForUnclaimed(id);
@@ -333,9 +333,9 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
           UnclaimedPlayer(
             id: id,
             name: player.name,
-            url: result.redirect ?? 'http://${result.ip ?? 'freesounder.local'}:8090',
+            url: result.redirect ?? 'http://${result.ip ?? 'freesounder.local'}:8080',
             address: result.ip,
-            port: 8090,
+            port: 8080,
           );
       setState(() {
         _selected = NearbyPlayer(
@@ -501,7 +501,7 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
       case _WizardStep.progress:
         return 'Joining ${_network?.ssid ?? "the network"}…';
       case _WizardStep.adopt:
-        return 'Name the room and it joins this system.';
+        return 'What room is this speaker in?';
     }
   }
 
@@ -854,20 +854,6 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
     );
   }
 
-  /// No system yet (or the app is connected to this very board): create one.
-  bool get _createsSystem {
-    final state = ref.watch(playbackProvider);
-    if (state.mockMode) {
-      return false;
-    }
-    final client = ref.read(playbackProvider.notifier).client;
-    if (client == null) {
-      return true;
-    }
-    final ip = _provisionedIp ?? _selected?.unclaimed?.address;
-    return ip != null && ip == Uri.tryParse(client.baseUrl)?.host;
-  }
-
   Widget _adoptStep(ColorScheme scheme, TextTheme text) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -896,16 +882,8 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
           onPressed: _working ? null : _adopt,
           child: _working
               ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-              : Text(_createsSystem ? 'Create your system' : 'Join this system'),
+              : const Text('Done'),
         ),
-        if (_createsSystem && !_working) ...[
-          const SizedBox(height: 8),
-          Text(
-            'This is your first player, so it will also run your system.',
-            key: const Key('create-system-hint'),
-            style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
-          ),
-        ],
         if (_adoptProgress != null) ...[
           const SizedBox(height: 12),
           const LinearProgressIndicator(),

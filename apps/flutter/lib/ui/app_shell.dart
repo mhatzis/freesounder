@@ -5,6 +5,7 @@ import '../state/playback_store.dart';
 import '../theme/tokens.dart';
 import 'add_player_sheet.dart';
 import 'mini_player.dart';
+import 'radio_screen.dart';
 import 'room_settings_sheet.dart';
 import 'rooms_panel.dart';
 import 'settings_screen.dart';
@@ -148,11 +149,7 @@ class _NowPlayingCanvas extends ConsumerWidget {
                                 ),
                                 child: ClipRRect(
                                   borderRadius: BorderRadius.circular(28),
-                                  child: Image.asset(
-                                    'assets/logo.png',
-                                    fit: BoxFit.cover,
-                                    filterQuality: FilterQuality.medium,
-                                  ),
+                                  child: _Artwork(url: np?.imageUrl),
                                 ),
                               ),
                             ),
@@ -180,8 +177,19 @@ class _NowPlayingCanvas extends ConsumerWidget {
                                   roomName: state.activeRoom!.name,
                                 ),
                                 icon: const Icon(Icons.tune, size: 18),
-                                label: Text(state.activeRoom!.name),
+                                label: Text(
+                                  state.activeRoom!.isGrouped
+                                      ? (state.activeRoom!.groupName ?? state.activeRoom!.name)
+                                      : state.activeRoom!.name,
+                                  key: const Key('now-playing-room-label'),
+                                ),
                               ),
+                              if (sourceLabel(np?.source) != null)
+                                Text(
+                                  sourceLabel(np?.source)!,
+                                  key: const Key('now-playing-source'),
+                                  style: text.labelMedium?.copyWith(color: scheme.onSurfaceVariant),
+                                ),
                             ],
                             if (progress != null) ...[
                               const SizedBox(height: 16),
@@ -291,6 +299,12 @@ class _TopBar extends StatelessWidget {
             ),
           ),
         IconButton(
+          key: const Key('radio-button'),
+          tooltip: 'Radio',
+          icon: const Icon(Icons.radio_outlined),
+          onPressed: () => showRadioScreen(context),
+        ),
+        IconButton(
           key: const Key('settings-button'),
           tooltip: 'Settings',
           icon: const Icon(Icons.settings_outlined),
@@ -302,5 +316,31 @@ class _TopBar extends StatelessWidget {
         ),
       ],
     );
+  }
+}
+
+/// "Radio", "Spotify", "AirPlay" for the now-playing canvas.
+String? sourceLabel(String? source) {
+  return switch (source) {
+    'radio' => 'Radio',
+    'spotify' => 'Spotify Connect',
+    'airplay' => 'AirPlay',
+    _ => null,
+  };
+}
+
+class _Artwork extends StatelessWidget {
+  const _Artwork({this.url});
+
+  final String? url;
+
+  @override
+  Widget build(BuildContext context) {
+    final logo = Image.asset('assets/logo.png', fit: BoxFit.cover, filterQuality: FilterQuality.medium);
+    final src = url;
+    if (src == null || !src.startsWith('http')) {
+      return logo;
+    }
+    return Image.network(src, fit: BoxFit.cover, errorBuilder: (_, _, _) => logo);
   }
 }

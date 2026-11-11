@@ -9,6 +9,7 @@ import '../api/first_player.dart';
 import '../api/mock_data.dart';
 import '../models/now_playing.dart';
 import '../models/player_settings.dart';
+import '../models/radio_station.dart';
 import '../models/room.dart';
 
 class AppConfig {
@@ -54,7 +55,7 @@ class PlaybackState {
   final List<DiscoveredHost> discoveredHosts;
   final Map<String, PlayerSettings> settings;
 
-  /// Music Assistant on the connected system: connected, starting,
+  /// Pre-v2 systems only (Music Assistant state): connected, starting,
   /// auth_required or unavailable (null when unknown or in demo).
   final String? maState;
   final String? maDetail;
@@ -193,8 +194,9 @@ class PlaybackStore extends Notifier<PlaybackState> {
     List<DiscoveredHost> hosts = const [];
     if (base == null) {
       hosts = await _safeDiscover(config.discoveryTimeout);
-      if (hosts.isNotEmpty) {
-        base = hosts.first.url;
+      final ready = hosts.where((h) => !h.unclaimed);
+      if (ready.isNotEmpty) {
+        base = ready.first.url;
       }
     } else {
       unawaited(_refreshHosts());
@@ -208,9 +210,8 @@ class PlaybackStore extends Notifier<PlaybackState> {
       if (hosts.isEmpty) {
         hosts = await _safeDiscover(config.discoveryTimeout);
       }
-      if (hosts.isNotEmpty && hosts.first.url != base) {
-        final retry = await connectTo(hosts.first.url, persist: false);
-        if (retry) {
+      for (final host in hosts.where((h) => !h.unclaimed && h.url != base)) {
+        if (await connectTo(host.url, persist: false)) {
           return;
         }
       }
@@ -340,7 +341,7 @@ class PlaybackStore extends Notifier<PlaybackState> {
     await _connectOrDemo();
   }
 
-  /// Ask the system whether Music Assistant is ready (never throws).
+  /// Ask the connected player whether it is healthy (never throws).
   Future<void> refreshHealth({bool reloadRooms = false}) async {
     final client = _client;
     if (client == null) {
@@ -458,6 +459,120 @@ class PlaybackStore extends Notifier<PlaybackState> {
     await _client?.setVolume(roomId, clamped);
   }
 
+  Future<void> skipPrevious() async {
+    final room = state.activeRoom;
+    if (room == null || state.mockMode) {
+      return;
+    }
+    await _client?.previous(room.id);
+  }
+
+  /// Volume for the whole group the room is in (every room moves together).
+  Future<void> setGroupVolume(String roomId, int level) async {
+    if (state.mockMode) {
+      final room = state.rooms.where((r) => r.id == roomId).firstOrNull;
+      for (final id in room?.memberIds.isNotEmpty == true ? room!.memberIds : [roomId]) {
+        await setVolume(id, level);
+      }
+      return;
+    }
+    await _client?.setGroupVolume(roomId, level.clamp(0, 100));
+  }
+
+  /// Make [roomId]'s group exactly [memberIds] (roomId's group leads).
+  Future<void> setGroupMembers(String roomId, List<String> memberIds) async {
+    final room = state.rooms.where((r) => r.id == roomId).firstOrNull;
+    if (room == null) {
+      return;
+    }
+    if (state.mockMode) {
+      _mock.setGroup(roomId, memberIds);
+      state = state.copyWith(rooms: List.of(_mock.rooms));
+      return;
+    }
+    final client = _client;
+    if (client == null) {
+      throw ControlApiException('Not connected to a player');
+    }
+    await client.setGroupMembers(room.groupId ?? roomId, memberIds);
+    await _reloadRooms();
+  }
+
+  /// Take one room out of its group.
+  Future<void> leaveGroup(String roomId) async {
+    if (state.mockMode) {
+      _mock.ungroup(roomId);
+      state = state.copyWith(rooms: List.of(_mock.rooms));
+      return;
+    }
+    final room = state.rooms.where((r) => r.id == roomId).firstOrNull;
+    await _client?.leaveGroup(room?.groupId ?? roomId, roomId);
+    await _reloadRooms();
+  }
+
+  Future<void> _reloadRooms() async {
+    final client = _client;
+    if (client == null) {
+      return;
+    }
+    try {
+      final rooms = await client.listRooms().timeout(const Duration(seconds: 5));
+      state = state.copyWith(rooms: rooms);
+    } on Object {
+      // The event stream brings the new rooms shortly anyway.
+    }
+  }
+
+  Future<List<RadioStation>> searchRadio(String query) async {
+    if (state.mockMode) {
+      return [
+        for (final s in _mock.radioStations)
+          if (query.isEmpty || s.name.toLowerCase().contains(query.toLowerCase())) s,
+      ];
+    }
+    final client = _client;
+    if (client == null) {
+      throw ControlApiException('Not connected to a player');
+    }
+    return client.searchRadio(query: query);
+  }
+
+  Future<List<RadioStation>> recentRadio() async {
+    if (state.mockMode) {
+      return const [];
+    }
+    try {
+      return await _client?.recentRadio() ?? const [];
+    } on Object {
+      return const [];
+    }
+  }
+
+  /// Play [station] in the active room (and every room grouped with it).
+  Future<void> playRadio(RadioStation station, {String? roomId}) async {
+    final target = roomId ?? state.activeRoom?.id;
+    if (target == null) {
+      throw ControlApiException('Pick a room first');
+    }
+    if (state.mockMode) {
+      final np = NowPlaying(
+        playerId: target,
+        title: station.name,
+        imageUrl: station.favicon,
+        state: 'playing',
+        source: 'radio',
+      );
+      _mock.nowPlaying[target] = np;
+      state = state.copyWith(nowPlaying: target == state.activeRoomId ? np : null);
+      return;
+    }
+    final client = _client;
+    if (client == null) {
+      throw ControlApiException('Not connected to a player');
+    }
+    await client.playRadio(target, station);
+  }
+
   /// After BLE provisioning in demo mode, surface the player as unclaimed.
   void rememberProvisionedPlayer({
     required String id,
@@ -522,12 +637,12 @@ class PlaybackStore extends Notifier<PlaybackState> {
     final createSystem = client == null || (address != null && address == connectedHost);
     if (!createSystem) {
       onProgress?.call('Adding $name to your system…');
-      await joinExistingSystem(client, name: name, id: id, url: url);
+      await joinExistingSystem(client, name: name, id: id, url: url, ip: address);
       try {
         final rooms = await client.listRooms().timeout(const Duration(seconds: 5));
         state = state.copyWith(rooms: rooms);
       } on Object {
-        // Rooms arrive over the event stream once Music Assistant sees the player.
+        // The new room arrives over the event stream once the players see each other.
       }
       await refreshHealth();
       return;
@@ -552,7 +667,7 @@ class PlaybackStore extends Notifier<PlaybackState> {
     throw AdoptFailure(
       'Connecting to your system',
       state.error ?? 'No answer from $base',
-      url: '$base/api/v1/rooms',
+      url: '$base/api/v2/rooms',
     );
   }
 

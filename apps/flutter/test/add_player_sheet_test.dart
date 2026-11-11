@@ -57,7 +57,7 @@ void main() {
     await tester.tap(find.byKey(const Key('unclaimed-attic-pi')));
     await tester.pumpAndSettle();
 
-    expect(find.text('Join this system'), findsOneWidget);
+    expect(find.text('Done'), findsOneWidget);
     expect(find.byKey(const Key('new-room-name')), findsOneWidget);
     await tester.enterText(find.byKey(const Key('new-room-name')), 'Attic');
     await tester.tap(find.byKey(const Key('join-household')));
@@ -98,7 +98,7 @@ void main() {
     await tester.tap(find.byKey(const Key('wifi-join')));
     await tester.pumpAndSettle();
 
-    expect(find.text('Join this system'), findsOneWidget);
+    expect(find.text('Done'), findsOneWidget);
     expect(find.text('Porch'), findsWidgets);
     await tester.tap(find.byKey(const Key('join-household')));
     await tester.pumpAndSettle();

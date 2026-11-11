@@ -9,6 +9,11 @@ class Room {
     this.isGroup = false,
     this.memberIds = const [],
     this.state,
+    this.groupName,
+    this.leaderId,
+    this.relayingFor,
+    this.source,
+    this.url,
   });
 
   final String id;
@@ -20,6 +25,19 @@ class Room {
   final bool isGroup;
   final List<String> memberIds;
   final String? state;
+
+  /// "Kitchen + 1" for a grouped room, else the room name.
+  final String? groupName;
+  final String? leaderId;
+
+  /// Set when this room left a playing group but still feeds it.
+  final String? relayingFor;
+
+  /// Active source of the room's group: none, radio, spotify or airplay.
+  final String? source;
+  final String? url;
+
+  bool get isGrouped => memberIds.length > 1;
 
   factory Room.fromJson(Map<String, dynamic> json) {
     return Room(
@@ -34,6 +52,11 @@ class Room {
         for (final id in json['member_ids'] as List? ?? const []) id.toString(),
       ],
       state: json['state'] as String?,
+      groupName: json['group_name'] as String?,
+      leaderId: json['leader_id'] as String?,
+      relayingFor: json['relaying_for'] as String?,
+      source: json['source'] as String?,
+      url: json['url'] as String?,
     );
   }
 
@@ -55,6 +78,11 @@ class Room {
       isGroup: isGroup,
       memberIds: memberIds ?? this.memberIds,
       state: state ?? this.state,
+      groupName: groupName,
+      leaderId: leaderId,
+      relayingFor: relayingFor,
+      source: source,
+      url: url,
     );
   }
 }

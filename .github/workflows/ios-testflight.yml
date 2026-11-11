@@ -68,8 +68,10 @@ jobs:
 
       - name: Build IPA
         run: |
+          BUILD_NAME="$(sed -n 's/^version: *\([0-9.]*\).*/\1/p' pubspec.yaml)"
+          echo "Building $BUILD_NAME (${GITHUB_RUN_NUMBER})"
           flutter build ipa --release \
-            --build-name=0.5.3 \
+            --build-name="$BUILD_NAME" \
             --build-number="${GITHUB_RUN_NUMBER}" \
             --export-options-plist=ios/ExportOptions.plist
 

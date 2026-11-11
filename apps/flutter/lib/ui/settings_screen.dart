@@ -5,7 +5,7 @@ import '../api/connection_prefs.dart';
 import '../app_version.dart';
 import '../state/playback_store.dart';
 import 'add_player_sheet.dart';
-import 'music_services_screen.dart';
+import 'radio_screen.dart';
 
 /// Household connection: discovered systems, manual address, demo switch.
 class SettingsScreen extends ConsumerStatefulWidget {
@@ -177,16 +177,22 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           Text('Music', style: text.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
           const SizedBox(height: 8),
           ListTile(
-            key: const Key('music-services-tile'),
+            key: const Key('radio-tile'),
             contentPadding: EdgeInsets.zero,
-            leading: const Icon(Icons.library_music_outlined),
-            title: const Text('Music services'),
-            subtitle: const Text('Add Spotify, Tidal and other sources without leaving the app'),
-            onTap: () {
-              Navigator.of(context).push(
-                MaterialPageRoute<void>(builder: (_) => const MusicServicesScreen()),
-              );
-            },
+            leading: const Icon(Icons.radio_outlined),
+            title: const Text('Radio'),
+            subtitle: const Text('Search Radio Browser and play a station in the selected room'),
+            onTap: () => showRadioScreen(context),
+          ),
+          const ListTile(
+            key: Key('streaming-hint-tile'),
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.cast_outlined),
+            title: Text('Spotify and AirPlay'),
+            subtitle: Text(
+              'Every room or group shows up in the Spotify app (Spotify Connect) and in '
+              'AirPlay as one speaker, for example "Kitchen + 1". Pick it there.',
+            ),
           ),
           if (_busy) ...[
             const SizedBox(height: 16),
@@ -221,8 +227,8 @@ class _StatusCard extends StatelessWidget {
         ? 'Demo household'
         : (state.connected ? 'Connected' : 'Not connected');
     final detail = state.mockMode
-        ? 'Three example rooms. Connect to a host when you have a Pi ready.'
-        : (state.hostUrl ?? 'No host saved yet');
+        ? 'Three example rooms. Connect to a player when you have a Pi ready.'
+        : (state.hostUrl ?? 'No player saved yet');
     return Card(
       elevation: 0,
       color: scheme.surfaceContainerLow,

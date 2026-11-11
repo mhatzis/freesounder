@@ -10,9 +10,12 @@ import '../models/player_settings.dart';
 import '../state/playback_store.dart';
 
 const dacOptions = <(String, String)>[
-  ('none', 'Onboard / USB'),
-  ('dacplus', 'HiFiBerry DAC+'),
-  ('digiampplus', 'HiFiBerry DigiAMP+'),
+  ('auto', 'Automatic (HDMI, USB or a detected HAT)'),
+  ('none', 'HDMI / USB only'),
+  ('dacplus', 'Raspberry Pi DAC+ / HiFiBerry DAC+'),
+  ('digiampplus', 'Raspberry Pi DigiAMP+ / HiFiBerry DigiAMP+'),
+  ('hifiberry-dac', 'HiFiBerry DAC / PCM5102A board'),
+  ('iqaudio-dacplus', 'IQaudio DAC+'),
 ];
 
 Future<void> showRoomSettingsSheet(BuildContext context, {required String roomId, String? roomName}) {
@@ -262,7 +265,7 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
                         child: DropdownButton<String>(
                           key: const Key('dac-dropdown'),
                           isExpanded: true,
-                          value: settings.dac,
+                          value: dacOptions.any((o) => o.$1 == settings.dac) ? settings.dac : 'auto',
                           items: [
                             for (final option in dacOptions)
                               DropdownMenuItem(value: option.$1, child: Text(option.$2)),

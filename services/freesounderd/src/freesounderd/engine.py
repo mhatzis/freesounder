@@ -319,7 +319,7 @@ class Engine:
                     "muted": bool(rec.get("muted", False)),
                     "group_id": group["id"],
                     "group_name": group["name"],
-                    "is_group": len(group["member_ids"]) > 1,
+                    "is_group": False,
                     "member_ids": group["member_ids"],
                     "state": group["state"],
                     "leader_id": group["leader_id"],
