@@ -6,31 +6,12 @@ on:
   pull_request:
 
 jobs:
-  control-api:
-    name: control-api (ruff + pytest)
+  freesounderd:
+    name: freesounderd (ruff + pytest)
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: services/control-api
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          python-version: "3.13"
-      - name: Sync dependencies
-        run: uv sync --group dev
-      - name: Ruff
-        run: uv run ruff check src tests
-      - name: Pytest
-        run: uv run pytest
-
-  player-agent:
-    name: player-agent (ruff + pytest)
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: services/player-agent
+        working-directory: services/freesounderd
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
