@@ -4,7 +4,21 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
-from freesounder_control_api.models import BrowseResponse, NowPlaying, Room, SearchResponse
+from freesounder_control_api.models import (
+    AddMusicServiceBody,
+    AuthSession,
+    BrowseResponse,
+    MusicService,
+    MusicServicesCatalog,
+    MusicServiceType,
+    NowPlaying,
+    Room,
+    SearchResponse,
+    SpotifyConnectStatus,
+    StartAuthBody,
+    SubmitAuthBody,
+    UpdateMusicServiceBody,
+)
 
 
 @runtime_checkable
@@ -51,6 +65,53 @@ class MusicBackend(Protocol):
         """Best-effort cached rooms for WebSocket fan-out."""
 
         return []
+
+    def bind_listener(self, listener) -> None:
+        """Optional hook for backend events (music_services, music_service_auth)."""
+
+        return None
+
+    async def list_music_service_types(self) -> list[MusicServiceType]: ...
+
+    async def list_music_services(self) -> list[MusicService]: ...
+
+    async def get_music_service(self, instance_id: str) -> MusicService: ...
+
+    async def add_music_service(self, body: AddMusicServiceBody) -> AuthSession | MusicService: ...
+
+    async def update_music_service(
+        self, instance_id: str, body: UpdateMusicServiceBody
+    ) -> MusicService: ...
+
+    async def remove_music_service(self, instance_id: str) -> None: ...
+
+    async def start_music_service_auth(self, body: StartAuthBody) -> AuthSession: ...
+
+    async def get_music_service_auth(self, session_id: str) -> AuthSession: ...
+
+    async def submit_music_service_auth(
+        self, session_id: str, body: SubmitAuthBody
+    ) -> AuthSession: ...
+
+    async def abort_music_service_auth(self, session_id: str) -> AuthSession: ...
+
+    async def complete_music_service_auth_callback(
+        self, session_id: str, params: dict[str, str]
+    ) -> AuthSession: ...
+
+    async def catalog_music_services(self) -> MusicServicesCatalog:
+        types = await self.list_music_service_types()
+        configured = await self.list_music_services()
+        return MusicServicesCatalog(services=types, configured=configured)
+
+    async def poll_music_service_auth(self) -> list[AuthSession]:
+        """Refresh any in-flight setup flows (no-op when none are pending)."""
+
+        return []
+
+    async def spotify_connect_status(self) -> SpotifyConnectStatus: ...
+
+    async def set_spotify_connect(self, player_id: str, enabled: bool) -> SpotifyConnectStatus: ...
 
 
 def _player_to_room(player: Any) -> Room:

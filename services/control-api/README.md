@@ -60,7 +60,24 @@ Set `FREESOUNDER_MOCK_MA=true` to serve in-memory rooms with no Music Assistant.
 - `GET /api/v1/players/{player_id}/developer/ssh` — ephemeral developer SSH status
 - `POST /api/v1/players/{player_id}/developer/ssh` — `{ "enabled": true, "confirm": true, "public_key": "ssh-ed25519 …" }`. Proxies to an adopted player's agent. `confirm` must be true to enable. SSH turns off after reboot. **The API has no authentication**; anyone on the LAN who can reach the household host can call this.
 
-- `WebSocket /api/v1/ws` — `rooms`, `now_playing`, `health` events
+- `GET /api/v1/music-services/catalog` — curated service types (Spotify, Tidal, Apple Music, Deezer, YouTube Music, Qobuz, SoundCloud, TuneIn, Radio Browser, Plex, Jellyfin, OpenSubsonic, local/SMB/NFS) plus configured instances. Marks which Music Assistant actually supports, and states limits honestly (Apple Music is experimental).
+- `GET /api/v1/music-services/types` — curated types only
+- `GET /api/v1/music-services` — configured providers, status `loaded` / `loading` / `needs_reauth` / `error` / `disabled`. Secrets are never returned.
+- `GET /api/v1/music-services/{instance_id}` — detail and a redacted form schema
+- `POST /api/v1/music-services` — `{ "domain": "qobuz", "values": {…} }`. Starts a setup or auth session if values are omitted.
+- `PATCH /api/v1/music-services/{instance_id}` — update options. Omitted secrets are left unchanged.
+- `DELETE /api/v1/music-services/{instance_id}`
+- `POST /api/v1/music-services/auth` — `{ "domain": "spotify" }` or `{ "instance_id": "…" }`. Starts Music Assistant setup or reconfigure. For OAuth, returns `auth_url` + `session_id` + `callback_scheme` (`freesounder`).
+- `GET /api/v1/music-services/auth/{session_id}` — poll status
+- `POST /api/v1/music-services/auth/{session_id}/submit` — submit a credential form step
+- `POST /api/v1/music-services/auth/{session_id}/abort`
+- `GET|POST /api/v1/music-services/auth/{session_id}/callback` — redirects to `freesounder://music-services/auth?session_id=&status=` so an in-app browser can close
+- `GET /api/v1/music-services/spotify-connect` — go-librespot / Soloist plugin status and per-room toggles, if the plugin is present
+- `POST /api/v1/music-services/spotify-connect/{player_id}` — `{ "enabled": true }`
+- `WebSocket /api/v1/ws` — `rooms`, `now_playing`, `health`, `music_services`, `music_service_auth` events
+
+The Flutter app talks only to this API, never to Music Assistant on port 8095. OAuth (Spotify, Tidal, Apple Music, …) is driven as: the control API starts `config/providers/setup` or `reconfigure`, returns the Music Assistant authorize URL, the app opens it in ASWebAuthenticationSession / an in-app browser, Music Assistant receives the provider callback, and the control API reports success over the WebSocket (the app also polls the session). Credential providers render a form from Music Assistant's config entries (`string`, `secure_string`, `boolean`, `integer`, `dropdown`, `label`).
+
 
 Grouping is implemented with Music Assistant sync-group commands (`players.group`,
 `ungroup`, `create_group_player`, `group_volume`), not a second grouping model.

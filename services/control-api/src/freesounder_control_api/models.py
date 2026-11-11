@@ -179,3 +179,162 @@ class SshDeveloperStatus(BaseModel):
     password: str | None = None
     expires: str = "reboot"
     warning: str = SSH_API_WARNING
+
+
+
+class FormOption(BaseModel):
+    """A selectable option for a dropdown config field."""
+
+    value: Any
+    title: str
+    disabled: bool = False
+    description: str | None = None
+
+
+class FormField(BaseModel):
+    """A single Music Assistant config entry, ready for a dynamic in-app form."""
+
+    key: str
+    type: str
+    label: str | None = None
+    description: str | None = None
+    required: bool = False
+    value: Any = None
+    has_value: bool = False
+    secret: bool = False
+    options: list[FormOption] = Field(default_factory=list)
+    hidden: bool = False
+    advanced: bool = False
+    read_only: bool = False
+    default: Any = None
+
+
+class MusicServiceType(BaseModel):
+    """A curated music-service kind the app can offer to add."""
+
+    domain: str
+    name: str
+    category: str
+    auth_kind: str
+    description: str | None = None
+    documentation: str | None = None
+    available_on_server: bool = False
+    ma_stage: str | None = None
+    limited: bool = False
+    limitation: str | None = None
+    multi_instance: bool = False
+    configured: bool = False
+    builtin: bool = False
+
+
+class MusicService(BaseModel):
+    """A configured Music Assistant provider instance, with secrets stripped."""
+
+    instance_id: str
+    domain: str
+    name: str
+    type: str | None = None
+    status: str
+    available: bool = False
+    enabled: bool = True
+    account: str | None = None
+    error: str | None = None
+    limited: bool = False
+    limitation: str | None = None
+    auth_kind: str = "credentials"
+    can_reauthenticate: bool = False
+    values: dict[str, Any] = Field(default_factory=dict)
+    entries: list[FormField] = Field(default_factory=list)
+
+
+class MusicServicesCatalog(BaseModel):
+    """Curated types plus currently configured instances."""
+
+    services: list[MusicServiceType] = Field(default_factory=list)
+    configured: list[MusicService] = Field(default_factory=list)
+
+
+class AddMusicServiceBody(BaseModel):
+    """Add a provider. Values are used for credential and path forms."""
+
+    domain: str
+    values: dict[str, Any] = Field(default_factory=dict)
+    name: str | None = None
+
+
+class UpdateMusicServiceBody(BaseModel):
+    """Update an existing provider's options. Omitted secrets are left unchanged."""
+
+    values: dict[str, Any] = Field(default_factory=dict)
+    name: str | None = None
+    enabled: bool | None = None
+
+
+class StartAuthBody(BaseModel):
+    """Start a sign-in or re-authentication flow."""
+
+    domain: str | None = None
+    instance_id: str | None = None
+
+
+class SubmitAuthBody(BaseModel):
+    """Submit a form step of a running setup or auth flow."""
+
+    values: dict[str, Any] = Field(default_factory=dict)
+
+
+class AuthSession(BaseModel):
+    """In-app-driven Music Assistant setup or OAuth session."""
+
+    session_id: str
+    status: Literal[
+        "pending",
+        "awaiting_form",
+        "awaiting_browser",
+        "progress",
+        "success",
+        "error",
+        "aborted",
+    ]
+    domain: str
+    instance_id: str | None = None
+    flow_id: str | None = None
+    auth_url: str | None = None
+    callback_scheme: str = "freesounder"
+    callback_url: str | None = None
+    title: str | None = None
+    description: str | None = None
+    entries: list[FormField] = Field(default_factory=list)
+    errors: dict[str, str] = Field(default_factory=dict)
+    last_step: bool | None = None
+    copy_text: str | None = None
+    progress_text: str | None = None
+    image: str | None = None
+    error: str | None = None
+
+
+class SpotifyConnectRoom(BaseModel):
+    """Whether a room is advertised as a Spotify Connect speaker."""
+
+    player_id: str
+    name: str
+    enabled: bool
+
+
+class SpotifyConnectStatus(BaseModel):
+    """Spotify Connect plugin state, including the go-librespot or Soloist engine."""
+
+    available: bool
+    configured: bool = False
+    instance_id: str | None = None
+    engine: str | None = None
+    engine_label: str | None = None
+    status: str | None = None
+    rooms: list[SpotifyConnectRoom] = Field(default_factory=list)
+    note: str | None = None
+
+
+class SpotifyConnectToggleBody(BaseModel):
+    """Enable or disable Spotify Connect for one room."""
+
+    enabled: bool

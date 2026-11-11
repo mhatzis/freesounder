@@ -8,7 +8,22 @@ import logging
 from music_assistant_client import MusicAssistantClient
 
 from freesounder_control_api.backend import _flatten_search, _player_to_room, dict_to_search_items
-from freesounder_control_api.models import BrowseResponse, NowPlaying, Room, SearchResponse
+from freesounder_control_api.ma_music_services import MaMusicServices
+from freesounder_control_api.models import (
+    AddMusicServiceBody,
+    AuthSession,
+    BrowseResponse,
+    MusicService,
+    MusicServicesCatalog,
+    MusicServiceType,
+    NowPlaying,
+    Room,
+    SearchResponse,
+    SpotifyConnectStatus,
+    StartAuthBody,
+    SubmitAuthBody,
+    UpdateMusicServiceBody,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +36,7 @@ class MusicAssistantBackend:
         self._token = token or None
         self._client: MusicAssistantClient | None = None
         self._listen_task: asyncio.Task[None] | None = None
+        self._music_services = MaMusicServices(self)
 
     @property
     def client(self) -> MusicAssistantClient:
@@ -36,6 +52,7 @@ class MusicAssistantBackend:
             await asyncio.wait_for(ready.wait(), timeout=30)
         except TimeoutError:
             logger.warning("Music Assistant start_listening did not signal ready within 30s")
+        self._music_services.attach_events()
 
     async def disconnect(self) -> None:
         if self._client is not None:
@@ -168,3 +185,61 @@ class MusicAssistantBackend:
             else:
                 flat.append({"name": str(entry)})
         return BrowseResponse(path=path, items=dict_to_search_items(flat))
+
+
+    def bind_listener(self, listener) -> None:
+        self._music_services.bind_listener(listener)
+
+    async def list_music_service_types(self) -> list[MusicServiceType]:
+        return await self._music_services.list_music_service_types()
+
+    async def catalog_music_services(self) -> MusicServicesCatalog:
+        return MusicServicesCatalog(
+            services=await self.list_music_service_types(),
+            configured=await self.list_music_services(),
+        )
+
+    async def list_music_services(self) -> list[MusicService]:
+        return await self._music_services.list_music_services()
+
+    async def get_music_service(self, instance_id: str) -> MusicService:
+        return await self._music_services.get_music_service(instance_id)
+
+    async def add_music_service(self, body: AddMusicServiceBody) -> AuthSession | MusicService:
+        return await self._music_services.add_music_service(body)
+
+    async def update_music_service(
+        self, instance_id: str, body: UpdateMusicServiceBody
+    ) -> MusicService:
+        return await self._music_services.update_music_service(instance_id, body)
+
+    async def remove_music_service(self, instance_id: str) -> None:
+        await self._music_services.remove_music_service(instance_id)
+
+    async def start_music_service_auth(self, body: StartAuthBody) -> AuthSession:
+        return await self._music_services.start_music_service_auth(body)
+
+    async def get_music_service_auth(self, session_id: str) -> AuthSession:
+        return await self._music_services.get_music_service_auth(session_id)
+
+    async def submit_music_service_auth(
+        self, session_id: str, body: SubmitAuthBody
+    ) -> AuthSession:
+        return await self._music_services.submit_music_service_auth(session_id, body)
+
+    async def abort_music_service_auth(self, session_id: str) -> AuthSession:
+        return await self._music_services.abort_music_service_auth(session_id)
+
+    async def complete_music_service_auth_callback(
+        self, session_id: str, params: dict[str, str]
+    ) -> AuthSession:
+        return await self._music_services.complete_music_service_auth_callback(session_id, params)
+
+    async def poll_music_service_auth(self) -> list[AuthSession]:
+        return await self._music_services.poll_music_service_auth()
+
+    async def spotify_connect_status(self) -> SpotifyConnectStatus:
+        return await self._music_services.spotify_connect_status()
+
+    async def set_spotify_connect(self, player_id: str, enabled: bool) -> SpotifyConnectStatus:
+        return await self._music_services.set_spotify_connect(player_id, enabled)

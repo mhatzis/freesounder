@@ -8,8 +8,9 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 
 from freesounder_control_api import __version__
 from freesounder_control_api.backend import MusicBackend
@@ -17,23 +18,35 @@ from freesounder_control_api.config import Settings, load_settings
 from freesounder_control_api.mdns import MdnsAdvertiser
 from freesounder_control_api.mock_backend import MockMusicBackend
 from freesounder_control_api.models import (
+    AddMusicServiceBody,
     AdoptBody,
+    AuthSession,
     BrowseResponse,
     CreateGroupBody,
     EventMessage,
     Health,
     JoinLeaveBody,
+    MusicService,
+    MusicServicesCatalog,
+    MusicServiceType,
     NowPlaying,
     PlayerSettings,
     PlayerSettingsPatch,
     Room,
     SearchResponse,
+    SpotifyConnectStatus,
+    SpotifyConnectToggleBody,
     SshDeveloperBody,
     SshDeveloperStatus,
+    StartAuthBody,
+    SubmitAuthBody,
     SystemInfo,
     UnclaimedPlayer,
+    UpdateMusicServiceBody,
     VolumeBody,
 )
+from freesounder_control_api.music_catalog import CALLBACK_PATH, CALLBACK_SCHEME
+from freesounder_control_api.music_sessions import MusicServiceError
 from freesounder_control_api.players import (
     LanPlayerIndex,
     MockPlayerIndex,
@@ -107,6 +120,13 @@ def create_app(
         else:
             players = LanPlayerIndex()
     hub = Hub(settings, backend, players)
+
+    async def _forward_backend_event(event: str, data: Any) -> None:
+        await hub.broadcast(event, data)
+
+    bind = getattr(backend, "bind_listener", None)
+    if callable(bind):
+        bind(_forward_backend_event)
     advertiser = MdnsAdvertiser(settings)
 
     @asynccontextmanager
@@ -306,6 +326,137 @@ def create_app(
         except PlayerNotFound as exc:
             raise HTTPException(status_code=404, detail=f"Player not found: {exc}") from exc
 
+    def _music_error(exc: MusicServiceError) -> HTTPException:
+        return HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+    @app.get("/api/v1/music-services/catalog", response_model=MusicServicesCatalog)
+    async def music_services_catalog() -> MusicServicesCatalog:
+        try:
+            return await backend.catalog_music_services()
+        except MusicServiceError as exc:
+            raise _music_error(exc) from exc
+
+    @app.get("/api/v1/music-services/types", response_model=list[MusicServiceType])
+    async def list_music_service_types() -> list[MusicServiceType]:
+        try:
+            return await backend.list_music_service_types()
+        except MusicServiceError as exc:
+            raise _music_error(exc) from exc
+
+    @app.get("/api/v1/music-services", response_model=list[MusicService])
+    async def list_music_services() -> list[MusicService]:
+        try:
+            return await backend.list_music_services()
+        except MusicServiceError as exc:
+            raise _music_error(exc) from exc
+
+    @app.get("/api/v1/music-services/spotify-connect", response_model=SpotifyConnectStatus)
+    async def get_spotify_connect() -> SpotifyConnectStatus:
+        try:
+            return await backend.spotify_connect_status()
+        except MusicServiceError as exc:
+            raise _music_error(exc) from exc
+
+    @app.post(
+        "/api/v1/music-services/spotify-connect/{player_id}",
+        response_model=SpotifyConnectStatus,
+    )
+    async def set_spotify_connect(
+        player_id: str, body: SpotifyConnectToggleBody
+    ) -> SpotifyConnectStatus:
+        try:
+            return await backend.set_spotify_connect(player_id, body.enabled)
+        except MusicServiceError as exc:
+            raise _music_error(exc) from exc
+
+    @app.post("/api/v1/music-services/auth", response_model=AuthSession)
+    async def start_music_service_auth(body: StartAuthBody) -> AuthSession:
+        try:
+            return await backend.start_music_service_auth(body)
+        except MusicServiceError as exc:
+            raise _music_error(exc) from exc
+
+    @app.get("/api/v1/music-services/auth/{session_id}", response_model=AuthSession)
+    async def get_music_service_auth(session_id: str) -> AuthSession:
+        try:
+            return await backend.get_music_service_auth(session_id)
+        except MusicServiceError as exc:
+            raise _music_error(exc) from exc
+
+    @app.post("/api/v1/music-services/auth/{session_id}/submit", response_model=AuthSession)
+    async def submit_music_service_auth(session_id: str, body: SubmitAuthBody) -> AuthSession:
+        try:
+            return await backend.submit_music_service_auth(session_id, body)
+        except MusicServiceError as exc:
+            raise _music_error(exc) from exc
+
+    @app.post("/api/v1/music-services/auth/{session_id}/abort", response_model=AuthSession)
+    async def abort_music_service_auth(session_id: str) -> AuthSession:
+        try:
+            return await backend.abort_music_service_auth(session_id)
+        except MusicServiceError as exc:
+            raise _music_error(exc) from exc
+
+    @app.api_route(
+        "/api/v1/music-services/auth/{session_id}/callback",
+        methods=["GET", "POST"],
+        response_model=None,
+    )
+    async def music_service_auth_callback(
+        session_id: str, request: Request
+    ) -> RedirectResponse:
+        """Landing URL for demo auth and for in-app browsers that return here.
+
+        Completes the session when the backend can, then redirects to
+        freesounder://music-services/auth so ASWebAuthenticationSession can close.
+        """
+        params = {key: value for key, value in request.query_params.items()}
+        if request.method == "POST":
+            try:
+                form = await request.form()
+                params.update({str(key): str(value) for key, value in form.items()})
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            session = await backend.complete_music_service_auth_callback(session_id, params)
+        except MusicServiceError as exc:
+            raise _music_error(exc) from exc
+        target = (
+            f"{CALLBACK_SCHEME}://{CALLBACK_PATH}"
+            f"?session_id={session.session_id}&status={session.status}"
+        )
+        return RedirectResponse(url=target, status_code=302)
+
+    @app.get("/api/v1/music-services/{instance_id}", response_model=MusicService)
+    async def get_music_service(instance_id: str) -> MusicService:
+        try:
+            return await backend.get_music_service(instance_id)
+        except MusicServiceError as exc:
+            raise _music_error(exc) from exc
+
+    @app.post("/api/v1/music-services")
+    async def add_music_service(body: AddMusicServiceBody) -> AuthSession | MusicService:
+        try:
+            return await backend.add_music_service(body)
+        except MusicServiceError as exc:
+            raise _music_error(exc) from exc
+
+    @app.patch("/api/v1/music-services/{instance_id}", response_model=MusicService)
+    async def update_music_service(
+        instance_id: str, body: UpdateMusicServiceBody
+    ) -> MusicService:
+        try:
+            return await backend.update_music_service(instance_id, body)
+        except MusicServiceError as exc:
+            raise _music_error(exc) from exc
+
+    @app.delete("/api/v1/music-services/{instance_id}", status_code=204)
+    async def remove_music_service(instance_id: str) -> None:
+        try:
+            await backend.remove_music_service(instance_id)
+        except MusicServiceError as exc:
+            raise _music_error(exc) from exc
+
     @app.websocket("/api/v1/ws")
     async def websocket(ws: WebSocket) -> None:
         await ws.accept()
@@ -348,3 +499,9 @@ async def _poll_events(hub: Hub) -> None:
             await hub.broadcast("rooms", [r.model_dump() for r in rooms])
         except Exception:  # noqa: BLE001
             logger.debug("event poll failed", exc_info=True)
+        poll_auth = getattr(hub.backend, "poll_music_service_auth", None)
+        if callable(poll_auth):
+            try:
+                await poll_auth()
+            except Exception:  # noqa: BLE001
+                logger.debug("auth session poll failed", exc_info=True)
