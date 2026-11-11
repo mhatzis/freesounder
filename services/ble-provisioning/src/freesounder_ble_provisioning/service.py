@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
@@ -157,7 +158,11 @@ async def run_forever(
                     reason,
                 )
                 _logged_online = online
-            if online:
+            if online and time.monotonic() < session.busy_until:
+                # Wi-Fi just came up mid-provisioning: keep BLE until the
+                # result has been notified to the phone.
+                pass
+            elif online:
                 await ensure_stopped()
             else:
                 try:

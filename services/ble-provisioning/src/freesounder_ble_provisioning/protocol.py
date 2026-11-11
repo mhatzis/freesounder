@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import IntEnum
@@ -124,6 +125,10 @@ class Command(IntEnum):
     SCAN_WIFI = 0x04
     HOSTNAME = 0x05
     DEVICE_NAME = 0x06
+    # FreeSounder extension (not in the Improv spec): ISO 3166 Wi-Fi country
+    # as an Improv string. Older players answer UNKNOWN_RPC, which the app
+    # ignores.
+    WIFI_COUNTRY = 0x80
 
 
 @dataclass(frozen=True)
@@ -216,6 +221,7 @@ class ConnectResult:
     ok: bool
     ip: str | None = None
     reason: str = "unable_to_connect"
+    detail: str = ""
 
 
 class NetworkPort:
@@ -232,6 +238,10 @@ class NetworkPort:
 
     def current_ip(self) -> str | None:
         return None
+
+    async def set_country(self, country: str) -> bool:
+        del country
+        return False
 
 
 @dataclass
@@ -262,6 +272,9 @@ class ImprovSession:
     on_hostname: Callable[[str], Awaitable[None] | None] | None = None
     on_device_name: Callable[[str], Awaitable[None] | None] | None = None
     on_change: NotifyFn | None = None
+    # Monotonic deadline; the service keeps BLE up until then even once the
+    # player is online, so the final Wi-Fi result reaches the phone.
+    busy_until: float = 0.0
 
     def service_data(self) -> bytes:
         return bytes((int(self.state), self.capabilities, 0, 0, 0, 0))
@@ -306,6 +319,19 @@ class ImprovSession:
             await self._hostname(packet.data)
         elif command is Command.DEVICE_NAME:
             await self._device_name(packet.data)
+        elif command is Command.WIFI_COUNTRY:
+            await self._wifi_country(packet.data)
+
+    async def _wifi_country(self, data: bytes) -> None:
+        strings = decode_rpc_strings(data) if data else []
+        code = (strings[0] if strings else "").strip().upper()
+        ok = await self.network.set_country(code) if code else False
+        if not ok:
+            await self._set_error(ErrorState.INVALID_RPC)
+            return
+        self.error = ErrorState.NO_ERROR
+        self.rpc_result = encode_rpc_result(Command.WIFI_COUNTRY, [code])
+        await self._notify()
 
     async def _wifi_settings(self, data: bytes) -> None:
         if self.state not in {CurrentState.AUTHORIZED, CurrentState.PROVISIONING}:
@@ -320,8 +346,13 @@ class ImprovSession:
         self.error = ErrorState.NO_ERROR
         self.state = CurrentState.PROVISIONING
         self.rpc_result = b""
+        self.busy_until = time.monotonic() + 180
         await self._notify()
-        result = await self.network.connect_wifi(ssid, password)
+        try:
+            result = await self.network.connect_wifi(ssid, password)
+        except Exception as exc:  # noqa: BLE001
+            result = ConnectResult(ok=False, reason="unable_to_connect", detail=str(exc)[:120])
+        self.busy_until = time.monotonic() + 10
         if result.ok:
             self.state = CurrentState.PROVISIONED
             self.error = ErrorState.NO_ERROR
@@ -332,7 +363,10 @@ class ImprovSession:
             self.state = CurrentState.AUTHORIZED
             self.error = ErrorState.UNABLE_TO_CONNECT
             reason = result.reason if result.reason in _REASONS else "unable_to_connect"
-            self.rpc_result = encode_rpc_result(Command.WIFI_SETTINGS, [reason])
+            # [reason, detail]: the app maps the reason and shows the detail.
+            self.rpc_result = encode_rpc_result(
+                Command.WIFI_SETTINGS, [reason, (result.detail or "")[:120]]
+            )
         await self._notify()
 
     async def _identify(self) -> None:
@@ -417,7 +451,16 @@ class ImprovSession:
                 await maybe  # type: ignore[misc]
 
 
-_REASONS = {"wrong_password", "ssid_not_found", "unable_to_connect"}
+_REASONS = {
+    "wrong_password",
+    "invalid_password",
+    "ssid_not_found",
+    "unable_to_connect",
+    "radio_off",
+    "wifi_unmanaged",
+    "no_address",
+    "timeout",
+}
 
 
 def _valid_hostname(name: str) -> bool:

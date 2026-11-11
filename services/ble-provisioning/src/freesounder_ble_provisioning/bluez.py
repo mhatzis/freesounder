@@ -280,9 +280,11 @@ class ImprovApplication(ServiceInterface):
         return result
 
     async def notify(self, session: ImprovSession) -> None:
+        # Result first: an app that fails fast on the error notification
+        # (0.5.1 did) must already have the reason string.
+        self.chars[CHAR_RPC_RESULT].set_value(session.rpc_result)
         self.chars[CHAR_CURRENT_STATE].set_value(session.current_state_bytes())
         self.chars[CHAR_ERROR_STATE].set_value(session.error_state_bytes())
-        self.chars[CHAR_RPC_RESULT].set_value(session.rpc_result)
 
 
 class ImprovService(ServiceInterface):

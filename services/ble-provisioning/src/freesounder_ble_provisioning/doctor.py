@@ -18,7 +18,12 @@ from freesounder_ble_provisioning.protocol import (
     legacy_advertisement_length,
     legacy_scan_response_length,
 )
-from freesounder_ble_provisioning.status import STATUS_PATH
+from freesounder_ble_provisioning.status import (
+    STATUS_PATH,
+    WIFI_STATUS_PATH,
+    read_wifi_live,
+    wifi_status_lines,
+)
 
 
 def collect_report() -> str:
@@ -27,6 +32,7 @@ def collect_report() -> str:
     lines += _section("rfkill", _cmd_lines(["rfkill", "list"]))
     lines += _section("Units", _unit_lines())
     lines += _section("Network", _network_lines())
+    lines += _section("Wi-Fi", _wifi_lines())
     lines += _section(
         "Advertisement budget",
         [
@@ -130,6 +136,22 @@ def _network_lines() -> list[str]:
         lines.append("verdict: online — default route to a LAN gateway; will not advertise")
     else:
         lines.append("verdict: offline — no LAN gateway; service should advertise")
+    return lines
+
+
+def _wifi_lines() -> list[str]:
+    import json
+
+    try:
+        saved = json.loads(WIFI_STATUS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        saved = {}
+    try:
+        live = read_wifi_live()
+    except Exception as exc:  # noqa: BLE001
+        return [f"could not read Wi-Fi state: {exc}"]
+    lines = [line.strip() for line in wifi_status_lines(live, saved)]
+    lines += _cmd_lines(["rfkill", "list"], empty="rfkill: no devices")
     return lines
 
 

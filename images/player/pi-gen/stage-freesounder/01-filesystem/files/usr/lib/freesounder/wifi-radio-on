@@ -1,0 +1,9 @@
+#!/bin/sh
+# Turn the Wi-Fi radio on with the configured regulatory country so the
+# player can scan and join during Bluetooth setup. Never fails the caller.
+COUNTRY=$(tr -cd 'A-Z' < /etc/freesounder/wifi-country 2>/dev/null | cut -c1-2)
+[ ${#COUNTRY} -eq 2 ] || COUNTRY=AU
+/usr/sbin/rfkill unblock wifi 2>/dev/null || true
+/usr/sbin/iw reg set "$COUNTRY" 2>/dev/null || true
+/usr/bin/nmcli radio wifi on 2>/dev/null || true
+exit 0

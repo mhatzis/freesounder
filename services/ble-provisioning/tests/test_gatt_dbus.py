@@ -232,3 +232,49 @@ async def _next_non_empty(queue: asyncio.Queue[bytes]) -> bytes:
         value = await queue.get()
         if value:
             return value
+
+
+@pytest.mark.asyncio
+async def test_wifi_failure_notifies_reason_before_error(bus_address: str) -> None:
+    server, client, _app, session, iface, char_path = await _setup(bus_address)
+
+    class _FailNet(_Net):
+        async def connect_wifi(self, ssid: str, password: str) -> ConnectResult:
+            del ssid, password
+            return ConnectResult(ok=False, reason="radio_off", detail="wlan0 is unavailable")
+
+    session.network = _FailNet()
+    try:
+        order: asyncio.Queue[tuple[str, bytes]] = asyncio.Queue()
+
+        async def watch(uuid: str, tag: str) -> None:
+            props = await iface(char_path(uuid), "org.freedesktop.DBus.Properties")
+
+            def changed(interface, changed_props, invalidated) -> None:  # noqa: ANN001
+                del interface, invalidated
+                if "Value" in changed_props:
+                    order.put_nowait((tag, bytes(changed_props["Value"].value)))
+
+            props.on_properties_changed(changed)
+
+        await watch(CHAR_RPC_RESULT, "result")
+        await watch(CHAR_ERROR_STATE, "error")
+        command = await iface(char_path(CHAR_RPC_COMMAND), "org.bluez.GattCharacteristic1")
+        await command.call_write_value(_wifi_frame("Home", "password123"), {})
+        seen: list[tuple[str, bytes]] = []
+        while True:
+            tag, value = await asyncio.wait_for(order.get(), timeout=3)
+            seen.append((tag, value))
+            if tag == "error" and value == b"\x03":
+                break
+        results = [v for t, v in seen if t == "result" and v]
+        assert results, seen
+        packet, _rest, _invalid = try_parse_rpc(results[-1])
+        assert packet is not None
+        assert decode_rpc_strings(packet.data) == ["radio_off", "wlan0 is unavailable"]
+        first_error = next(i for i, (t, v) in enumerate(seen) if t == "error" and v == b"\x03")
+        last_result = max(i for i, (t, v) in enumerate(seen) if t == "result" and v)
+        assert last_result < first_error
+    finally:
+        client.disconnect()
+        server.disconnect()

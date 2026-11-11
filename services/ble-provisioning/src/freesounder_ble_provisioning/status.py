@@ -169,3 +169,105 @@ def _parse_busctl_variant(text: str):
     if typ == "s":
         return value.strip('"')
     return value.strip('"')
+
+
+WIFI_STATUS_PATH = Path("/run/freesounder/wifi-status.json")
+
+
+def read_rfkill_wlan(sys_class_rfkill: Path = Path("/sys/class/rfkill")) -> str:
+    """'unblocked', 'soft-blocked', 'hard-blocked' or 'no wlan rfkill'."""
+
+    states: list[str] = []
+    try:
+        entries = sorted(sys_class_rfkill.iterdir())
+    except OSError:
+        entries = []
+    for entry in entries:
+        if _read_optional(entry / "type") != "wlan":
+            continue
+        soft = _read_optional(entry / "soft") == "1"
+        hard = _read_optional(entry / "hard") == "1"
+        if hard:
+            states.append("hard-blocked")
+        elif soft:
+            states.append("soft-blocked")
+        else:
+            states.append("unblocked")
+    if not states:
+        return "no wlan rfkill"
+    return ", ".join(sorted(set(states)))
+
+
+def parse_iw_reg(text: str) -> str:
+    """First 'country XX:' from `iw reg get` (global section)."""
+
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if line.startswith("country "):
+            return line.split()[1].rstrip(":")
+    return ""
+
+
+def parse_nm_device_state(text: str, ifname: str = "wlan0") -> str:
+    """State of [ifname] from `nmcli -t -f DEVICE,TYPE,STATE device`."""
+
+    for line in (text or "").splitlines():
+        parts = line.split(":")
+        if len(parts) >= 3 and parts[0] == ifname:
+            return parts[2]
+    return ""
+
+
+def read_wifi_live(
+    *, run=None, sys_class_rfkill: Path = Path("/sys/class/rfkill")
+) -> dict[str, Any]:
+    """Live Wi-Fi radio facts for the status screen and doctor (no secrets)."""
+
+    import subprocess
+
+    def cmd(argv: list[str]) -> str:
+        if run is not None:
+            return run(argv)
+        try:
+            proc = subprocess.run(argv, check=False, capture_output=True, text=True, timeout=4)
+        except (OSError, subprocess.SubprocessError):
+            return ""
+        return proc.stdout or ""
+
+    wlan0 = Path("/sys/class/net/wlan0")
+    return {
+        "wlan0": "present" if wlan0.exists() or run is not None else "missing",
+        "rfkill_wlan": read_rfkill_wlan(sys_class_rfkill),
+        "country": parse_iw_reg(cmd(["iw", "reg", "get"])) or "unset",
+        "nm_state": parse_nm_device_state(cmd(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE", "device"]))
+        or "not listed",
+        "nm_radio": (cmd(["nmcli", "radio", "wifi"]).strip() or "unknown"),
+    }
+
+
+def wifi_status_lines(live: dict[str, Any], saved: dict[str, Any]) -> list[str]:
+    """Lines shared by the tty1 screen and the doctor report."""
+
+    lines = [
+        f"  wlan0       : {live.get('wlan0', '?')}  NM={live.get('nm_state', '?')} "
+        f"radio={live.get('nm_radio', '?')}",
+        f"  rfkill wlan : {live.get('rfkill_wlan', '?')}",
+        f"  country     : {live.get('country', '?')}"
+        + (f" (saved {saved['country']})" if saved.get("country") else ""),
+    ]
+    if "scan_count" in saved:
+        count = saved.get("scan_count")
+        lines.append(f"  last scan   : {count} networks ({saved.get('scan_at', '')})")
+    attempt = saved.get("last_attempt")
+    if isinstance(attempt, dict):
+        ssid = str(attempt.get("ssid", ""))[:32]
+        if attempt.get("ok"):
+            outcome = f"joined, {attempt.get('ip') or 'no address'}"
+        else:
+            outcome = str(attempt.get("reason") or "failed")
+            if attempt.get("detail"):
+                outcome += f": {str(attempt['detail'])[:70]}"
+        lines.append(f"  last join   : '{ssid}' {outcome} ({attempt.get('at', '')})")
+    else:
+        lines.append("  last join   : no attempt yet")
+    return lines

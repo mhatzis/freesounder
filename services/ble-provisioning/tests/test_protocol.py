@@ -128,11 +128,48 @@ async def test_wifi_errors_surface_reason() -> None:
     await session.push_rpc_bytes(RpcPacket(Command.WIFI_SETTINGS, parse_ready("x", "y")).encode())
     assert session.state is CurrentState.AUTHORIZED
     assert session.error is ErrorState.UNABLE_TO_CONNECT
-    assert _result_strings(session.rpc_result) == ["wrong_password"]
+    assert _result_strings(session.rpc_result) == ["wrong_password", ""]
 
-    net.result = ConnectResult(ok=False, reason="ssid_not_found")
+    net.result = ConnectResult(ok=False, reason="radio_off", detail="wlan0 is unavailable")
     await session.push_rpc_bytes(RpcPacket(Command.WIFI_SETTINGS, parse_ready("nope", "")).encode())
-    assert _result_strings(session.rpc_result) == ["ssid_not_found"]
+    assert _result_strings(session.rpc_result) == ["radio_off", "wlan0 is unavailable"]
+
+
+@pytest.mark.asyncio
+async def test_wifi_country_rpc_and_busy_hold() -> None:
+    import time
+
+    class CountryNet(FakeNet):
+        country = ""
+
+        async def set_country(self, country: str) -> bool:
+            if len(country) != 2:
+                return False
+            self.country = country
+            return True
+
+    net = CountryNet()
+    session = _session(net)
+    data = encode_rpc_strings_for_test(["au"])
+    await session.push_rpc_bytes(RpcPacket(Command.WIFI_COUNTRY, data).encode())
+    assert net.country == "AU"
+    assert _result_strings(session.rpc_result) == ["AU"]
+    await session.push_rpc_bytes(
+        RpcPacket(Command.WIFI_COUNTRY, encode_rpc_strings_for_test(["xyz"])).encode()
+    )
+    assert session.error is ErrorState.INVALID_RPC
+    await session.push_rpc_bytes(RpcPacket(Command.WIFI_SETTINGS, parse_ready("x", "y")).encode())
+    # BLE stays up for a grace period after the Wi-Fi result.
+    assert session.busy_until > time.monotonic()
+
+
+def encode_rpc_strings_for_test(values: list[str]) -> bytes:
+    out = bytearray()
+    for value in values:
+        raw = value.encode()
+        out.append(len(raw))
+        out.extend(raw)
+    return bytes(out)
 
 
 @pytest.mark.asyncio

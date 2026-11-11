@@ -39,7 +39,13 @@ or hostname in Imager — the image ignores those customisations.
    `FS-XXXX` (BlueZ `LocalName`) are in the scan response (24/31 bytes). The
    app shows `FS-XXXX` as `FreeSounder-XXXX`. If BlueZ refuses that, the
    service falls back to the name alone, then to no scan response; the status
-   screen says which one is live. The HDMI status screen shows
+   screen says which one is live.
+   Wi-Fi ships unblocked with regulatory country `AU`
+   (`/etc/freesounder/wifi-country`, `cfg80211.ieee80211_regdom` on the
+   kernel command line). The app sends the phone's region before scanning,
+   and the player saves it, so channels 12/13 and 5 GHz match the country.
+   The status screen's Wi-Fi block shows the rfkill state, country,
+   NetworkManager state, last scan count and the last join result. The HDMI status screen shows
    the real adapter address, Powered and rfkill state, the
    `RegisterAdvertisement` result, and the last error — not a static
    "advertising setup" placeholder. The Address line is the real `wlan0` /

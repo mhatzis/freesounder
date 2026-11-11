@@ -123,6 +123,31 @@ print("\n".join(lines))
 PY
 }
 
+wifi_block() {
+	PY=python3
+	if [[ -x /opt/freesounder/control-api/.venv/bin/python ]]; then
+		PY=/opt/freesounder/control-api/.venv/bin/python
+	fi
+	"$PY" - <<'PY'
+import json
+from pathlib import Path
+
+try:
+    from freesounder_ble_provisioning.status import read_wifi_live, wifi_status_lines
+except Exception as exc:
+    print(f"  (Wi-Fi status unavailable: {exc})")
+    raise SystemExit(0)
+try:
+    saved = json.loads(Path("/run/freesounder/wifi-status.json").read_text(encoding="utf-8"))
+except (OSError, ValueError):
+    saved = {}
+try:
+    print("\n".join(wifi_status_lines(read_wifi_live(), saved)))
+except Exception as exc:
+    print(f"  (Wi-Fi status failed: {exc})")
+PY
+}
+
 while true; do
 	host=$(hostname -s 2>/dev/null || echo fs-new)
 	pretty=$(room_name)
@@ -142,6 +167,9 @@ SSH      : $(ssh_state)
 
 BLE
 $(ble_block)
+
+Wi-Fi
+$(wifi_block)
 
 This player is a locked-down appliance.
 There is no login on this screen (fsadmin is on tty2+).

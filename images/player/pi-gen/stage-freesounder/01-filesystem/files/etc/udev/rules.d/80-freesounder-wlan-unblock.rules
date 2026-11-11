@@ -1,0 +1,5 @@
+# Raspberry Pi OS boots every radio soft-blocked (rfkill default_state=0)
+# until a Wi-Fi country is set. FreeSounder ships a default country
+# (/etc/freesounder/wifi-country, AU unless changed in the app), so unblock
+# the on-board WLAN as soon as it appears. Bluetooth is whitelisted by pi-gen.
+ACTION=="add", SUBSYSTEM=="rfkill", ATTR{type}=="wlan", ATTR{soft}="0"

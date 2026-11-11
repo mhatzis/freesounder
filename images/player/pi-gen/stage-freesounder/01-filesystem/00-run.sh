@@ -57,6 +57,30 @@ install -m 0644 files/etc/default/snapclient "${ROOTFS_DIR}/etc/default/snapclie
 install -m 0644 files/etc/alsa/conf.d/99-freesounder.conf "${ROOTFS_DIR}/etc/alsa/conf.d/99-freesounder.conf"
 install -m 0755 files/etc/update-motd.d/20-freesounder "${ROOTFS_DIR}/etc/update-motd.d/20-freesounder"
 
+# Wi-Fi radio. Raspberry Pi OS soft-blocks every radio until a WLAN country
+# is set (raspberrypi-sys-mods: rfkill default_state=0) and pi-gen writes
+# NetworkManager.state WirelessEnabled=false when WPA_COUNTRY is unset. We
+# ignore Imager customisation, so do what raspi-config do_wifi_country does:
+# regdom on the kernel command line, NM radio on, saved rfkill state 0.
+install -m 0644 files/etc/freesounder/wifi-country "${ROOTFS_DIR}/etc/freesounder/wifi-country"
+WIFI_COUNTRY=$(tr -cd 'A-Z' < files/etc/freesounder/wifi-country | cut -c1-2)
+install -m 0755 files/usr/lib/freesounder/wifi-radio-on "${ROOTFS_DIR}/usr/lib/freesounder/wifi-radio-on"
+install -d "${ROOTFS_DIR}/etc/udev/rules.d"
+install -m 0644 files/etc/udev/rules.d/80-freesounder-wlan-unblock.rules \
+	"${ROOTFS_DIR}/etc/udev/rules.d/80-freesounder-wlan-unblock.rules"
+CMDLINE="${ROOTFS_DIR}/boot/firmware/cmdline.txt"
+if [ -f "${CMDLINE}" ]; then
+	sed -i -e 's/[[:space:]]*cfg80211\.ieee80211_regdom=[^[:space:]]*//g' \
+		-e "1s/\$/ cfg80211.ieee80211_regdom=${WIFI_COUNTRY}/" "${CMDLINE}"
+fi
+install -d "${ROOTFS_DIR}/var/lib/NetworkManager"
+printf '[main]\nWirelessEnabled=true\n' > "${ROOTFS_DIR}/var/lib/NetworkManager/NetworkManager.state"
+install -d "${ROOTFS_DIR}/var/lib/systemd/rfkill"
+#           Pi 3 / Zero 2 W   Pi 4 / 400      Pi 5            Zero W
+for addr in 3f300000.mmcnr fe300000.mmcnr 1001100000.mmc 20300000.mmcnr; do
+	echo 0 > "${ROOTFS_DIR}/var/lib/systemd/rfkill/platform-${addr}:wlan"
+done
+
 # Seed a DAC comment block so the overlay is discoverable before setup runs.
 if [ -f "${ROOTFS_DIR}/boot/firmware/config.txt" ]; then
 	if ! grep -q 'freesounder-dac-start' "${ROOTFS_DIR}/boot/firmware/config.txt"; then

@@ -12,6 +12,8 @@ Type=simple
 ExecStart=/opt/freesounder/control-api/.venv/bin/freesounder-ble-provisioning
 # Start by unblocking BT even if the first start races firmware attach.
 ExecStartPre=-/usr/sbin/rfkill unblock bluetooth
+# Wi-Fi must be unblocked with a country set or the setup scan is empty.
+ExecStartPre=-/usr/lib/freesounder/wifi-radio-on
 Restart=always
 RestartSec=2
 Environment=PYTHONUNBUFFERED=1
