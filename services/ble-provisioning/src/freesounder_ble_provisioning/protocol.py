@@ -54,6 +54,19 @@ MANUFACTURER_PAYLOAD: Final = b"FreeSounder"
 SHORT_LOCAL_NAME: Final = "FS"
 
 
+def scan_response_name(local_name: str) -> str:
+    """Short name for the scan response, e.g. FreeSounder-44BD -> FS-44BD.
+
+    BlueZ puts the LocalName advertisement property in the scan response
+    (legacy advertising). "FreeSounder-44BD" (18 bytes with header) does
+    not fit next to the 15-byte manufacturer data, "FS-44BD" (9) does.
+    """
+
+    suffix = local_name.rsplit("-", 1)[-1] if "-" in local_name else ""
+    suffix = "".join(ch for ch in suffix if ch.isalnum())[:8]
+    return f"{SHORT_LOCAL_NAME}-{suffix}" if suffix else SHORT_LOCAL_NAME
+
+
 def manufacturer_specific_data(
     payload: bytes = MANUFACTURER_PAYLOAD, company_id: int = COMPANY_ID_TEST
 ) -> bytes:

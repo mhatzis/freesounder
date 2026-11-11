@@ -130,17 +130,36 @@ def test_primary_only_advertisement_hides_scan_response_properties() -> None:
         ImprovAdvertisementPrimaryOnly,
     )
 
-    full = ImprovAdvertisement(_session())
+    full = ImprovAdvertisement(_session(), "FS-44BD")
     names = {p.name for p in ServiceInterface._get_properties(full) if not p.disabled}
     assert "ScanResponseManufacturerData" in names
-    assert "ScanResponseData" in names
+    # BlueZ 5.82 rejects name AD types inside ScanResponseData; never expose it.
+    assert "ScanResponseData" not in names
+    assert "LocalName" in names
+    assert full.LocalName == "FS-44BD"
 
-    primary = ImprovAdvertisementPrimaryOnly(_session())
+    primary = ImprovAdvertisementPrimaryOnly(_session(), "FS-44BD")
     visible = {p.name for p in ServiceInterface._get_properties(primary) if not p.disabled}
     assert "ScanResponseManufacturerData" not in visible
-    assert "ScanResponseData" not in visible
+    assert "LocalName" in visible
     assert "ServiceUUIDs" in visible
     assert primary.use_scan_response is False
+
+
+def test_scan_response_name_fits_with_manufacturer_data() -> None:
+    from freesounder_ble_provisioning.protocol import (
+        MANUFACTURER_PAYLOAD,
+        legacy_scan_response_length,
+        scan_response_name,
+    )
+
+    assert scan_response_name("FreeSounder-44BD") == "FS-44BD"
+    assert scan_response_name("weird") == "FS"
+    size = legacy_scan_response_length(
+        manufacturer_payload=MANUFACTURER_PAYLOAD, local_name="FS-44BD"
+    )
+    assert size == 24
+    assert size <= 31
 
 
 def test_parse_busctl_and_live_adapter(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:

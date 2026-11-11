@@ -36,7 +36,10 @@ or hostname in Imager — the image ignores those customisations.
    `FreeSounder-XXXX`. The primary advertisement is the Improv 128-bit service
    UUID plus service data (31/31 bytes). Manufacturer-specific data (Bluetooth
    SIG test company ID `0xFFFF`, payload `FreeSounder`) and the short name
-   `FS` are in the scan response (19/31 bytes). The HDMI status screen shows
+   `FS-XXXX` (BlueZ `LocalName`) are in the scan response (24/31 bytes). The
+   app shows `FS-XXXX` as `FreeSounder-XXXX`. If BlueZ refuses that, the
+   service falls back to the name alone, then to no scan response; the status
+   screen says which one is live. The HDMI status screen shows
    the real adapter address, Powered and rfkill state, the
    `RegisterAdvertisement` result, and the last error — not a static
    "advertising setup" placeholder. The Address line is the real `wlan0` /

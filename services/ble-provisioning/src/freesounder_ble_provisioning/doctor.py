@@ -36,8 +36,8 @@ def collect_report() -> str:
             (
                 "scan response (mfg "
                 f"0x{COMPANY_ID_TEST:04X} {MANUFACTURER_PAYLOAD.decode('ascii')} "
-                f"+ short name {SHORT_LOCAL_NAME}): "
-                f"{legacy_scan_response_length(local_name=SHORT_LOCAL_NAME)}/31 bytes"
+                f"+ LocalName {SHORT_LOCAL_NAME}-XXXX): "
+                f"{legacy_scan_response_length(local_name=SHORT_LOCAL_NAME + '-XXXX')}/31 bytes"
             ),
             "if LocalName=FreeSounder-XXXX were in the primary PDU: "
             f"{legacy_advertisement_length(service_data=bytes(6), local_name='FreeSounder-XXXX')}"

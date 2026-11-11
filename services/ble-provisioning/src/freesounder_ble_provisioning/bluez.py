@@ -17,10 +17,10 @@ from freesounder_ble_provisioning.protocol import (
     COMPANY_ID_TEST,
     MANUFACTURER_PAYLOAD,
     SERVICE_UUID,
-    SHORT_LOCAL_NAME,
     ImprovSession,
     legacy_advertisement_length,
     legacy_scan_response_length,
+    scan_response_name,
 )
 from freesounder_ble_provisioning.service import PeripheralHandle
 
@@ -48,6 +48,7 @@ class BlueZPeripheral(PeripheralHandle):
         self._adapter_path: str | None = None
         self._session: ImprovSession | None = None
         self._started = False
+        self._scan_mode = "none"
 
     async def start(self, session: ImprovSession, local_name: str) -> None:
         if self._bus is not None:
@@ -64,64 +65,68 @@ class BlueZPeripheral(PeripheralHandle):
             await _prepare_adapter(self._bus, self._adapter_path, local_name)
 
             self._app = ImprovApplication(session, self._bus)
-            # Do not put LocalName in the primary PDU: flags + 128-bit UUID +
-            # Improv service data already use all 31 legacy advertising bytes.
-            # The adapter Alias is set so the name can appear in a scan response.
-            self._advertisement = ImprovAdvertisement(session)
             self._bus.export(APP_PATH, self._app)
             for path, obj in self._app.objects():
                 self._bus.export(path, obj)
-            self._bus.export(ADV_PATH, self._advertisement)
 
+            scan_name = scan_response_name(local_name)
             packed = legacy_advertisement_length(service_data=session.service_data())
-            scan_len = legacy_scan_response_length(
-                manufacturer_payload=MANUFACTURER_PAYLOAD,
-                local_name=SHORT_LOCAL_NAME,
-            )
-            logger.info(
-                "Registering Improv advertisement on %s "
-                "(primary PDU %s/31 bytes: flags + 128-bit Improv UUID + service data; "
-                "scan response %s/31 bytes: mfg 0x%04X %s + short name %s; alias %s)",
-                self._adapter_path,
-                packed,
-                scan_len,
-                COMPANY_ID_TEST,
-                MANUFACTURER_PAYLOAD.decode("ascii"),
-                SHORT_LOCAL_NAME,
-                local_name,
-            )
             introspect = await self._bus.introspect(BLUEZ, self._adapter_path)
             proxy = self._bus.get_proxy_object(BLUEZ, self._adapter_path, introspect)
             gatt = proxy.get_interface(GATT_MANAGER)
             adv_mgr = proxy.get_interface(LE_ADVERTISING_MANAGER)
+            # Register the GATT application first so the advertised service
+            # exists when a phone connects.
             await gatt.call_register_application(APP_PATH, {})  # type: ignore[union-attr]
-            try:
-                await adv_mgr.call_register_advertisement(ADV_PATH, {})  # type: ignore[union-attr]
-            except Exception as exc:
-                logger.warning(
-                    "RegisterAdvertisement with scan-response fields failed (%s); retrying primary-only",
-                    exc,
-                )
-                _write_ble_status(
-                    {
-                        "register_result": f"scan-response register failed: {exc}",
-                        "last_error": str(exc),
-                        "last_error_at": _now(),
-                    }
-                )
-                try:
-                    await adv_mgr.call_unregister_advertisement(ADV_PATH)  # type: ignore[union-attr]
-                except Exception:  # noqa: BLE001
-                    logger.debug("unregister after scan-response failure", exc_info=True)
-                try:
-                    self._bus.unexport(ADV_PATH)
-                except Exception:  # noqa: BLE001
-                    logger.debug("unexport advertisement after scan-response failure", exc_info=True)
-                # Re-export a class that does not expose the experimental
-                # ScanResponse* properties at all, then register again.
-                self._advertisement = ImprovAdvertisementPrimaryOnly(session)
+
+            # Primary PDU is always flags + 128-bit Improv UUID + Improv
+            # service data (31/31). BlueZ places LocalName and
+            # ScanResponseManufacturerData in the scan response. Try the
+            # richest scan response first, then fall back.
+            ladder = [
+                ("mfg+name", lambda: ImprovAdvertisement(session, scan_name)),
+                ("name", lambda: ImprovAdvertisementPrimaryOnly(session, scan_name)),
+                ("none", lambda: ImprovAdvertisementPrimaryOnly(session, None)),
+            ]
+            last_exc: Exception | None = None
+            self._scan_mode = "none"
+            for mode, factory in ladder:
+                self._advertisement = factory()
                 self._bus.export(ADV_PATH, self._advertisement)
-                await adv_mgr.call_register_advertisement(ADV_PATH, {})  # type: ignore[union-attr]
+                try:
+                    await adv_mgr.call_register_advertisement(ADV_PATH, {})  # type: ignore[union-attr]
+                    self._scan_mode = mode
+                    last_exc = None
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    last_exc = exc
+                    logger.warning("RegisterAdvertisement (%s) failed: %s", mode, exc)
+                    _write_ble_status(
+                        {
+                            "register_result": f"advert {mode} failed: {exc}",
+                            "last_error": str(exc),
+                            "last_error_at": _now(),
+                        }
+                    )
+                    try:
+                        self._bus.unexport(ADV_PATH)
+                    except Exception:  # noqa: BLE001
+                        logger.debug("unexport advertisement", exc_info=True)
+            if last_exc is not None:
+                raise last_exc
+            scan_len = legacy_scan_response_length(
+                manufacturer_payload=MANUFACTURER_PAYLOAD if self._scan_mode == "mfg+name" else None,
+                local_name=scan_name if self._scan_mode != "none" else None,
+            )
+            logger.info(
+                "Improv advertisement registered: primary %s/31 bytes, scan response %s "
+                "(%s/31 bytes, name %s, alias %s)",
+                packed,
+                self._scan_mode,
+                scan_len,
+                scan_name,
+                local_name,
+            )
             self._started = True
             adapter_info = await _read_adapter_info(self._bus, self._adapter_path)
             logger.info(
@@ -143,11 +148,8 @@ class BlueZPeripheral(PeripheralHandle):
                     "primary_pdu": (
                         f"flags + 128-bit Improv UUID + service data {packed}/31"
                     ),
-                    "scan_response": (
-                        f"mfg 0x{COMPANY_ID_TEST:04X} {MANUFACTURER_PAYLOAD.decode('ascii')} "
-                        f"+ short name {SHORT_LOCAL_NAME} {scan_len}/31"
-                        if self._advertisement.use_scan_response
-                        else "not included (BlueZ rejected ScanResponse* properties)"
+                    "scan_response": _describe_scan_response(
+                        self._scan_mode, scan_name, scan_len
                     ),
                     "local_name": local_name,
                     "last_error": "",
@@ -225,7 +227,7 @@ class BlueZPeripheral(PeripheralHandle):
 
 from dbus_next import Variant  # noqa: E402
 from dbus_next.constants import PropertyAccess  # noqa: E402
-from dbus_next.service import ServiceInterface, dbus_property, method, signal  # noqa: E402
+from dbus_next.service import ServiceInterface, dbus_property, method  # noqa: E402
 
 
 class ImprovApplication(ServiceInterface):
@@ -323,19 +325,15 @@ class ImprovCharacteristic(ServiceInterface):
         self._flags = flags
         self._reader = reader
         self._value = reader() if reader else b""
+        self.notifying = False
 
     def set_value(self, value: bytes) -> None:
         self._value = value
         if "notify" in self._flags:
-            self.PropertiesChanged(
-                "org.bluez.GattCharacteristic1",
-                {"Value": Variant("ay", bytes(value))},
-                [],
-            )
-
-    @signal()
-    def PropertiesChanged(self, interface: "s", changed: "a{sv}", invalidated: "as") -> None:  # type: ignore[name-defined]
-        return
+            # BlueZ turns a standard org.freedesktop.DBus.Properties
+            # PropertiesChanged for "Value" into a GATT notification. A
+            # custom signal on GattCharacteristic1 is ignored (v0.4.2 bug).
+            self.emit_properties_changed({"Value": bytes(value)})
 
     @dbus_property(access=PropertyAccess.READ)
     def UUID(self) -> "s":  # type: ignore[name-defined]
@@ -366,6 +364,16 @@ class ImprovCharacteristic(ServiceInterface):
             self._value = self._reader()
         return bytes(self._value)
 
+    @method()
+    def StartNotify(self) -> None:
+        # BlueZ calls this when a phone enables the CCCD. Notifications are
+        # driven by PropertiesChanged(Value), so there is nothing to start.
+        self.notifying = True
+
+    @method()
+    def StopNotify(self) -> None:
+        self.notifying = False
+
     def as_dict(self) -> dict[str, dict[str, Variant]]:
         return {
             "org.bluez.GattCharacteristic1": {
@@ -373,6 +381,7 @@ class ImprovCharacteristic(ServiceInterface):
                 "Service": Variant("o", self._service),
                 "Flags": Variant("as", self._flags),
                 "Descriptors": Variant("ao", []),
+                "Value": Variant("ay", bytes(self._value)),
             }
         }
 
@@ -381,32 +390,55 @@ class ImprovCommandCharacteristic(ImprovCharacteristic):
     def __init__(self, session: ImprovSession) -> None:
         super().__init__(CHAR_RPC_COMMAND, SVC_PATH, ["write", "write-without-response"], lambda: b"")
         self._session = session
+        self._lock: asyncio.Lock | None = None
+        self._tasks: set[asyncio.Task[None]] = set()
 
     @method()
     def WriteValue(self, value: "ay", options: "a{sv}") -> None:  # type: ignore[name-defined]
         del options
-        # Schedule onto the running loop; never log `value` (may contain a PSK).
-        loop = asyncio.get_event_loop()
-        loop.create_task(self._session.push_rpc_bytes(bytes(value)))
+        # Return to BlueZ immediately (a Wi-Fi join can take longer than the
+        # ATT timeout) and process chunks in arrival order. Never log
+        # `value`: it may contain a Wi-Fi password.
+        self.accept(bytes(value))
+
+    def accept(self, chunk: bytes) -> asyncio.Task[None]:
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        lock = self._lock
+
+        async def run() -> None:
+            async with lock:
+                try:
+                    await self._session.push_rpc_bytes(chunk)
+                except Exception:  # noqa: BLE001
+                    logger.exception("Improv RPC handling failed")
+
+        task = asyncio.get_event_loop().create_task(run())
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
 
 
 class ImprovAdvertisement(ServiceInterface):
-    def __init__(self, session: ImprovSession) -> None:
+    """Improv advert: 128-bit UUID + service data in the primary PDU.
+
+    LocalName and ScanResponseManufacturerData land in the scan response.
+    BlueZ 5.82 rejects AD type 0x08/0x09 (names) inside ScanResponseData
+    (src/shared/ad.c type_reject_list), which is why v0.4.1/v0.4.2 fell
+    back to no scan response. The name goes through LocalName instead.
+    """
+
+    def __init__(self, session: ImprovSession, scan_name: str | None = None) -> None:
         super().__init__("org.bluez.LEAdvertisement1")
         self._session = session
         self._service_data = session.service_data()
-        # BlueZ 5.82 ScanResponse* properties are experimental; start() may
-        # flip this off and retry if RegisterAdvertisement rejects them.
+        self._scan_name = scan_name or ""
         self.use_scan_response = True
 
     def update_service_data(self, session: ImprovSession) -> None:
         self._session = session
         self._service_data = session.service_data()
-        self.PropertiesChanged(
-            "org.bluez.LEAdvertisement1",
-            {"ServiceData": Variant("a{sv}", self._service_data_dict())},
-            [],
-        )
+        self.emit_properties_changed({"ServiceData": self._service_data_dict()})
 
     def _service_data_dict(self) -> dict[str, Variant]:
         return {ADVERTISEMENT_SERVICE_DATA_UUID: Variant("ay", bytes(self._service_data))}
@@ -414,14 +446,6 @@ class ImprovAdvertisement(ServiceInterface):
     def _manufacturer_dict(self) -> dict[int, Variant]:
         # a{qv}: company ID -> payload (no company-id prefix; BlueZ adds it)
         return {COMPANY_ID_TEST: Variant("ay", bytes(MANUFACTURER_PAYLOAD))}
-
-    def _scan_response_data(self) -> dict[int, Variant]:
-        # 0x08 = Shortened Local Name. "FS" is 4 bytes with the AD header.
-        return {0x08: Variant("ay", SHORT_LOCAL_NAME.encode("ascii"))}
-
-    @signal()
-    def PropertiesChanged(self, interface: "s", changed: "a{sv}", invalidated: "as") -> None:  # type: ignore[name-defined]
-        return
 
     @dbus_property(access=PropertyAccess.READ)
     def Type(self) -> "s":  # type: ignore[name-defined]
@@ -440,16 +464,13 @@ class ImprovAdvertisement(ServiceInterface):
         return self._manufacturer_dict()
 
     @dbus_property(access=PropertyAccess.READ)
-    def ScanResponseData(self) -> "a{yv}":  # type: ignore[name-defined]
-        return self._scan_response_data()
+    def LocalName(self) -> "s":  # type: ignore[name-defined]
+        # Empty string means "no name" to BlueZ (parse_local_name).
+        return self._scan_name
 
     @dbus_property(access=PropertyAccess.READ)
     def Discoverable(self) -> "b":  # type: ignore[name-defined]
         return True
-
-    @dbus_property(access=PropertyAccess.READ)
-    def DiscoverableTimeout(self) -> "q":  # type: ignore[name-defined]
-        return 0
 
     @dbus_property(access=PropertyAccess.READ)
     def Includes(self) -> "as":  # type: ignore[name-defined]
@@ -461,26 +482,26 @@ class ImprovAdvertisement(ServiceInterface):
 
 
 class ImprovAdvertisementPrimaryOnly(ImprovAdvertisement):
-    """Same primary PDU, but no experimental ScanResponse* properties.
+    """Fallback without the experimental ScanResponseManufacturerData."""
 
-    Used if RegisterAdvertisement rejects the BlueZ 5.82 experimental APIs
-    even with bluetoothd --experimental. Those properties stay off this
-    class so BlueZ cannot see empty experimental fields.
-    """
-
-    def __init__(self, session: ImprovSession) -> None:
-        super().__init__(session)
+    def __init__(self, session: ImprovSession, scan_name: str | None = None) -> None:
+        super().__init__(session, scan_name)
         self.use_scan_response = False
 
-    # Disable the inherited experimental properties so they are not in the
-    # introspected interface at all.
     @dbus_property(access=PropertyAccess.READ, disabled=True)
     def ScanResponseManufacturerData(self) -> "a{qv}":  # type: ignore[name-defined]
         return {}
 
-    @dbus_property(access=PropertyAccess.READ, disabled=True)
-    def ScanResponseData(self) -> "a{yv}":  # type: ignore[name-defined]
-        return {}
+
+def _describe_scan_response(mode: str, scan_name: str, scan_len: int) -> str:
+    if mode == "mfg+name":
+        return (
+            f"mfg 0x{COMPANY_ID_TEST:04X} {MANUFACTURER_PAYLOAD.decode('ascii')} "
+            f"+ name {scan_name} {scan_len}/31"
+        )
+    if mode == "name":
+        return f"name {scan_name} {scan_len}/31 (BlueZ rejected manufacturer data)"
+    return "none (BlueZ rejected scan-response fields)"
 
 
 _CHAR_ORDER = (

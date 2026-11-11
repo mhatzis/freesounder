@@ -168,7 +168,7 @@ def test_manufacturer_data_and_scan_response_fit() -> None:
     assert scan == 19
     assert scan <= 31
     # The full advertise name does not fit next to manufacturer data in 31
-    # bytes, which is why the scan response uses the short name "FS".
+    # bytes, which is why the scan response uses the short name "FS-XXXX".
     full_name = legacy_scan_response_length(
         manufacturer_payload=MANUFACTURER_PAYLOAD,
         local_name="FreeSounder-XXXX",
