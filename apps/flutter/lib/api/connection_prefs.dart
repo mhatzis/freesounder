@@ -10,6 +10,7 @@ class ConnectionPrefs {
   static const hostKey = 'host_url';
   static const demoKey = 'prefer_demo';
   static const developerKey = 'developer_mode';
+  static const wifiCountryKey = 'wifi_country';
 
   String? get savedHost {
     final value = _prefs.getString(hostKey);
@@ -20,6 +21,12 @@ class ConnectionPrefs {
   }
 
   bool get preferDemo => _prefs.getBool(demoKey) ?? false;
+
+  String? get wifiCountry => _prefs.getString(wifiCountryKey);
+
+  Future<void> setWifiCountry(String code) async {
+    await _prefs.setString(wifiCountryKey, code);
+  }
 
   bool get developerMode => _prefs.getBool(developerKey) ?? false;
 

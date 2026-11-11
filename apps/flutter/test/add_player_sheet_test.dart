@@ -21,7 +21,7 @@ Widget _host({NearbyTransport? transport, String? phoneSsid, bool developer = fa
         body: AddPlayerSheet(
           transport: transport ?? DemoNearbyTransport(delay: Duration.zero),
           phoneSsid: phoneSsid ?? 'Home',
-          wifiCountry: wifiCountry,
+          wifiCountry: wifiCountry ?? 'AU',
         ),
       ),
     ),
@@ -29,6 +29,7 @@ Widget _host({NearbyTransport? transport, String? phoneSsid, bool developer = fa
 }
 
 void main() {
+  otherNetworkTests();
   testWidgets('find step lists a demo BLE player and an online unclaimed player', (tester) async {
     tester.view.physicalSize = const Size(400, 900);
     tester.view.devicePixelRatio = 1.0;
@@ -76,7 +77,16 @@ void main() {
     await tester.tap(find.byKey(const Key('nearby-demo-ble-porch')));
     await tester.pumpAndSettle();
 
+    // Country first, defaulting to the region (overridden to AU here).
+    expect(find.byKey(const Key('country-selected')), findsOneWidget);
+    expect(find.textContaining('Australia (AU)'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('country-continue')));
+    await tester.pumpAndSettle();
+
     expect(find.text('Wi-Fi network'), findsOneWidget);
+    expect(find.byKey(const Key('wifi-picker')), findsOneWidget);
+    expect(find.byKey(const Key('wifi-other')), findsOneWidget);
+    expect(find.byIcon(Icons.lock_outline), findsOneWidget);
     expect(find.text('Home'), findsWidgets);
     expect(find.text('Cafe'), findsOneWidget);
     await tester.tap(find.byKey(const Key('wifi-continue')));
@@ -106,6 +116,8 @@ void main() {
     );
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('nearby-demo-ble-porch')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('country-continue')));
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('wifi-continue')));
     await tester.pumpAndSettle();
@@ -154,7 +166,7 @@ void main() {
     transport.failInfo = false;
     await tester.tap(find.byKey(const Key('retry-player')));
     await tester.pumpAndSettle();
-    expect(find.byKey(const Key('wifi-continue')), findsOneWidget);
+    expect(find.byKey(const Key('country-continue')), findsOneWidget);
   });
 
   testWidgets('sends the Wi-Fi country, offers rescan on an empty list, shows the player reason',
@@ -169,13 +181,29 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('nearby-demo-ble-porch')));
     await tester.pumpAndSettle();
+    expect(transport.countries, isEmpty);
 
-    expect(transport.countries, ['AU']);
-    expect(find.byKey(const Key('wifi-empty')), findsOneWidget);
-    await tester.tap(find.byKey(const Key('wifi-rescan')));
+    // Searchable country list; pick New Zealand.
+    await tester.enterText(find.byKey(const Key('country-search')), 'zeal');
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('country-NZ')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('New Zealand (NZ)'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('country-continue')));
+    await tester.pumpAndSettle();
+
+    expect(transport.countries, ['NZ']);
+    expect(transport.scans, 1);
+    // Picker stays visible when empty, with rescan and Other network.
+    expect(find.byKey(const Key('wifi-picker')), findsOneWidget);
+    expect(find.text('No networks found'), findsOneWidget);
+    expect(find.byKey(const Key('wifi-other')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('wifi-empty-rescan')));
     await tester.pumpAndSettle();
     expect(transport.scans, 2);
     expect(find.byKey(const Key('wifi-Home')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('wifi-Home')));
+    await tester.pumpAndSettle();
 
     await tester.tap(find.byKey(const Key('wifi-continue')));
     await tester.pumpAndSettle();
@@ -250,4 +278,29 @@ class _FailingTransport extends DemoNearbyTransport {
     }
     return super.deviceInfo();
   }
+}
+
+
+void otherNetworkTests() {
+  testWidgets('Other network… lets the user type a hidden SSID', (tester) async {
+    tester.view.physicalSize = const Size(400, 1000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(_host(phoneSsid: ''));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('nearby-demo-ble-porch')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('country-continue')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('wifi-other')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('custom-ssid')), 'Attic Hidden');
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('wifi-continue')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Attic Hidden'), findsWidgets);
+    expect(find.byKey(const Key('wifi-password')), findsOneWidget);
+  });
 }

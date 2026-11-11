@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../api/ble_steps.dart';
 import '../api/connection_prefs.dart';
 import '../api/nearby.dart';
+import '../api/wifi_countries.dart';
 import '../models/player_settings.dart';
 import '../state/playback_store.dart';
 
@@ -19,7 +20,7 @@ Future<void> showAddPlayerSheet(BuildContext context) {
   );
 }
 
-enum _WizardStep { find, wifi, password, progress, adopt }
+enum _WizardStep { find, country, wifi, password, progress, adopt }
 
 /// Wizard: find nearby (BLE + online) players, join Wi-Fi if needed, then adopt.
 class AddPlayerSheet extends ConsumerStatefulWidget {
@@ -53,6 +54,9 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
   String? _error;
   String? _debug;
   String? _failureDetail;
+  String? _countryCode;
+  String _countryQuery = '';
+  var _manualEntry = false;
   String _progress = 'Connecting…';
   StreamSubscription<List<NearbyPlayer>>? _bleSub;
   NearbyTransport? _cachedTransport;
@@ -77,6 +81,45 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
       return region.toUpperCase();
     }
     return 'AU';
+  }
+
+  /// Send the chosen country to the player (it sets the regulatory domain
+  /// and saves it), then scan for networks.
+  Future<void> _applyCountry() async {
+    final code = _countryCode ?? _wifiCountry;
+    setState(() {
+      _working = true;
+      _error = null;
+    });
+    try {
+      await _transport.setWifiCountry(code);
+      await ref.read(connectionPrefsProvider)?.setWifiCountry(code);
+      final networks = await _transport.scanWifi();
+      final phone = widget.phoneSsid ?? await _transport.phoneSsid();
+      WifiCandidate? prefill;
+      if (phone != null && phone.isNotEmpty) {
+        prefill = networks.where((n) => n.ssid == phone).firstOrNull;
+      }
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _networks = networks;
+        _network = prefill ?? (networks.isNotEmpty ? networks.first : null);
+        _manualEntry = false;
+        _working = false;
+        _step = _WizardStep.wifi;
+      });
+    } on Object catch (err) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _working = false;
+        _error = friendlyError(err);
+        _debug = debugDetail(err);
+      });
+    }
   }
 
   Future<void> _rescanWifi() async {
@@ -197,22 +240,14 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
       if (_name.text.isEmpty) {
         _name.text = _suggestedName(info.deviceName.isNotEmpty ? info.deviceName : player.name);
       }
-      await _transport.setWifiCountry(_wifiCountry);
-      final networks = await _transport.scanWifi();
-      final phone = widget.phoneSsid ?? await _transport.phoneSsid();
-      WifiCandidate? prefill;
-      if (phone != null && phone.isNotEmpty) {
-        prefill = networks.where((n) => n.ssid == phone).firstOrNull ??
-            WifiCandidate(ssid: phone, rssi: 0, auth: 'WPA2');
-      }
       if (!mounted) {
         return;
       }
       setState(() {
-        _networks = networks;
-        _network = prefill ?? (networks.isNotEmpty ? networks.first : null);
+        _countryCode ??= ref.read(connectionPrefsProvider)?.wifiCountry ?? _wifiCountry;
+        _countryQuery = '';
         _working = false;
-        _step = _WizardStep.wifi;
+        _step = _WizardStep.country;
       });
     } on Object catch (err) {
       if (!mounted) {
@@ -228,7 +263,7 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
   }
 
   void _continueWifi() {
-    final ssid = _network?.ssid ?? _customSsid?.trim();
+    final ssid = _network?.ssid ?? (_manualEntry ? _customSsid?.trim() : null);
     if (ssid == null || ssid.isEmpty) {
       setState(() => _error = 'Choose a Wi-Fi network.');
       return;
@@ -390,6 +425,7 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
               Text(_subtitle, style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant)),
               const SizedBox(height: 16),
               if (_step == _WizardStep.find) _findStep(scheme, text),
+              if (_step == _WizardStep.country) _countryStep(scheme, text),
               if (_step == _WizardStep.wifi) _wifiStep(scheme, text),
               if (_step == _WizardStep.password) _passwordStep(scheme, text),
               if (_step == _WizardStep.progress) _progressStep(scheme, text),
@@ -430,6 +466,8 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
     switch (_step) {
       case _WizardStep.find:
         return 'Nearby boards that need Wi-Fi show up here, along with players already on this network.';
+      case _WizardStep.country:
+        return 'Where is this player? Wi-Fi channels depend on the country.';
       case _WizardStep.wifi:
         return 'Choose the Wi-Fi this player should join.';
       case _WizardStep.password:
@@ -498,66 +536,203 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
     );
   }
 
-  Widget _wifiStep(ColorScheme scheme, TextTheme text) {
+  Widget _countryStep(ColorScheme scheme, TextTheme text) {
+    final selected = wifiCountryByCode(_countryCode ?? _wifiCountry);
+    final query = _countryQuery.trim().toLowerCase();
+    final matches = query.isEmpty
+        ? wifiCountries
+        : wifiCountries
+            .where((c) => c.name.toLowerCase().contains(query) || c.code.toLowerCase() == query)
+            .toList();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text('Wi-Fi network', style: text.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
+        Text('Country', style: text.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
+        const SizedBox(height: 4),
+        Text(
+          'Selected: ${selected?.name ?? _countryCode} (${selected?.code ?? ''})',
+          key: const Key('country-selected'),
+          style: text.bodyMedium,
+        ),
         const SizedBox(height: 8),
-        if (_networks.isEmpty) ...[
-          Text(
-            'The player did not find any Wi-Fi networks. Scan again, or type your '
-            'network name below.',
-            key: const Key('wifi-empty'),
-            style: text.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
-          ),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: TextButton.icon(
-              key: const Key('wifi-rescan'),
-              onPressed: _working ? null : () => unawaited(_rescanWifi()),
-              icon: const Icon(Icons.refresh),
-              label: const Text('Scan again'),
-            ),
-          ),
-        ]
-        else
-          for (final network in _networks)
-            RadioListTile<String>(
-              key: Key('wifi-${network.ssid}'),
-              value: network.ssid,
-              groupValue: _network?.ssid,
-              onChanged: _working
-                  ? null
-                  : (value) {
-                      setState(() {
-                        _network = network;
-                        _error = null;
-                      });
-                    },
-              title: Text(network.ssid),
-              subtitle: Text('${network.auth == 'NO' ? 'Open' : network.auth}  ·  ${network.rssi} dBm'),
-              contentPadding: EdgeInsets.zero,
-            ),
         TextField(
-          key: const Key('custom-ssid'),
+          key: const Key('country-search'),
           enabled: !_working,
           decoration: const InputDecoration(
-            labelText: 'Or type a network name',
+            labelText: 'Search countries',
+            prefixIcon: Icon(Icons.search),
             border: OutlineInputBorder(),
           ),
-          onChanged: (value) {
-            _customSsid = value;
-            if (value.trim().isNotEmpty) {
-              setState(() => _network = WifiCandidate(ssid: value.trim(), rssi: 0, auth: 'WPA2'));
-            }
-          },
+          onChanged: (value) => setState(() => _countryQuery = value),
         ),
+        const SizedBox(height: 8),
+        SizedBox(
+          height: 240,
+          child: ListView.builder(
+            key: const Key('country-list'),
+            itemCount: matches.length,
+            itemBuilder: (context, index) {
+              final country = matches[index];
+              final isSelected = country.code == (_countryCode ?? _wifiCountry);
+              return ListTile(
+                key: Key('country-${country.code}'),
+                dense: true,
+                title: Text(country.name),
+                trailing: isSelected ? Icon(Icons.check, color: scheme.primary) : Text(country.code),
+                selected: isSelected,
+                onTap: _working ? null : () => setState(() => _countryCode = country.code),
+              );
+            },
+          ),
+        ),
+        const SizedBox(height: 12),
+        FilledButton(
+          key: const Key('country-continue'),
+          onPressed: _working ? null : () => unawaited(_applyCountry()),
+          child: _working
+              ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+              : const Text('Continue'),
+        ),
+      ],
+    );
+  }
+
+  IconData _signalIcon(int rssi) {
+    if (rssi >= -55) {
+      return Icons.network_wifi;
+    }
+    if (rssi >= -67) {
+      return Icons.network_wifi_3_bar;
+    }
+    if (rssi >= -78) {
+      return Icons.network_wifi_2_bar;
+    }
+    return Icons.network_wifi_1_bar;
+  }
+
+  Widget _wifiStep(ColorScheme scheme, TextTheme text) {
+    final selectedSsid = _network?.ssid;
+    final inList = _networks.any((n) => n.ssid == selectedSsid);
+    final showManual = _manualEntry || (selectedSsid != null && !inList);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text('Wi-Fi network', style: text.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
+            ),
+            IconButton(
+              key: const Key('wifi-rescan'),
+              tooltip: 'Scan again',
+              onPressed: _working ? null : () => unawaited(_rescanWifi()),
+              icon: const Icon(Icons.refresh),
+            ),
+          ],
+        ),
+        Container(
+          key: const Key('wifi-picker'),
+          decoration: BoxDecoration(
+            border: Border.all(color: scheme.outlineVariant),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Column(
+            children: [
+              if (_working)
+                const Padding(
+                  padding: EdgeInsets.all(16),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+                      SizedBox(width: 12),
+                      Text('Scanning…'),
+                    ],
+                  ),
+                )
+              else if (_networks.isEmpty)
+                ListTile(
+                  key: const Key('wifi-empty'),
+                  leading: const Icon(Icons.wifi_off),
+                  title: const Text('No networks found'),
+                  subtitle: const Text('Move the player closer to the router and scan again.'),
+                  trailing: TextButton(
+                    key: const Key('wifi-empty-rescan'),
+                    onPressed: () => unawaited(_rescanWifi()),
+                    child: const Text('Scan again'),
+                  ),
+                )
+              else
+                for (final network in _networks)
+                  ListTile(
+                    key: Key('wifi-${network.ssid}'),
+                    leading: Icon(_signalIcon(network.rssi)),
+                    title: Text(network.ssid),
+                    subtitle: Text(network.isOpen ? 'Open' : network.auth),
+                    trailing: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (!network.isOpen) const Icon(Icons.lock_outline, size: 18),
+                        if (!showManual && network.ssid == selectedSsid) ...[
+                          const SizedBox(width: 8),
+                          Icon(Icons.check_circle, color: scheme.primary),
+                        ],
+                      ],
+                    ),
+                    selected: !showManual && network.ssid == selectedSsid,
+                    onTap: _working
+                        ? null
+                        : () => setState(() {
+                              _network = network;
+                              _manualEntry = false;
+                              _error = null;
+                            }),
+                  ),
+              const Divider(height: 1),
+              ListTile(
+                key: const Key('wifi-other'),
+                leading: const Icon(Icons.add),
+                title: const Text('Other network…'),
+                subtitle: const Text('Hidden or not listed'),
+                selected: showManual,
+                onTap: _working
+                    ? null
+                    : () => setState(() {
+                          _manualEntry = true;
+                          final typed = _customSsid?.trim() ?? '';
+                          _network = typed.isEmpty ? null : WifiCandidate(ssid: typed, rssi: 0, auth: 'WPA2');
+                        }),
+              ),
+            ],
+          ),
+        ),
+        if (showManual) ...[
+          const SizedBox(height: 12),
+          TextFormField(
+            key: const Key('custom-ssid'),
+            enabled: !_working,
+            initialValue: inList ? (_customSsid ?? '') : (selectedSsid ?? _customSsid ?? ''),
+            decoration: const InputDecoration(
+              labelText: 'Network name (SSID)',
+              border: OutlineInputBorder(),
+            ),
+            onChanged: (value) {
+              _customSsid = value;
+              setState(() {
+                _network = value.trim().isEmpty ? null : WifiCandidate(ssid: value.trim(), rssi: 0, auth: 'WPA2');
+              });
+            },
+          ),
+        ],
         const SizedBox(height: 16),
         FilledButton(
           key: const Key('wifi-continue'),
           onPressed: _working ? null : _continueWifi,
           child: const Text('Continue'),
+        ),
+        TextButton(
+          onPressed: _working ? null : () => setState(() => _step = _WizardStep.country),
+          child: Text('Country: ${wifiCountryByCode(_countryCode ?? _wifiCountry)?.name ?? _countryCode}'),
         ),
         TextButton(
           onPressed: _working
