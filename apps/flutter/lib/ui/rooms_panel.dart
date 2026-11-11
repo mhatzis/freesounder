@@ -57,13 +57,25 @@ class RoomsPanel extends ConsumerWidget {
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
                         Text(
-                          state.discovering
-                              ? 'Looking for players…'
-                              : (state.mockMode ? 'No rooms yet' : 'Set up your first player'),
+                          emptyRoomsTitle(state),
+                          key: const Key('rooms-empty-title'),
                           textAlign: TextAlign.center,
                           style: Theme.of(context).textTheme.bodyLarge,
                         ),
-                        if (!state.discovering && !state.mockMode) ...[
+                        if (state.connected && !state.mockMode && !state.discovering) ...[
+                          const SizedBox(height: 8),
+                          Text(
+                            emptyRoomsDetail(state),
+                            key: const Key('rooms-empty-detail'),
+                            textAlign: TextAlign.center,
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                          if (state.systemStarting) ...[
+                            const SizedBox(height: 12),
+                            const SizedBox(width: 160, child: LinearProgressIndicator()),
+                          ],
+                        ],
+                        if (!state.discovering && !state.mockMode && !state.connected) ...[
                           const SizedBox(height: 16),
                           FilledButton(
                             key: const Key('rooms-setup-add-player'),
@@ -214,4 +226,31 @@ class _Grabber extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Title for the empty rooms list: setup, still starting, or waiting for rooms.
+String emptyRoomsTitle(PlaybackState state) {
+  if (state.discovering) {
+    return 'Looking for players…';
+  }
+  if (state.mockMode) {
+    return 'No rooms yet';
+  }
+  if (state.connected) {
+    return state.systemStarting ? 'Your system is still starting…' : 'Waiting for your rooms…';
+  }
+  return 'Set up your first player';
+}
+
+String emptyRoomsDetail(PlaybackState state) {
+  if (state.systemStarting) {
+    final detail = state.maDetail;
+    if (state.maState == 'auth_required') {
+      return 'Music Assistant needs to be linked. ${detail ?? ''}'.trim();
+    }
+    return (detail == null || detail.isEmpty)
+        ? 'Music Assistant is getting ready. The first start can take a few minutes.'
+        : detail;
+  }
+  return 'Your players appear here once Music Assistant has found them.';
 }

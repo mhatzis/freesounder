@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/control_client.dart';
+import '../api/errors.dart';
 import '../models/music_service.dart';
 import '../state/playback_store.dart';
 import 'music_auth.dart';
@@ -73,7 +74,7 @@ class _MusicServicesScreenState extends ConsumerState<MusicServicesScreen> {
       }
       setState(() {
         _loading = false;
-        _error = error.toString();
+        _error = userMessageFor(error);
       });
     }
   }
@@ -292,7 +293,7 @@ class _MusicServicesScreenState extends ConsumerState<MusicServicesScreen> {
       if (!mounted) {
         return;
       }
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(userMessageFor(error))));
     }
   }
 
@@ -318,7 +319,7 @@ class _MusicServicesScreenState extends ConsumerState<MusicServicesScreen> {
       if (!mounted) {
         return;
       }
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(userMessageFor(error))));
     }
   }
 
@@ -617,7 +618,7 @@ class _MusicServiceSetupScreenState extends ConsumerState<MusicServiceSetupScree
       await widget.onChanged();
     } catch (error) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$error')));
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(userMessageFor(error))));
       }
     } finally {
       if (mounted) {

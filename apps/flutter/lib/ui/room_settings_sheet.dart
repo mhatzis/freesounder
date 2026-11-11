@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/connection_prefs.dart';
+import '../api/errors.dart';
 
 import '../app_version.dart';
 import '../models/player_settings.dart';
@@ -90,7 +91,7 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
       }
       setState(() {
         _loading = false;
-        _error = err.toString();
+        _error = userMessageFor(err);
         _settings = PlayerSettings(name: widget.roomName ?? widget.roomId);
       });
     }
@@ -117,7 +118,7 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
       }
       setState(() {
         _saving = false;
-        _error = err.toString();
+        _error = userMessageFor(err);
       });
     }
   }
@@ -152,7 +153,7 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
       }
       setState(() {
         _sshBusy = false;
-        _error = err.toString();
+        _error = userMessageFor(err);
       });
     }
   }

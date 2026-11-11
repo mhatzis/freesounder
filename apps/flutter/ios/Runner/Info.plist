@@ -41,9 +41,15 @@
 	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_freesounder._tcp</string>
+		<string>_freesounder-player._tcp</string>
 	</array>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>FreeSounder uses Bluetooth to find a new player and send it your Wi-Fi name so it can join your system.</string>

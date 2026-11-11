@@ -11,8 +11,11 @@ import '../models/room.dart';
 
 /// HTTP + WebSocket client for services/control-api.
 class ControlApiClient {
-  ControlApiClient({required this.baseUrl, http.Client? httpClient})
-    : _http = httpClient ?? http.Client();
+  ControlApiClient({
+    required this.baseUrl,
+    http.Client? httpClient,
+    Duration requestTimeout = const Duration(seconds: 15),
+  }) : _http = TimeoutClient(httpClient ?? http.Client(), requestTimeout);
 
   final String baseUrl;
   final http.Client _http;
@@ -21,6 +24,12 @@ class ControlApiClient {
   Uri _uri(String path, [Map<String, String>? query]) {
     final root = baseUrl.endsWith('/') ? baseUrl.substring(0, baseUrl.length - 1) : baseUrl;
     return Uri.parse('$root$path').replace(queryParameters: query);
+  }
+
+  Future<SystemHealth> health() async {
+    final response = await _http.get(_uri('/health'));
+    _ensureOk(response);
+    return SystemHealth.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
   }
 
   Future<List<Room>> listRooms() async {
@@ -76,7 +85,14 @@ class ControlApiClient {
     return [for (final item in data) UnclaimedPlayer.fromJson(item as Map<String, dynamic>)];
   }
 
-  Future<UnclaimedPlayer> adoptPlayer({required String name, String? id, String? url}) async {
+  /// Adopt a player through this system's host. Leave [role] null to let the
+  /// host decide (its own board becomes the host, any other board a room).
+  Future<UnclaimedPlayer> adoptPlayer({
+    required String name,
+    String? id,
+    String? url,
+    String? role,
+  }) async {
     final response = await _http.post(
       _uri('/api/v1/players/adopt'),
       headers: {'Content-Type': 'application/json'},
@@ -84,6 +100,7 @@ class ControlApiClient {
         'name': name,
         'id': ?id,
         'url': ?url,
+        'role': ?role,
       }),
     );
     _ensureOk(response);
@@ -249,17 +266,110 @@ class ControlApiClient {
     _ensureOk(response);
   }
 
-  void _ensureOk(http.Response response) {
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw ControlApiException('HTTP ${response.statusCode}: ${response.body}');
-    }
+  void _ensureOk(http.Response response) => ensureOk(response);
+}
+
+/// Throw a [ControlApiException] carrying the status and the server's detail.
+void ensureOk(http.Response response) {
+  if (response.statusCode >= 200 && response.statusCode < 300) {
+    return;
   }
+  String? detail;
+  String? maState;
+  String? maDetail;
+  try {
+    final data = jsonDecode(response.body);
+    if (data is Map<String, dynamic>) {
+      final raw = data['detail'];
+      detail = raw is String ? raw : (raw == null ? null : jsonEncode(raw));
+      maState = data['ma_state'] as String?;
+      maDetail = data['ma_detail'] as String?;
+    }
+  } on FormatException {
+    detail = null;
+  }
+  final body = response.body.length > 300 ? '${response.body.substring(0, 300)}…' : response.body;
+  throw ControlApiException(
+    'HTTP ${response.statusCode}: ${detail ?? body}',
+    statusCode: response.statusCode,
+    detail: detail,
+    maState: maState,
+    maDetail: maDetail,
+    url: response.request?.url.toString(),
+  );
 }
 
 class ControlApiException implements Exception {
-  ControlApiException(this.message);
+  ControlApiException(
+    this.message, {
+    this.statusCode,
+    this.detail,
+    this.maState,
+    this.maDetail,
+    this.url,
+  });
   final String message;
+  final int? statusCode;
+  final String? detail;
+
+  /// Set when the system answered 503 because Music Assistant is not ready.
+  final String? maState;
+  final String? maDetail;
+  final String? url;
+
+  bool get systemStarting => statusCode == 503 || maState != null;
 
   @override
   String toString() => 'ControlApiException: $message';
+}
+
+/// /health from the control API. Older players omit the ma_state fields.
+class SystemHealth {
+  const SystemHealth({
+    required this.ok,
+    required this.maConnected,
+    required this.maState,
+    this.maDetail,
+    this.version,
+  });
+
+  final bool ok;
+  final bool maConnected;
+  final String maState;
+  final String? maDetail;
+  final String? version;
+
+  factory SystemHealth.fromJson(Map<String, dynamic> json) {
+    final connected = json['ma_connected'] as bool? ?? false;
+    return SystemHealth(
+      ok: json['status'] == 'ok',
+      maConnected: connected,
+      maState: json['ma_state'] as String? ?? (connected ? 'connected' : 'unavailable'),
+      maDetail: json['ma_detail'] as String?,
+      version: json['version'] as String?,
+    );
+  }
+}
+
+/// Every request gets a deadline, so a player that stops answering mid-request
+/// (for example while it restarts a service) can never hang the app.
+class TimeoutClient extends http.BaseClient {
+  TimeoutClient(this._inner, this.timeout);
+
+  final http.Client _inner;
+  final Duration timeout;
+
+  @override
+  Future<http.StreamedResponse> send(http.BaseRequest request) {
+    return _inner.send(request).timeout(
+          timeout,
+          onTimeout: () => throw TimeoutException(
+            '${request.method} ${request.url} did not answer within ${timeout.inSeconds}s',
+            timeout,
+          ),
+        );
+  }
+
+  @override
+  void close() => _inner.close();
 }

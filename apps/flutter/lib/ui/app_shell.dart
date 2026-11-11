@@ -105,7 +105,7 @@ class _NowPlayingCanvas extends ConsumerWidget {
     final np = state.nowPlaying;
     final setupNeeded = !state.mockMode && state.rooms.isEmpty;
     final title = setupNeeded
-        ? (state.discovering ? 'Looking for players…' : 'Set up your first player')
+        ? emptyRoomsTitle(state)
         : (np?.title ?? (state.discovering ? 'Looking for players…' : 'Nothing playing'));
     final subtitle = [np?.artist, np?.album].whereType<String>().where((s) => s.isNotEmpty).join(' — ');
     final progress = (np?.duration != null && np!.duration! > 0)

@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../api/connection_prefs.dart';
 import '../api/control_client.dart';
 import '../api/discovery.dart';
+import '../api/first_player.dart';
 import '../api/mock_data.dart';
 import '../models/now_playing.dart';
 import '../models/player_settings.dart';
@@ -38,6 +39,8 @@ class PlaybackState {
     this.hostUrl,
     this.discoveredHosts = const [],
     this.settings = const {},
+    this.maState,
+    this.maDetail,
   });
 
   final List<Room> rooms;
@@ -50,6 +53,14 @@ class PlaybackState {
   final String? hostUrl;
   final List<DiscoveredHost> discoveredHosts;
   final Map<String, PlayerSettings> settings;
+
+  /// Music Assistant on the connected system: connected, starting,
+  /// auth_required or unavailable (null when unknown or in demo).
+  final String? maState;
+  final String? maDetail;
+
+  /// Connected to a real system whose music side is not ready yet.
+  bool get systemStarting => connected && !mockMode && maState != null && maState != 'connected';
 
   Room? get activeRoom {
     if (rooms.isEmpty) {
@@ -76,6 +87,9 @@ class PlaybackState {
     bool clearHostUrl = false,
     List<DiscoveredHost>? discoveredHosts,
     Map<String, PlayerSettings>? settings,
+    String? maState,
+    String? maDetail,
+    bool clearMa = false,
   }) {
     return PlaybackState(
       rooms: rooms ?? this.rooms,
@@ -88,6 +102,8 @@ class PlaybackState {
       hostUrl: clearHostUrl ? null : (hostUrl ?? this.hostUrl),
       discoveredHosts: discoveredHosts ?? this.discoveredHosts,
       settings: settings ?? this.settings,
+      maState: clearMa ? null : (maState ?? this.maState),
+      maDetail: clearMa ? null : (maDetail ?? this.maDetail),
     );
   }
 }
@@ -103,11 +119,20 @@ final appConfigProvider = Provider<AppConfig>((ref) {
 
 final playbackProvider = NotifierProvider<PlaybackStore, PlaybackState>(PlaybackStore.new);
 
+/// Overridable in tests.
+final controlClientFactoryProvider = Provider<ControlApiClient Function(String url)>(
+  (ref) => (url) => ControlApiClient(baseUrl: url),
+);
+
+/// Overridable in tests.
+final firstPlayerSetupProvider = Provider<FirstPlayerSetup Function()>((ref) => FirstPlayerSetup.new);
+
 /// Single rooms-and-playback store. Every screen reads this; it is the source
 /// of truth for the active room, groups, volumes, now-playing and sync health.
 class PlaybackStore extends Notifier<PlaybackState> {
   ControlApiClient? _client;
   StreamSubscription<Map<String, dynamic>>? _events;
+  Timer? _healthTimer;
   late MockHousehold _mock;
 
   ControlApiClient? get client => _client;
@@ -118,6 +143,7 @@ class PlaybackStore extends Notifier<PlaybackState> {
     _mock = MockHousehold();
     final config = ref.watch(appConfigProvider);
     ref.onDispose(() {
+      _healthTimer?.cancel();
       _events?.cancel();
       _client?.close();
     });
@@ -228,7 +254,7 @@ class PlaybackStore extends Notifier<PlaybackState> {
     final previous = state;
     await _teardownClient();
     state = state.copyWith(discovering: true, clearError: true, hostUrl: url);
-    final client = ControlApiClient(baseUrl: url);
+    final client = ref.read(controlClientFactoryProvider)(url);
     try {
       final rooms = await client.listRooms().timeout(const Duration(seconds: 4));
       final activeId = rooms.isNotEmpty ? rooms.first.id : null;
@@ -255,12 +281,22 @@ class PlaybackStore extends Notifier<PlaybackState> {
       _events = client.connectEvents().listen(_onEvent, onError: (Object err) {
         state = state.copyWith(error: err.toString(), connected: false);
       });
+      await refreshHealth();
+      _healthTimer?.cancel();
+      _healthTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+        if (state.systemStarting || state.rooms.isEmpty) {
+          unawaited(refreshHealth(reloadRooms: true));
+        }
+      });
       return true;
-    } on Object catch (_) {
+    } on Object catch (err) {
       await client.close();
+      final why = err is ControlApiException
+          ? err.message
+          : (err is TimeoutException ? 'no answer in time' : err.runtimeType.toString());
       if (previous.mockMode) {
         state = _demoState(
-          error: 'Could not connect to $url',
+          error: 'Could not connect to $url ($why)',
           hosts: previous.discoveredHosts,
         );
       } else {
@@ -269,7 +305,7 @@ class PlaybackStore extends Notifier<PlaybackState> {
           discovering: false,
           connected: false,
           mockMode: false,
-          error: 'Could not connect to $url',
+          error: 'Could not connect to $url ($why)',
           hostUrl: url,
         );
       }
@@ -304,7 +340,30 @@ class PlaybackStore extends Notifier<PlaybackState> {
     await _connectOrDemo();
   }
 
+  /// Ask the system whether Music Assistant is ready (never throws).
+  Future<void> refreshHealth({bool reloadRooms = false}) async {
+    final client = _client;
+    if (client == null) {
+      return;
+    }
+    try {
+      final health = await client.health().timeout(const Duration(seconds: 4));
+      state = state.copyWith(maState: health.maState, maDetail: health.maDetail ?? '');
+      if (reloadRooms && health.maConnected) {
+        final rooms = await client.listRooms().timeout(const Duration(seconds: 4));
+        state = state.copyWith(
+          rooms: rooms,
+          activeRoomId: state.activeRoomId ?? (rooms.isNotEmpty ? rooms.first.id : null),
+        );
+      }
+    } on Object {
+      // Keep the last known state; the next tick tries again.
+    }
+  }
+
   Future<void> _teardownClient() async {
+    _healthTimer?.cancel();
+    _healthTimer = null;
     await _events?.cancel();
     _events = null;
     await _client?.close();
@@ -438,6 +497,63 @@ class PlaybackStore extends Notifier<PlaybackState> {
     await client.adoptPlayer(name: name, id: id, url: url);
     final rooms = await client.listRooms();
     state = state.copyWith(rooms: rooms);
+  }
+
+  /// Add a board that has just joined Wi-Fi (or was found on the LAN).
+  ///
+  /// With no system yet, or when the board is the very host the app is
+  /// connected to, it becomes the household host (create). Otherwise it joins
+  /// the connected system as a room. Failures are [AdoptFailure]s naming the
+  /// step and the precise reason.
+  Future<void> adoptProvisioned({
+    required String name,
+    String? id,
+    String? ip,
+    String? url,
+    AdoptProgress? onProgress,
+  }) async {
+    if (state.mockMode) {
+      await adoptPlayer(name: name, id: id, url: url);
+      return;
+    }
+    final client = _client;
+    final address = provisionedIp(ip: ip, url: url);
+    final connectedHost = client == null ? null : Uri.tryParse(client.baseUrl)?.host;
+    final createSystem = client == null || (address != null && address == connectedHost);
+    if (!createSystem) {
+      onProgress?.call('Adding $name to your system…');
+      await joinExistingSystem(client, name: name, id: id, url: url);
+      try {
+        final rooms = await client.listRooms().timeout(const Duration(seconds: 5));
+        state = state.copyWith(rooms: rooms);
+      } on Object {
+        // Rooms arrive over the event stream once Music Assistant sees the player.
+      }
+      await refreshHealth();
+      return;
+    }
+    if (address == null) {
+      throw AdoptFailure('Reaching the player', 'The player did not report its network address');
+    }
+    final setup = ref.read(firstPlayerSetupProvider)();
+    final String base;
+    try {
+      base = await setup.createSystem(ip: address, name: name, onProgress: onProgress);
+    } finally {
+      setup.close();
+    }
+    onProgress?.call('Connecting to your system…');
+    for (var attempt = 0; attempt < 5; attempt++) {
+      if (await connectTo(base, persist: true)) {
+        return;
+      }
+      await Future<void>.delayed(const Duration(seconds: 2));
+    }
+    throw AdoptFailure(
+      'Connecting to your system',
+      state.error ?? 'No answer from $base',
+      url: '$base/api/v1/rooms',
+    );
   }
 
   Future<PlayerSettings> loadSettings(String playerId) async {

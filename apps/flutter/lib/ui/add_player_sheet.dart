@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/ble_steps.dart';
 import '../api/connection_prefs.dart';
+import '../api/first_player.dart';
 import '../api/nearby.dart';
 import '../api/wifi_countries.dart';
 import '../models/player_settings.dart';
@@ -55,6 +56,8 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
   String? _debug;
   String? _failureDetail;
   String? _countryCode;
+  String? _provisionedIp;
+  String? _adoptProgress;
   String _countryQuery = '';
   var _manualEntry = false;
   String _progress = 'Connecting…';
@@ -312,12 +315,17 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
       }
       setState(() => _progress = result.message);
       final id = result.playerId ?? player.id;
+      _provisionedIp = provisionedIp(ip: result.ip, redirect: result.redirect);
       ref.read(playbackProvider.notifier).rememberProvisionedPlayer(
             id: id,
             name: player.name,
             address: result.ip,
           );
-      final unclaimed = await _waitForUnclaimed(id);
+      final store = ref.read(playbackProvider.notifier);
+      // With no system yet there is no host to list unclaimed players.
+      final unclaimed = (store.client == null && !ref.read(playbackProvider).mockMode)
+          ? null
+          : await _waitForUnclaimed(id);
       if (!mounted) {
         return;
       }
@@ -380,25 +388,43 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
     setState(() {
       _working = true;
       _error = null;
+      _adoptProgress = null;
     });
     try {
       final unclaimed = selected.unclaimed;
-      await ref.read(playbackProvider.notifier).adoptPlayer(
+      await ref.read(playbackProvider.notifier).adoptProvisioned(
             name: name,
             id: unclaimed?.id ?? selected.id,
+            ip: _provisionedIp ?? unclaimed?.address,
             url: unclaimed?.url,
+            onProgress: (message) {
+              if (mounted) {
+                setState(() => _adoptProgress = message);
+              }
+            },
           );
       if (mounted) {
         Navigator.of(context).pop();
       }
+    } on AdoptFailure catch (err) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _working = false;
+        _adoptProgress = null;
+        _error = err.message;
+        _debug = err.debugLine;
+      });
     } on Object catch (err) {
       if (!mounted) {
         return;
       }
       setState(() {
         _working = false;
-        _error = friendlyError(err, fallback: 'Could not add the player. Try again.');
-        _debug = debugDetail(err);
+        _adoptProgress = null;
+        _error = 'Could not add the player: ${friendlyError(err, fallback: err.runtimeType.toString())}';
+        _debug = 'adopt: ${debugDetail(err)}';
       });
     }
   }
@@ -446,7 +472,7 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
               if (ref.watch(developerModeProvider)) ...[
                 const SizedBox(height: 8),
                 Text(
-                  'BLE: ${_debug ?? _transport.lastDebug}',
+                  (_debug?.startsWith('adopt') ?? false) ? _debug! : 'BLE: ${_debug ?? _transport.lastDebug}',
                   key: const Key('ble-debug-line'),
                   style: text.labelSmall?.copyWith(
                     color: scheme.onSurfaceVariant,
@@ -828,6 +854,20 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
     );
   }
 
+  /// No system yet (or the app is connected to this very board): create one.
+  bool get _createsSystem {
+    final state = ref.watch(playbackProvider);
+    if (state.mockMode) {
+      return false;
+    }
+    final client = ref.read(playbackProvider.notifier).client;
+    if (client == null) {
+      return true;
+    }
+    final ip = _provisionedIp ?? _selected?.unclaimed?.address;
+    return ip != null && ip == Uri.tryParse(client.baseUrl)?.host;
+  }
+
   Widget _adoptStep(ColorScheme scheme, TextTheme text) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -856,8 +896,22 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
           onPressed: _working ? null : _adopt,
           child: _working
               ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-              : const Text('Join this system'),
+              : Text(_createsSystem ? 'Create your system' : 'Join this system'),
         ),
+        if (_createsSystem && !_working) ...[
+          const SizedBox(height: 8),
+          Text(
+            'This is your first player, so it will also run your system.',
+            key: const Key('create-system-hint'),
+            style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+          ),
+        ],
+        if (_adoptProgress != null) ...[
+          const SizedBox(height: 12),
+          const LinearProgressIndicator(),
+          const SizedBox(height: 6),
+          Text(_adoptProgress!, key: const Key('adopt-progress'), style: text.bodySmall),
+        ],
       ],
     );
   }
