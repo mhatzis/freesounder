@@ -47,6 +47,38 @@ def legacy_advertisement_length(
     return size
 
 
+# Bluetooth SIG unassigned / test Company ID. Used until FreeSounder has a
+# registered CID. Payload is the product name as UTF-8.
+COMPANY_ID_TEST: Final = 0xFFFF
+MANUFACTURER_PAYLOAD: Final = b"FreeSounder"
+SHORT_LOCAL_NAME: Final = "FS"
+
+
+def manufacturer_specific_data(
+    payload: bytes = MANUFACTURER_PAYLOAD, company_id: int = COMPANY_ID_TEST
+) -> bytes:
+    """Company ID (little-endian) plus manufacturer payload, without the AD header."""
+
+    return bytes((company_id & 0xFF, (company_id >> 8) & 0xFF)) + payload
+
+
+def legacy_scan_response_length(
+    *,
+    manufacturer_payload: bytes | None = MANUFACTURER_PAYLOAD,
+    company_id: int = COMPANY_ID_TEST,
+    local_name: str | None = None,
+) -> int:
+    """Packed size of a legacy scan-response PDU."""
+
+    size = 0
+    if manufacturer_payload is not None:
+        # length, type 0xFF, company ID (2), payload
+        size += 2 + 2 + len(manufacturer_payload)
+    if local_name:
+        size += 2 + len(local_name.encode("utf-8"))
+    return size
+
+
 
 CAP_IDENTIFY: Final = 1 << 0
 CAP_DEVICE_INFO: Final = 1 << 1

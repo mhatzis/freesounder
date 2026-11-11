@@ -92,31 +92,69 @@ async def run_forever(
 
     def _describe_network() -> str:
         try:
-            from freesounder_ble_provisioning.network import inspect_ipv4
+            from freesounder_ble_provisioning.network import (
+                has_lan_gateway,
+                inspect_default_routes,
+                inspect_ipv4,
+            )
 
             rows = inspect_ipv4()
         except Exception:  # noqa: BLE001
             return "network inspection failed"
-        if not rows:
-            return "no IPv4 addresses"
         parts = []
+        if not rows:
+            parts.append("no IPv4 addresses")
         for row in rows:
             reason = row.skip_reason
             if reason:
                 parts.append(f"{row.iface}/{row.address} ({reason})")
             else:
                 parts.append(f"{row.iface}/{row.address} (usable)")
+        try:
+            routes = inspect_default_routes()
+            if not routes:
+                parts.append("no default IPv4 route")
+            for route in routes:
+                via = route["via"] or "no-via"
+                dev = route["dev"] or "?"
+                tag = "gateway" if route["usable"] else "ignored"
+                parts.append(f"default via {via} dev {dev} ({tag})")
+            if not has_lan_gateway():
+                parts.append("no route to a LAN gateway")
+        except Exception:  # noqa: BLE001
+            parts.append("route inspection failed")
         return ", ".join(parts)
+
+    def _publish_loop_status(*, online: bool, reason: str) -> None:
+        try:
+            from freesounder_ble_provisioning.doctor import collect_report
+            from freesounder_ble_provisioning.status import try_write_bootfs_doctor, write_status
+
+            write_status(
+                {
+                    "wanted": (not online),
+                    "online": online,
+                    "online_reason": reason,
+                    "advertising": advertising,
+                    "local_name": local_name,
+                }
+            )
+            # Keep a copy on the boot partition so it can be read without a
+            # keyboard or a network.
+            try_write_bootfs_doctor(collect_report())
+        except Exception:  # noqa: BLE001
+            logger.debug("could not publish ble status", exc_info=True)
 
     try:
         logger.info("Provisioning service starting as %s", local_name)
         while not done.is_set():
             online = network.has_usable_network()
+            reason = _describe_network()
             if online != _logged_online:
                 logger.info(
                     "Network state: %s (%s)",
                     "online — will not advertise" if online else "offline — will advertise",
-                    _describe_network(),
+                    reason,
                 )
                 _logged_online = online
             if online:
@@ -132,6 +170,7 @@ async def run_forever(
                             await handle.stop()
                         except Exception:  # noqa: BLE001
                             logger.debug("stop after failed start", exc_info=True)
+            _publish_loop_status(online=online, reason=reason)
             try:
                 await asyncio.wait_for(done.wait(), timeout=poll_seconds)
             except TimeoutError:

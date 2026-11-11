@@ -41,6 +41,9 @@ install -m 0644 files/etc/systemd/system/freesounder-music-assistant.service "${
 install -m 0644 files/etc/systemd/system/freesounder-control-api.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-control-api.service"
 install -m 0644 files/etc/systemd/system/freesounder-player-agent.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-player-agent.service"
 install -m 0644 files/etc/systemd/system/freesounder-ble-provisioning.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-ble-provisioning.service"
+install -d "${ROOTFS_DIR}/etc/systemd/system/bluetooth.service.d"
+install -m 0644 files/etc/systemd/system/bluetooth.service.d/10-freesounder-experimental.conf \
+	"${ROOTFS_DIR}/etc/systemd/system/bluetooth.service.d/10-freesounder-experimental.conf"
 install -m 0644 files/etc/systemd/system/freesounder-boot-doctor.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-boot-doctor.service"
 install -m 0644 files/etc/systemd/system/freesounder-boot-doctor.timer "${ROOTFS_DIR}/etc/systemd/system/freesounder-boot-doctor.timer"
 install -m 0644 files/etc/systemd/system/freesounder-boot-mark.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-boot-mark.service"

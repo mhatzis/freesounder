@@ -6,8 +6,19 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from freesounder_ble_provisioning.network import inspect_ipv4
-from freesounder_ble_provisioning.protocol import legacy_advertisement_length
+from freesounder_ble_provisioning.network import (
+    has_lan_gateway,
+    inspect_default_routes,
+    inspect_ipv4,
+)
+from freesounder_ble_provisioning.protocol import (
+    COMPANY_ID_TEST,
+    MANUFACTURER_PAYLOAD,
+    SHORT_LOCAL_NAME,
+    legacy_advertisement_length,
+    legacy_scan_response_length,
+)
+from freesounder_ble_provisioning.status import STATUS_PATH
 
 
 def collect_report() -> str:
@@ -19,13 +30,26 @@ def collect_report() -> str:
     lines += _section(
         "Advertisement budget",
         [
-            "primary PDU without name: "
-            f"{legacy_advertisement_length(service_data=bytes(6))}/31 bytes",
-            "if LocalName=FreeSounder-XXXX were included: "
+            "primary PDU (flags + 128-bit Improv UUID + 16-bit service data): "
+            f"{legacy_advertisement_length(service_data=bytes(6))}/31 bytes "
+            "(full — no room for a name or manufacturer data)",
+            (
+                "scan response (mfg "
+                f"0x{COMPANY_ID_TEST:04X} {MANUFACTURER_PAYLOAD.decode('ascii')} "
+                f"+ short name {SHORT_LOCAL_NAME}): "
+                f"{legacy_scan_response_length(local_name=SHORT_LOCAL_NAME)}/31 bytes"
+            ),
+            "if LocalName=FreeSounder-XXXX were in the primary PDU: "
             f"{legacy_advertisement_length(service_data=bytes(6), local_name='FreeSounder-XXXX')}"
-            "/31 bytes",
+            "/31 bytes (does not fit)",
         ],
     )
+    if STATUS_PATH.is_file():
+        try:
+            runtime = STATUS_PATH.read_text(encoding="utf-8").splitlines()
+            lines += _section("Runtime status", runtime)
+        except OSError:
+            pass
     return "\n".join(lines) + "\n"
 
 
@@ -90,15 +114,22 @@ def _network_lines() -> list[str]:
     if not rows:
         return ["no IPv4 addresses; treated as offline (will advertise)"]
     lines = []
-    usable = [row for row in rows if row.usable]
     for row in rows:
         reason = row.skip_reason or "usable"
         flags = f"up={row.up} carrier={row.carrier} virtual={row.virtual}"
         lines.append(f"{row.iface} {row.address} [{reason}; {flags}]")
-    if usable:
-        lines.append("verdict: online — service will not advertise")
+    routes = inspect_default_routes()
+    if not routes:
+        lines.append("default route: none")
+    for route in routes:
+        tag = "gateway" if route["usable"] else "ignored"
+        lines.append(
+            f"default via {route['via'] or 'no-via'} dev {route['dev'] or '?'} ({tag})"
+        )
+    if has_lan_gateway():
+        lines.append("verdict: online — default route to a LAN gateway; will not advertise")
     else:
-        lines.append("verdict: offline — service should advertise")
+        lines.append("verdict: offline — no LAN gateway; service should advertise")
     return lines
 
 

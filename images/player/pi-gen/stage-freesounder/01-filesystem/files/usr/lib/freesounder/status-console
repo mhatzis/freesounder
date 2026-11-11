@@ -5,18 +5,6 @@ exec >/dev/tty1 2>&1
 printf '\033[?25l' 2>/dev/null
 trap 'printf "\033[?25h" 2>/dev/null' EXIT
 
-ble_state() {
-	if systemctl is-active --quiet freesounder-ble-provisioning.service 2>/dev/null; then
-		if [[ -f /etc/freesounder/configured ]]; then
-			echo "idle (adopted)"
-		else
-			echo "advertising setup"
-		fi
-	else
-		echo "idle"
-	fi
-}
-
 ssh_state() {
 	if [[ -f /run/freesounder/ssh-developer.json ]] && systemctl is-active --quiet ssh.service 2>/dev/null; then
 		echo "developer mode (off after reboot)"
@@ -25,8 +13,20 @@ ssh_state() {
 	fi
 }
 
+# Real uplink IPv4 only: never show docker0/veth/br-* or 169.254/127.
 ips() {
-	hostname -I 2>/dev/null | awk '{$1=$1; print}' | head -c 200
+	ip -4 -o addr show 2>/dev/null | awk '
+		{
+			iface=$2
+			sub(/:$/, "", iface)
+			split($4, a, "/")
+			addr=a[1]
+			if (iface == "lo" || iface ~ /^(docker|br-|veth|virbr|cni|flannel|lxc|tunl|sit|dummy|vmnet|kube)/) next
+			if (iface == "docker0") next
+			if (addr ~ /^127\./ || addr ~ /^169\.254\./) next
+			print addr " (" iface ")"
+		}
+	' | paste -sd ", " -
 }
 
 room_name() {
@@ -43,11 +43,76 @@ role() {
 	fi
 }
 
+ble_block() {
+	python3 - <<'PY'
+import json
+from pathlib import Path
+
+status = {}
+path = Path("/run/freesounder/ble-status.json")
+try:
+    status = json.loads(path.read_text(encoding="utf-8"))
+except (OSError, json.JSONDecodeError):
+    status = {}
+
+hci = "missing"
+hci0 = Path("/sys/class/bluetooth/hci0")
+if hci0.is_dir():
+    addr = ""
+    try:
+        addr = (hci0 / "address").read_text(encoding="utf-8").strip()
+    except OSError:
+        pass
+    hci = "present" + (f" {addr}" if addr else "")
+
+powered = status.get("powered")
+pwr = {True: "yes", False: "no"}.get(powered, "?")
+
+rfkill = status.get("rfkill") or "unknown"
+advertising = status.get("advertising")
+wanted = status.get("wanted")
+online_reason = status.get("online_reason") or ""
+register = status.get("register_result") or "no attempt yet"
+last_error = status.get("last_error") or ""
+last_at = status.get("last_error_at") or ""
+scan = status.get("scan_response") or ""
+primary = status.get("primary_pdu") or ""
+
+adv = "yes" if advertising else "no"
+if wanted is True and advertising:
+    want = "advertise"
+elif wanted is True:
+    want = "advertise, but not on the air"
+elif wanted is False:
+    want = "quiet (LAN gateway)"
+else:
+    want = "unknown"
+
+lines = [
+    f"  wanted      : {want}",
+    f"  advertising : {adv}",
+    f"  hci0        : {hci}  Powered={pwr}",
+    f"  rfkill      : {rfkill}",
+    f"  register    : {register}",
+]
+if last_error:
+    when = f" ({last_at})" if last_at else ""
+    lines.append(f"  last error  : {last_error}{when}")
+if online_reason:
+    lines.append(f"  online check: {online_reason}")
+if primary:
+    lines.append(f"  primary PDU : {primary}")
+if scan:
+    lines.append(f"  scan resp   : {scan}")
+print("\n".join(lines))
+PY
+}
+
 while true; do
-	host=$(hostname -s 2>/dev/null || echo freesounder)
+	host=$(hostname -s 2>/dev/null || echo fs-new)
 	pretty=$(room_name)
 	addr=$(ips)
-	[[ -n "$addr" ]] || addr="no network yet"
+	[[ -n "$addr" ]] || addr="no network"
 	clear 2>/dev/null
 	printf '\033[H'
 	cat <<STATUS
@@ -57,13 +122,16 @@ Hostname : ${host}
 Room     : ${pretty:-not set yet (use the app)}
 Role     : $(role)
 Address  : ${addr}
-BLE setup: $(ble_state)
+mDNS     : ${host}.local
 SSH      : $(ssh_state)
+
+BLE
+$(ble_block)
 
 This player is a locked-down appliance.
 There is no login on this screen (fsadmin is on tty2+).
 Set it up in the FreeSounder app (Bluetooth or the local network).
-mDNS     : ${host}.local
+Doctor report: /boot/firmware/freesounder-doctor.txt
 STATUS
 	sleep 5
 done

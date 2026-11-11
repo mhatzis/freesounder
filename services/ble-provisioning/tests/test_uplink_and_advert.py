@@ -7,9 +7,23 @@ from pathlib import Path
 
 import pytest
 
-from freesounder_ble_provisioning.network import inspect_ipv4, is_virtual_iface, parse_ip_ipv4
-from freesounder_ble_provisioning.protocol import legacy_advertisement_length
+from freesounder_ble_provisioning.network import (
+    has_lan_gateway,
+    inspect_default_routes,
+    inspect_ipv4,
+    is_virtual_iface,
+    parse_ip_ipv4,
+)
+from freesounder_ble_provisioning.protocol import (
+    COMPANY_ID_TEST,
+    MANUFACTURER_PAYLOAD,
+    SHORT_LOCAL_NAME,
+    legacy_advertisement_length,
+    legacy_scan_response_length,
+    manufacturer_specific_data,
+)
 from freesounder_ble_provisioning.service import PeripheralHandle, run_forever
+from freesounder_ble_provisioning.status import write_status
 
 IP_TEXT = """\
 1: lo    inet 127.0.0.1/8 scope host lo
@@ -133,3 +147,78 @@ async def test_run_forever_retries_failed_start(
     assert any(item.startswith("start:") for item in log)
     stop.set()
     await task
+
+
+def test_manufacturer_data_and_scan_response_fit() -> None:
+    data = bytes((0x02, 0x0F, 0, 0, 0, 0))
+    primary = legacy_advertisement_length(service_data=data)
+    assert primary == 31
+    # Manufacturer data and a name must not go in the primary PDU.
+    with_mfg = primary + (2 + 2 + len(MANUFACTURER_PAYLOAD))
+    assert with_mfg > 31
+    mfg = manufacturer_specific_data()
+    assert mfg[:2] == bytes((0xFF, 0xFF))
+    assert mfg[2:] == b"FreeSounder"
+    assert COMPANY_ID_TEST == 0xFFFF
+    scan = legacy_scan_response_length(
+        manufacturer_payload=MANUFACTURER_PAYLOAD,
+        local_name=SHORT_LOCAL_NAME,
+    )
+    # 15-byte mfg AD (len+type+0xFFFF+FreeSounder) + 4-byte short name (len+type+FS)
+    assert scan == 19
+    assert scan <= 31
+    # The full advertise name does not fit next to manufacturer data in 31
+    # bytes, which is why the scan response uses the short name "FS".
+    full_name = legacy_scan_response_length(
+        manufacturer_payload=MANUFACTURER_PAYLOAD,
+        local_name="FreeSounder-XXXX",
+    )
+    assert full_name == 33
+    assert full_name > 31
+
+
+def test_docker_default_route_is_not_a_lan_gateway() -> None:
+    text = "default via 172.17.0.1 dev docker0 proto kernel\n"
+    rows = inspect_default_routes(text)
+    assert len(rows) == 1
+    assert rows[0]["dev"] == "docker0"
+    assert rows[0]["usable"] is False
+    assert has_lan_gateway(text) is False
+    # Address + docker route still leave the player "offline" for Improv.
+    wlan = (
+        "default via 192.168.1.1 dev wlan0 proto dhcp metric 600\n"
+        "default via 172.17.0.1 dev docker0 proto kernel metric 1000\n"
+    )
+    assert has_lan_gateway(wlan) is True
+    # "connected (local only)": an address but no default route.
+    assert has_lan_gateway("") is False
+    link_local_only = "default dev eth0 scope link\n"
+    # A default route on a real iface counts, even without a via (rare).
+    assert has_lan_gateway(link_local_only) is True
+
+
+def test_write_status_persists_register_error(tmp_path: Path) -> None:
+    path = tmp_path / "ble-status.json"
+    write_status(
+        {
+            "advertising": False,
+            "register_result": "failed: org.bluez.Error.Failed",
+            "last_error": "org.bluez.Error.Failed",
+            "last_error_at": "2026-11-11T02:00:00Z",
+            "rfkill": "unblocked",
+            "adapter_address": "AA:BB:CC:DD:EE:FF",
+            "powered": True,
+        },
+        path=path,
+    )
+    text = path.read_text(encoding="utf-8")
+    assert "org.bluez.Error.Failed" in text
+    assert "AA:BB:CC:DD:EE:FF" in text
+    write_status({"advertising": True, "register_result": "ok", "last_error": ""}, path=path)
+    import json
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["advertising"] is True
+    assert data["register_result"] == "ok"
+    assert data["adapter_address"] == "AA:BB:CC:DD:EE:FF"
+    assert "updated" in data

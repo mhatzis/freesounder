@@ -33,8 +33,16 @@ or hostname in Imager — the image ignores those customisations.
    tree. Do not set a different user in Imager — those settings are ignored.
 6. You do **not** need to set Wi-Fi in Imager. An unprovisioned board with no
    Ethernet and no working Wi-Fi advertises over Bluetooth as
-   `FreeSounder-XXXX`. The FreeSounder app walks you through joining a
-   network (Improv Wi-Fi). Ethernet still works if you plug a cable in.
+   `FreeSounder-XXXX`. The primary advertisement is the Improv 128-bit service
+   UUID plus service data (31/31 bytes). Manufacturer-specific data (Bluetooth
+   SIG test company ID `0xFFFF`, payload `FreeSounder`) and the short name
+   `FS` are in the scan response (19/31 bytes). The HDMI status screen shows
+   the real adapter address, Powered and rfkill state, the
+   `RegisterAdvertisement` result, and the last error — not a static
+   "advertising setup" placeholder. The Address line is the real `wlan0` /
+   `eth0` IPv4 address, or `no network`; `docker0` is ignored. The FreeSounder
+   app walks you through joining a network (Improv Wi-Fi). Ethernet still
+   works if you plug a cable in.
 7. Write the image, eject the media, and boot the Pi.
 
 First boot on a 4 GB host needs **internet access** so Docker can pull
@@ -139,4 +147,4 @@ After a boot (even a failed or incomplete one), the boot partition (`bootfs`) sh
 - `freesounder-sysinit-ok.txt` — `sysinit.target` completed
 - `freesounder-doctor.txt` — Bluetooth / network diagnostics (written after sysinit and again one minute after boot)
 
-The HDMI console is verbose (`console=tty1`, `loglevel=7`, no `quiet`). Plug in a micro-HDMI cable to read kernel messages if the green ACT LED stays solid. On the device itself, run `sudo freesounder-setup doctor` and `journalctl -u freesounder-ble-provisioning -b --no-pager`.
+The HDMI console is verbose (`console=tty1`, `loglevel=7`, no `quiet`). Plug in a micro-HDMI cable to read kernel messages if the green ACT LED stays solid. On the device itself, run `sudo freesounder-setup doctor` and `journalctl -u freesounder-ble-provisioning -b --no-pager`. The same doctor report is also written to `/boot/firmware/freesounder-doctor.txt` so you can read it from the boot partition on a PC.

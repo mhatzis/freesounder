@@ -96,8 +96,15 @@ class NetworkManagerPort(NetworkPort):
         self._run_fn = run_fn
 
     def has_usable_network(self) -> bool:
+        """True only when there is a default IPv4 route on a real uplink.
+
+        Link-local addresses, docker0, and NetworkManager "connected
+        (local only)" (an address with no LAN gateway) must not count as
+        online — the player should keep advertising Improv setup.
+        """
+
         try:
-            return bool(self._addrs())
+            return has_lan_gateway()
         except Exception:  # noqa: BLE001
             return False
 
@@ -323,6 +330,51 @@ _VIRTUAL_PREFIXES = (
     "kube",
 )
 _VIRTUAL_EXACT = frozenset({"lo", "docker0", "cni0", "flannel.1", "kube-ipvs0"})
+
+
+
+def has_lan_gateway(
+    route_text: str | None = None,
+) -> bool:
+    """A default IPv4 route whose device is a real (non-virtual) interface."""
+
+    return any(row["usable"] for row in inspect_default_routes(route_text))
+
+
+def inspect_default_routes(route_text: str | None = None) -> list[dict[str, object]]:
+    """Parse `ip -4 route show default` into classified default routes."""
+
+    if route_text is None:
+        route_text = _ip_route_text()
+    rows: list[dict[str, object]] = []
+    for line in route_text.splitlines():
+        parts = line.split()
+        if not parts or parts[0] != "default":
+            continue
+        dev = ""
+        via = ""
+        if "dev" in parts:
+            dev = parts[parts.index("dev") + 1] if parts.index("dev") + 1 < len(parts) else ""
+        if "via" in parts:
+            via = parts[parts.index("via") + 1] if parts.index("via") + 1 < len(parts) else ""
+        virtual = is_virtual_iface(dev) if dev else True
+        usable = bool(dev) and not virtual
+        rows.append({"dev": dev, "via": via, "virtual": virtual, "usable": usable, "line": line})
+    return rows
+
+
+def _ip_route_text() -> str:
+    import subprocess
+
+    try:
+        return subprocess.check_output(
+            ["ip", "-4", "route", "show", "default"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=3,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
 
 
 def _signal_to_rssi(signal: int) -> int:
