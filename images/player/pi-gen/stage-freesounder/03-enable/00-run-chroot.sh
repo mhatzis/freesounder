@@ -86,5 +86,5 @@ chmod 0755 /var/lib/freesounder
 chmod 0700 /var/lib/freesounder/spotify
 
 # Drop the pi-gen build-host apt workaround so the shipped image uses normal apt.
-rm -f /etc/apt/apt.conf.d/99-freesounder-build-apt
+rm -f /etc/apt/apt.conf.d/99-freesounder-build-apt /etc/apt/apt.conf.d/80-freesounder-retries
 rm -f /etc/apt/apt.conf.d/99-freesounder-ipv4

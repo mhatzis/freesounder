@@ -3,7 +3,6 @@ avahi-daemon
 avahi-utils
 ca-certificates
 curl
-ffmpeg
 git
 jq
 python3
