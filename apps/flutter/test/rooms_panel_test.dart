@@ -153,6 +153,14 @@ void main() {
     expect(find.byKey(const Key('loudness-switch')), findsOneWidget);
     expect(find.text('Bass boost'), findsOneWidget);
 
+    // Dragging a tone slider previews live (throttled) and saves on release.
+    final container = ProviderScope.containerOf(tester.element(find.text('Room settings')));
+    final roomId = container.read(playbackProvider).activeRoomId!;
+    await tester.drag(find.byKey(const Key('bass-slider')), const Offset(60, 0));
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pumpAndSettle();
+    expect(container.read(playbackProvider).settings[roomId]?.bass, greaterThan(0));
+
     await tester.scrollUntilVisible(find.byKey(const Key('test-tone-button')), 200,
         scrollable: find.byType(Scrollable).last);
     await tester.tap(find.byKey(const Key('test-tone-button')));
@@ -248,7 +256,7 @@ void main() {
     await tester.pumpAndSettle();
 
     await tester.ensureVisible(find.byKey(const Key('player-version-tap')));
-    expect(find.text('FreeSounder 0.6.1'), findsOneWidget);
+    expect(find.text('FreeSounder 0.6.2'), findsOneWidget);
     expect(find.byKey(const Key('ssh-developer-switch')), findsNothing);
 
     for (var i = 0; i < 7; i++) {

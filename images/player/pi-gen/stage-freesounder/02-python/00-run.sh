@@ -18,3 +18,7 @@ if [ -d "${FREESOUNDER_ROOT}/images/player/pi-gen/wheels" ]; then
 	rm -rf "${ROOTFS_DIR}/opt/freesounder/wheels"
 	cp -a "${FREESOUNDER_ROOT}/images/player/pi-gen/wheels" "${ROOTFS_DIR}/opt/freesounder/wheels"
 fi
+# Live tone/balance ALSA plugin (compiled for the board in 02-run-chroot.sh).
+rm -rf "${ROOTFS_DIR}/opt/freesounder/fsdsp"
+mkdir -p "${ROOTFS_DIR}/opt/freesounder/fsdsp"
+cp -a "${FREESOUNDER_ROOT}/services/fsdsp/fsdsp.c" "${ROOTFS_DIR}/opt/freesounder/fsdsp/"

@@ -759,7 +759,7 @@ class PlaybackStore extends Notifier<PlaybackState> {
     if (state.mockMode) {
       return const {
         'output': {'pcm': 'hdmi:CARD=vc4hdmi0,DEV=0', 'kind': 'hdmi', 'reason': 'HDMI0 (display connected)'},
-        'chain': {'eq': 'flat', 'ok': true},
+        'chain': {'dsp': 'live', 'ok': true},
         'snapclient': {'connected': true, 'volume': 40, 'muted': false, 'stream': 'Radio'},
       };
     }
@@ -900,7 +900,7 @@ List<String> describeRoomAudio(Map<String, dynamic> audio) {
     if (chain != null)
       chain['ok'] == false
           ? 'Sound chain: FAILED (${chain['detail']})'
-          : 'Sound chain: OK${chain['eq'] == 'bypassed' ? ', tone controls unavailable' : ''}',
+          : 'Sound chain: OK${chain['dsp'] == 'fallback' ? ', tone controls unavailable' : ''}',
     if (snap != null)
       'Player: ${snap['connected'] == true ? 'connected' : 'not connected'}, volume ${snap['volume'] ?? '?'}${snap['muted'] == true ? ', muted' : ''}',
     if (stream != null) 'Stream: ${stream['id']} ${stream['status'] ?? ''}'.trim(),

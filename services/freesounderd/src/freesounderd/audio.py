@@ -82,7 +82,7 @@ def audio_state(
     out: dict[str, Any] = {"output": read_audio_output(output_file)}
     try:
         chain = json.loads(chain_file.read_text(encoding="utf-8"))
-        out["chain"] = {k: chain.get(k) for k in ("eq", "ok", "detail", "eq_error")}
+        out["chain"] = {k: chain.get(k) for k in ("dsp", "ok", "detail", "dsp_error")}
     except (OSError, ValueError):
         out["chain"] = None
     if out["output"]["kind"] != "null":

@@ -204,12 +204,17 @@ snap = audio.get("snapclient") or {}
 stream = audio.get("stream") or {}
 target = st.get("snapclient_target") or "?"
 print(f"  output     : {out.get('pcm', 'not chosen yet')} - {out.get('reason', '')}")
-eq = chain.get("eq", "?")
+dsp = chain.get("dsp", "?")
 ok = chain.get("ok")
 note = "" if ok in (None, True) else f"  FAILED: {chain.get('detail', '')}"
-if chain.get("eq_error"):
-    note += f"  (EQ off: {chain['eq_error']})"
-print(f"  ALSA chain : EQ {eq}{note}")
+if chain.get("dsp_error"):
+    note += f"  (tone controls off: {chain['dsp_error']})"
+try:
+    params = Path("/run/freesounder/dsp-params").read_text().split()[1:]
+    note += "  bass/treble/bal/loud " + " ".join(params)
+except OSError:
+    pass
+print(f"  ALSA chain : DSP {dsp}{note}")
 if hw:
     fmt = " ".join(str(hw[k]) for k in ("format", "rate") if hw.get(k))
     print(f"  device     : {hw.get('device', '?')} {hw.get('state', '?')} {fmt}".rstrip())

@@ -144,12 +144,17 @@ class Store:
         _write_atomic(self.settings_path(), json.dumps(payload, indent=2) + "\n")
         _write_atomic(self.settings.config_dir / "name", settings.name + "\n")
         _write_atomic(self.settings.config_dir / "dac", settings.dac + "\n")
+        # Tone settings go live through the fsdsp params file; the ALSA
+        # config only changes (and snapclient only re-opens) if it must.
+        self.last_alsa_changed = False
         try:
-            write_dsp_configs(
+            self.last_alsa_changed = write_dsp_configs(
                 settings,
                 alsa_path=self.settings.alsa_conf,
                 camilla_path=self.settings.camilla_conf,
                 output_file=self.settings.config_dir / "audio-output",
+                params_path=self.settings.run_dir / "dsp-params",
+                status_path=self.settings.run_dir / "audio-chain.json",
             )
         except OSError:
             logger.warning("Could not write DSP configs", exc_info=True)

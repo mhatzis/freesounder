@@ -1,10 +1,16 @@
-"""Generate ALSA and CamillaDSP configs from player tone settings.
+"""ALSA output chain and live tone settings.
 
-The shipped image applies tone controls with an ALSA LADSPA chain
-(Debian `caps` Eq10X2, plus a route plugin for balance). That keeps CPU
-use low on a Pi 4/5 and uses packages already in Trixie. A CamillaDSP
-YAML file is written alongside so a board with `camilladsp` installed
-can switch to it later without a new settings schema.
+snapclient plays to the ALSA PCM `freesounder`:
+
+    plug (-> 48 kHz on HDMI) -> fsdsp (live bass/treble/loudness/balance)
+        -> plug -> output device (DAC, USB, hdmi:CARD=vc4hdmiN, or null)
+
+`fsdsp` is our own small ALSA filter plugin (services/fsdsp). It re-reads
+/run/freesounder/dsp-params while audio plays, so tone changes never
+re-open the device or restart snapclient. The ALSA config itself only
+changes when the output device changes. If the plugin is missing or fails
+its self-test, a fallback chain with static balance is used (that one does
+need a snapclient restart to change).
 """
 
 from __future__ import annotations
@@ -48,14 +54,11 @@ def balance_gains(balance: float) -> tuple[float, float]:
 
 AUDIO_OUTPUT_FILE = Path("/etc/freesounder/audio-output")
 CHAIN_STATUS_FILE = Path("/run/freesounder/audio-chain.json")
-LADSPA_PATH = "/usr/lib/ladspa"
+PARAMS_FILE = Path("/run/freesounder/dsp-params")
 # vc4-hdmi only takes IEC958 subframes; the `hdmi:` PCM (iec958 plugin)
 # accepts S16_LE/S32_LE, and 48 kHz is the one rate every HDMI sink takes.
 HDMI_RATE = 48000
 HDMI_FORMAT = "S16_LE"
-# caps Eq10X2 adds about +3.6 dB across the band even when flat; the balance
-# stage takes it back off so turning tone controls on does not clip.
-EQ_MAKEUP = 0.66
 
 
 def read_audio_output(path: Path = AUDIO_OUTPUT_FILE) -> dict[str, str]:
@@ -77,6 +80,31 @@ def read_audio_output(path: Path = AUDIO_OUTPUT_FILE) -> dict[str, str]:
     return out
 
 
+def render_params(settings: PlayerSettings) -> str:
+    """The line fsdsp reads: tag, bass dB, treble dB, balance, loudness."""
+
+    return (
+        f"fsdsp1 {float(settings.bass):g} {float(settings.treble):g} "
+        f"{float(settings.balance):g} {1 if settings.loudness else 0}\n"
+    )
+
+
+def write_params(settings: PlayerSettings, path: Path = PARAMS_FILE) -> bool:
+    """Atomically replace the live params file. Returns True if it changed."""
+
+    text = render_params(settings)
+    try:
+        if path.read_text(encoding="utf-8") == text:
+            return False
+    except OSError:
+        pass
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+    return True
+
+
 def _hw_block(name: str, slave_pcm: str, kind: str) -> str:
     if kind == "hdmi" or slave_pcm.startswith("hdmi:"):
         return f"""pcm.{name} {{
@@ -95,36 +123,23 @@ def _hw_block(name: str, slave_pcm: str, kind: str) -> str:
 
 
 def render_alsa_conf(
-    settings: PlayerSettings,
+    settings: PlayerSettings | None = None,
     *,
     slave_pcm: str = "default",
     ctl_card: str = "0",
     kind: str = "",
-    eq: bool = True,
-    ladspa_path: str = LADSPA_PATH,
+    live: bool = True,
+    params_path: Path = PARAMS_FILE,
 ) -> str:
-    """ALSA PCM named `freesounder`: EQ (LADSPA) → balance → output device.
+    """ALSA PCM `freesounder` plus `freesounder_selftest` (same chain into null).
 
-    The LADSPA plugin only speaks float and must be wrapped in `plug` on both
-    sides; without the inner plug the chain cannot be opened at all (snapclient
-    then plays nothing). `freesounder_selftest` is the same chain into the null
-    sink so apply-dsp-config can check it opens; with eq=False the EQ is left
-    out (bass/treble/loudness off, balance still works).
+    With live=True the text does not depend on the tone settings at all.
     """
-
-    bands = band_gains(settings)
-    gains = " ".join(str(value) for value in bands)
-    left, right = balance_gains(settings.balance)
-    # Flat tone controls: leave the EQ out entirely (less CPU, no colouring).
-    requested_eq = eq
-    eq = eq and any(value != 0 for value in bands)
-    if eq:
-        left, right = round(left * EQ_MAKEUP, 4), round(right * EQ_MAKEUP, 4)
 
     hdmi = kind == "hdmi" or slave_pcm.startswith("hdmi:")
 
     def entry(prefix: str, target: str) -> str:
-        # HDMI: resample once at the top so the whole chain runs at 48 kHz.
+        # HDMI: resample once at the top so the chain runs at 48 kHz.
         if hdmi and prefix == "freesounder":
             return f"""pcm.{prefix} {{
     type plug
@@ -142,30 +157,16 @@ def render_alsa_conf(
 }}"""
 
     def chain(prefix: str, out: str) -> str:
-        if eq:
-            head = f"""{entry(prefix, prefix + "_eq")}
+        if live:
+            return f"""{entry(prefix, prefix + "_dsp")}
 
-pcm.{prefix}_eq {{
-    type ladspa
-    path "{ladspa_path}"
-    slave.pcm "{prefix}_post"
-    plugins [
-        {{
-            label Eq10X2
-            input {{
-                controls [ {gains} ]
-            }}
-        }}
-    ]
-}}
-
-pcm.{prefix}_post {{
-    type plug
-    slave.pcm "{prefix}_bal"
+pcm.{prefix}_dsp {{
+    type fsdsp
+    params "{params_path}"
+    slave.pcm "{out}"
 }}"""
-        else:
-            head = entry(prefix, prefix + "_bal")
-        return f"""{head}
+        left, right = balance_gains(settings.balance if settings else 0)
+        return f"""{entry(prefix, prefix + "_bal")}
 
 pcm.{prefix}_bal {{
     type route
@@ -174,15 +175,14 @@ pcm.{prefix}_bal {{
     ttable.1.1 {right}
 }}"""
 
-    if eq:
-        eq_note = "on"
-    elif requested_eq:
-        eq_note = "not needed (tone controls flat)"
-    else:
-        eq_note = "OFF (the LADSPA EQ failed its self-test)"
+    mode = (
+        "live (fsdsp, changes apply while playing)"
+        if live
+        else "FALLBACK: static balance, no tone controls (fsdsp failed its self-test)"
+    )
     return f"""# Generated by freesounder. Do not edit — use the FreeSounder app or
 # freesounder-setup. snapclient should use --soundcard freesounder.
-# Output: {slave_pcm} ({kind or "card"}). EQ: {eq_note}.
+# Output: {slave_pcm} ({kind or "card"}). DSP: {mode}.
 {chain("freesounder", "freesounder_hw")}
 
 {_hw_block("freesounder_hw", slave_pcm, kind)}
@@ -199,6 +199,17 @@ pcm.freesounder_selftest_hw {{
     slave.pcm "null"
 }}
 """
+
+
+def chain_is_live(status_path: Path = CHAIN_STATUS_FILE) -> bool:
+    """False when the last self-test fell back to the static chain."""
+
+    import json
+
+    try:
+        return json.loads(status_path.read_text(encoding="utf-8")).get("dsp") != "fallback"
+    except (OSError, ValueError):
+        return True
 
 
 def render_camilla_yaml(settings: PlayerSettings) -> str:
@@ -273,28 +284,41 @@ def write_dsp_configs(
     camilla_path,
     slave_pcm: str | None = None,
     output_file: Path = AUDIO_OUTPUT_FILE,
-    eq: bool = True,
-) -> None:
-    """Write both DSP configs, creating parent directories as needed.
+    live: bool | None = None,
+    params_path: Path = PARAMS_FILE,
+    status_path: Path = CHAIN_STATUS_FILE,
+) -> bool:
+    """Write the live params, and the ALSA config only if its text changed.
 
-    The output device comes from select-audio-output (DAC, USB, the connected
-    HDMI port, or a null sink) unless slave_pcm is given.
+    Returns True when the ALSA config changed (snapclient must re-open the PCM).
     """
 
+    if live is None:
+        live = chain_is_live(status_path)
+    try:
+        write_params(settings, params_path)
+    except OSError:
+        pass
     output = read_audio_output(output_file)
     chosen_pcm = slave_pcm if slave_pcm is not None else output["pcm"]
-    alsa_path.parent.mkdir(parents=True, exist_ok=True)
-    camilla_path.parent.mkdir(parents=True, exist_ok=True)
-    alsa_path.write_text(
-        render_alsa_conf(
-            settings,
-            slave_pcm=chosen_pcm,
-            ctl_card=output["card"],
-            kind=output["kind"],
-            eq=eq,
-        )
+    text = render_alsa_conf(
+        settings,
+        slave_pcm=chosen_pcm,
+        ctl_card=output["card"],
+        kind=output["kind"],
+        live=live,
+        params_path=params_path,
     )
+    camilla_path.parent.mkdir(parents=True, exist_ok=True)
     camilla_path.write_text(render_camilla_yaml(settings))
+    try:
+        if alsa_path.read_text() == text:
+            return False
+    except OSError:
+        pass
+    alsa_path.parent.mkdir(parents=True, exist_ok=True)
+    alsa_path.write_text(text)
+    return True
 
 
 def selftest_chain(aplay: str = "aplay", timeout: float = 10) -> tuple[bool, str]:
@@ -327,22 +351,30 @@ def apply(
     alsa_path: Path,
     camilla_path: Path,
     status_path: Path = CHAIN_STATUS_FILE,
+    params_path: Path = PARAMS_FILE,
+    output_file: Path = AUDIO_OUTPUT_FILE,
     test=selftest_chain,
 ) -> dict[str, object]:
-    """Render, self-test, and fall back to a chain without the EQ if it cannot open."""
+    """Render the live chain, self-test it, fall back to the static chain if it cannot open."""
 
     import json
     import time
 
-    write_dsp_configs(settings, alsa_path=alsa_path, camilla_path=camilla_path)
+    common = {
+        "alsa_path": alsa_path,
+        "camilla_path": camilla_path,
+        "params_path": params_path,
+        "output_file": output_file,
+        "status_path": status_path,
+    }
+    write_dsp_configs(settings, live=True, **common)
     ok, detail = test()
-    flat = not any(band_gains(settings))
-    status: dict[str, object] = {"eq": "flat" if flat else "on", "ok": ok, "detail": detail}
+    status: dict[str, object] = {"dsp": "live", "ok": ok, "detail": detail}
     if not ok:
-        write_dsp_configs(settings, alsa_path=alsa_path, camilla_path=camilla_path, eq=False)
+        write_dsp_configs(settings, live=False, **common)
         ok2, detail2 = test()
-        status = {"eq": "bypassed", "ok": ok2, "detail": detail2, "eq_error": detail}
-    status.update(read_audio_output())
+        status = {"dsp": "fallback", "ok": ok2, "detail": detail2, "dsp_error": detail}
+    status.update(read_audio_output(output_file))
     status["updated"] = time.time()
     try:
         status_path.parent.mkdir(parents=True, exist_ok=True)
@@ -353,7 +385,7 @@ def apply(
 
 
 def main() -> None:
-    """Load stored settings, write ALSA / CamillaDSP configs, and self-test the chain."""
+    """Load stored settings, write the ALSA chain and live params, and self-test the chain."""
 
     from freesounderd.config import load_settings
     from freesounderd.store import Store
@@ -362,7 +394,7 @@ def main() -> None:
     store = Store(settings)
     current = store.load_settings()
     status = apply(current, alsa_path=settings.alsa_conf, camilla_path=settings.camilla_conf)
-    print(f"freesounder ALSA chain: eq={status['eq']} ok={status['ok']} ({status['detail']})")
+    print(f"freesounder ALSA chain: dsp={status['dsp']} ok={status['ok']} ({status['detail']})")
 
 
 if __name__ == "__main__":

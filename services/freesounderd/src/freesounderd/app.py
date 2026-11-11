@@ -352,8 +352,11 @@ def create_app(
         if name_changed or dac_changed:
             background.add_task(asyncio.to_thread, store.run_hook, dac_changed=dac_changed)
         dsp_fields = ("bass", "treble", "balance", "loudness")
-        if any(getattr(before, f) != getattr(result, f) for f in dsp_fields):
-            # The LADSPA chain is read when snapclient opens the PCM.
+        if getattr(store, "last_alsa_changed", False) and any(
+            getattr(before, f) != getattr(result, f) for f in dsp_fields
+        ):
+            # Only the fallback chain (fsdsp missing) bakes settings into the
+            # ALSA config; the live chain picks changes up while playing.
             background.add_task(engine.system.systemctl, "restart", "snapclient.service")
         engine.kick()
         return result

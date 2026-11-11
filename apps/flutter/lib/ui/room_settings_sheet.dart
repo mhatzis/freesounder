@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -49,6 +51,11 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
   SshDeveloperStatus? _ssh;
   String? _error;
   var _toneBusy = false;
+  // Live preview while a tone slider is dragged: at most one request per
+  // 250 ms, latest value wins; the final value is saved on release.
+  Timer? _previewTimer;
+  PlayerSettings? _previewPending;
+  Future<void>? _previewInFlight;
   String? _toneResult;
   List<String>? _audioLines;
 
@@ -66,6 +73,7 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
 
   @override
   void dispose() {
+    _previewTimer?.cancel();
     _name.dispose();
     super.dispose();
   }
@@ -103,7 +111,34 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
     }
   }
 
+  void _preview(PlayerSettings next) {
+    _previewPending = next;
+    _previewTimer ??= Timer(const Duration(milliseconds: 250), _flushPreview);
+  }
+
+  Future<void> _flushPreview() async {
+    _previewTimer = null;
+    final next = _previewPending;
+    _previewPending = null;
+    if (next == null || !mounted) {
+      return;
+    }
+    final request = ref.read(playbackProvider.notifier).saveSettings(widget.roomId, next).then<void>((_) {});
+    _previewInFlight = request.catchError((Object _) {});
+    await _previewInFlight;
+  }
+
   Future<void> _persist(PlayerSettings next) async {
+    _previewTimer?.cancel();
+    _previewTimer = null;
+    _previewPending = null;
+    final inFlight = _previewInFlight;
+    if (inFlight != null) {
+      await inFlight;
+    }
+    if (!mounted) {
+      return;
+    }
     setState(() {
       _settings = next;
       _saving = true;
@@ -128,7 +163,6 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
       });
     }
   }
-
 
   Future<void> _testTone() async {
     setState(() {
@@ -212,10 +246,7 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
                     key: const Key('room-name-field'),
                     controller: _name,
                     textCapitalization: TextCapitalization.words,
-                    decoration: const InputDecoration(
-                      labelText: 'Name',
-                      border: OutlineInputBorder(),
-                    ),
+                    decoration: const InputDecoration(labelText: 'Name', border: OutlineInputBorder()),
                     onEditingComplete: () {
                       if (settings != null) {
                         _persist(settings.copyWith(name: _name.text.trim()));
@@ -245,9 +276,10 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
                       max: 10,
                       divisions: 20,
                       display: _db(settings.bass),
-                      onChanged: (value) => setState(() {
-                        _settings = settings.copyWith(bass: value);
-                      }),
+                      onChanged: (value) {
+                        setState(() => _settings = settings.copyWith(bass: value));
+                        _preview(settings.copyWith(bass: value));
+                      },
                       onChangeEnd: (value) => _persist(settings.copyWith(bass: value)),
                     ),
                     _ToneSlider(
@@ -258,9 +290,10 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
                       max: 10,
                       divisions: 20,
                       display: _db(settings.treble),
-                      onChanged: (value) => setState(() {
-                        _settings = settings.copyWith(treble: value);
-                      }),
+                      onChanged: (value) {
+                        setState(() => _settings = settings.copyWith(treble: value));
+                        _preview(settings.copyWith(treble: value));
+                      },
                       onChangeEnd: (value) => _persist(settings.copyWith(treble: value)),
                     ),
                     _ToneSlider(
@@ -273,9 +306,10 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
                       display: _balance(settings.balance),
                       leading: 'L',
                       trailing: 'R',
-                      onChanged: (value) => setState(() {
-                        _settings = settings.copyWith(balance: value);
-                      }),
+                      onChanged: (value) {
+                        setState(() => _settings = settings.copyWith(balance: value));
+                        _preview(settings.copyWith(balance: value));
+                      },
                       onChangeEnd: (value) => _persist(settings.copyWith(balance: value)),
                     ),
                     SwitchListTile(
@@ -288,18 +322,14 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
                     ),
                     const SizedBox(height: 8),
                     InputDecorator(
-                      decoration: const InputDecoration(
-                        labelText: 'Audio board',
-                        border: OutlineInputBorder(),
-                      ),
+                      decoration: const InputDecoration(labelText: 'Audio board', border: OutlineInputBorder()),
                       child: DropdownButtonHideUnderline(
                         child: DropdownButton<String>(
                           key: const Key('dac-dropdown'),
                           isExpanded: true,
                           value: dacOptions.any((o) => o.$1 == settings.dac) ? settings.dac : 'auto',
                           items: [
-                            for (final option in dacOptions)
-                              DropdownMenuItem(value: option.$1, child: Text(option.$2)),
+                            for (final option in dacOptions) DropdownMenuItem(value: option.$1, child: Text(option.$2)),
                           ],
                           onChanged: (value) {
                             if (value != null) {
@@ -381,11 +411,7 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
                     const SizedBox(height: 8),
                     Text(_error!, style: text.bodySmall?.copyWith(color: scheme.error)),
                   ],
-                  if (_saving)
-                    const Padding(
-                      padding: EdgeInsets.only(top: 12),
-                      child: LinearProgressIndicator(),
-                    ),
+                  if (_saving) const Padding(padding: EdgeInsets.only(top: 12), child: LinearProgressIndicator()),
                 ],
               ),
             ),
