@@ -14,7 +14,7 @@ Components: main
 Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
 SRC
 apt-get update
-apt-get install -y --no-install-recommends build-essential devscripts dpkg-dev fakeroot equivs ca-certificates
+apt-get install -y --no-install-recommends build-essential devscripts dpkg-dev fakeroot equivs ca-certificates python3
 mkdir -p "$OUT" /tmp/src
 cd /tmp/src
 for spec in "nqptp=${NQPTP_VERSION}" "shairport-sync=${SHAIRPORT_VERSION}"; do
@@ -25,8 +25,17 @@ for spec in "nqptp=${NQPTP_VERSION}" "shairport-sync=${SHAIRPORT_VERSION}"; do
 		cd "$name-src"
 		# sid uses debhelper compat 14; trixie's debhelper 13.24 builds it at 13
 		# (single binary package, so dh_auto_install already targets it).
-		sed -i -E 's/debhelper-compat \(= 14\)/debhelper-compat (= 13)/; s/,?[[:space:]]*dh-sequence-single-binary//' debian/control
-		grep -n "Build-Depends" debian/control
+		python3 - <<'PY'
+import re
+from pathlib import Path
+p = Path("debian/control")
+t = p.read_text()
+t = t.replace("debhelper-compat (= 14)", "debhelper-compat (= 13)")
+t = re.sub(r"^[ \t]*dh-sequence-single-binary,?[ \t]*\n", "", t, flags=re.M)
+t = re.sub(r",?[ \t]*dh-sequence-single-binary", "", t)
+p.write_text(t)
+PY
+		sed -n "/^Build-Depends/,/^[A-Z]/p" debian/control
 		# Satisfy Build-Depends from trixie.
 		mk-build-deps -i -r -t "apt-get -y --no-install-recommends" debian/control
 		dch --local "~fs13" --distribution trixie "Rebuild for Raspberry Pi OS trixie (FreeSounder)."

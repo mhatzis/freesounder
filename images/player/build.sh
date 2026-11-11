@@ -15,7 +15,7 @@ export PATH="/usr/local/sbin:/usr/sbin:/sbin:${PATH}"
 
 if [[ "$(id -u)" -ne 0 ]]; then
 	echo "Re-running under sudo..."
-	exec sudo --preserve-env=FREESOUNDER_ROOT,MA_IMAGE_CACHE,PI_GEN_REF,PI_GEN_URL,WORK_ROOT,PI_GEN_DIR,DEPLOY_DIR,PATH,FSADMIN_PASSWORD_HASH,FSADMIN_PASSWORD_HASH_FILE,FSADMIN_PASSWORD_FILE,FSADMIN_PASSWORD \
+	exec sudo --preserve-env=FREESOUNDER_ROOT,DEPS_CACHE,AIRPLAY2_RUN_ID,PI_GEN_REF,PI_GEN_URL,WORK_ROOT,PI_GEN_DIR,DEPLOY_DIR,PATH,FSADMIN_PASSWORD_HASH,FSADMIN_PASSWORD_HASH_FILE,FSADMIN_PASSWORD_FILE,FSADMIN_PASSWORD \
 		"$0" "$@"
 fi
 
@@ -136,41 +136,30 @@ fi
 
 # Pre-fetch aarch64 wheels so the chroot does not compile native extensions under qemu.
 WHEEL_DIR="$SCRIPT_DIR/pi-gen/wheels"
-if [[ ! -d "$WHEEL_DIR" ]] || [[ -z "$(ls -A "$WHEEL_DIR" 2>/dev/null || true)" ]]; then
-	if command -v uv >/dev/null 2>&1; then
-		echo "Downloading aarch64 Python wheels..."
-		mkdir -p "$WHEEL_DIR"
-		tmp_req=$(mktemp)
-		(cd "$REPO_ROOT/services/control-api" && uv export --frozen --no-dev --no-hashes) 			| awk 'BEGIN{skip=0} /^(-e |#)|file:\/\// {next} /^    #/ {next} NF{print}' 			> "$tmp_req" || true
-		uv run --directory "$REPO_ROOT/services/control-api" --with pip python -m pip download 			-r "$tmp_req" --python-version 313 --platform manylinux2014_aarch64 			--only-binary=:all: --implementation cp --abi cp313 			-d "$WHEEL_DIR" || echo "Wheel download failed; chroot pip will try PyPI."
-		rm -f "$tmp_req"
-		# Build backend (hatchling) is required for an offline pip install of the project.
-		uv run --directory "$REPO_ROOT/services/control-api" --with pip python -m pip download \
-			hatchling packaging pathspec pluggy trove-classifiers editables tomlkit \
-			--python-version 313 --only-binary=:all: -d "$WHEEL_DIR" \
-			|| echo "hatchling wheel download failed; chroot pip will try PyPI."
-
-	fi
-fi
-
-if command -v uv >/dev/null 2>&1 && ! compgen -G "$WHEEL_DIR/hatchling-*.whl" > /dev/null; then
+if command -v uv >/dev/null 2>&1; then
+	echo "Downloading aarch64 Python wheels..."
 	mkdir -p "$WHEEL_DIR"
-	echo "Downloading hatchling build-backend wheels..."
-	uv run --directory "$REPO_ROOT/services/control-api" --with pip python -m pip download \
+	tmp_req=$(mktemp)
+	for svc in freesounderd ble-provisioning; do
+		(cd "$REPO_ROOT/services/$svc" && uv export --frozen --no-dev --no-hashes --no-emit-project) \
+			| awk '/^(-e |#)|file:\/\// {next} /^    #/ {next} NF{print}' >> "$tmp_req" || true
+	done
+	sort -u -o "$tmp_req" "$tmp_req"
+	uv run --directory "$REPO_ROOT/services/freesounderd" --with pip python -m pip download \
+		-r "$tmp_req" --python-version 313 --platform manylinux2014_aarch64 \
+		--platform manylinux_2_17_aarch64 --platform manylinux_2_28_aarch64 --platform linux_aarch64 \
+		--only-binary=:all: --implementation cp --abi cp313 --abi abi3 --abi none \
+		-d "$WHEEL_DIR" || echo "Wheel download failed; chroot pip will try PyPI."
+	rm -f "$tmp_req"
+	# Build backend (hatchling) is required for an offline pip install of the project.
+	uv run --directory "$REPO_ROOT/services/freesounderd" --with pip python -m pip download \
 		hatchling packaging pathspec pluggy trove-classifiers editables tomlkit \
 		--python-version 313 --only-binary=:all: -d "$WHEEL_DIR" \
 		|| echo "hatchling wheel download failed; chroot pip will try PyPI."
 fi
 
-# dbus-next is a pure-Python dep of ble-provisioning; fetch it when the wheel
-# cache already exists from a previous control-api download.
-if command -v uv >/dev/null 2>&1 && ! compgen -G "$WHEEL_DIR/dbus_next-*.whl" > /dev/null; then
-	mkdir -p "$WHEEL_DIR"
-	echo "Downloading dbus-next wheel for ble-provisioning..."
-	uv run --directory "$REPO_ROOT/services/ble-provisioning" --with pip python -m pip download \
-		dbus-next --python-version 313 --only-binary=:all: -d "$WHEEL_DIR" \
-		|| echo "dbus-next wheel download failed; chroot pip will try PyPI."
-fi
+# Pinned snapcast / go-librespot / AirPlay packages (verified by sha256).
+"$SCRIPT_DIR/deps/fetch.sh"
 
 echo "Starting pi-gen (this takes a good while)..."
 

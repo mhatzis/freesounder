@@ -1,6 +1,6 @@
 [Unit]
 Description=Re-pick FreeSounder audio output after hotplug
-After=freesounder-role.service
+After=sound.target
 
 [Service]
 Type=oneshot

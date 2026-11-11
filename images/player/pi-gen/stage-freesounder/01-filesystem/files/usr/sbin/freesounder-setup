@@ -36,8 +36,8 @@ case "$cmd" in
 	-h|--help|help) usage; exit 0 ;;
 	doctor)
 		echo "FreeSounder doctor"
-		if [[ -x /opt/freesounder/control-api/.venv/bin/freesounder-ble-provisioning ]]; then
-			/opt/freesounder/control-api/.venv/bin/freesounder-ble-provisioning --doctor || true
+		if [[ -x /opt/freesounder/venv/bin/freesounder-ble-provisioning ]]; then
+			/opt/freesounder/venv/bin/freesounder-ble-provisioning --doctor || true
 		else
 			echo "ble-provisioning is not installed in the shared venv."
 		fi
@@ -92,8 +92,8 @@ case "$cmd" in
 		fi
 		printf '%s\n' "$val" > /etc/freesounder/name
 		# Keep settings.json in sync if Python is available.
-		if [[ -x /opt/freesounder/control-api/.venv/bin/python ]]; then
-			/opt/freesounder/control-api/.venv/bin/python - << PY || true
+		if [[ -x /opt/freesounder/venv/bin/python ]]; then
+			/opt/freesounder/venv/bin/python - << PY || true
 from pathlib import Path
 import json
 name = Path("/etc/freesounder/name").read_text().strip()

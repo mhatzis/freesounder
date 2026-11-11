@@ -4,7 +4,7 @@
 set -u
 umask 022
 
-DOC=/opt/freesounder/control-api/.venv/bin/freesounder-ble-provisioning
+DOC=/opt/freesounder/venv/bin/freesounder-ble-provisioning
 BOOT=""
 for candidate in /boot/firmware /boot; do
 	if [ -d "$candidate" ] && [ -w "$candidate" ]; then

@@ -5,9 +5,8 @@ install -d "${ROOTFS_DIR}/usr/lib/freesounder"
 install -d "${ROOTFS_DIR}/usr/sbin"
 install -d "${ROOTFS_DIR}/etc/systemd/system"
 install -d "${ROOTFS_DIR}/etc/update-motd.d"
-install -d "${ROOTFS_DIR}/var/lib/freesounder/ma-data"
-install -d "${ROOTFS_DIR}/opt/freesounder/control-api"
-install -d "${ROOTFS_DIR}/opt/freesounder/player-agent"
+install -d "${ROOTFS_DIR}/opt/freesounder/freesounderd"
+install -d "${ROOTFS_DIR}/usr/lib/tmpfiles.d"
 install -d "${ROOTFS_DIR}/opt/freesounder/ble-provisioning"
 install -d "${ROOTFS_DIR}/etc/default"
 install -d "${ROOTFS_DIR}/etc/NetworkManager/system-connections"
@@ -19,17 +18,12 @@ printf 'fs-new\n' > "${ROOTFS_DIR}/etc/hostname"
 if [[ -f "${ROOTFS_DIR}/etc/hosts" ]]; then
 	sed -i 's/[[:space:]]freesounder$/	fs-new/' "${ROOTFS_DIR}/etc/hosts" || true
 fi
-install -m 0644 files/etc/freesounder/role "${ROOTFS_DIR}/etc/freesounder/role"
-install -m 0644 files/etc/freesounder/host "${ROOTFS_DIR}/etc/freesounder/host"
 install -m 0644 files/etc/freesounder/dac "${ROOTFS_DIR}/etc/freesounder/dac"
-install -m 0644 files/etc/freesounder/music-assistant-image "${ROOTFS_DIR}/etc/freesounder/music-assistant-image"
-install -m 0755 files/usr/lib/freesounder/detect-role "${ROOTFS_DIR}/usr/lib/freesounder/detect-role"
-install -m 0755 files/usr/lib/freesounder/apply-runtime-config "${ROOTFS_DIR}/usr/lib/freesounder/apply-runtime-config"
 install -m 0755 files/usr/lib/freesounder/apply-dac-overlay "${ROOTFS_DIR}/usr/lib/freesounder/apply-dac-overlay"
 install -m 0755 files/usr/lib/freesounder/apply-dsp-config "${ROOTFS_DIR}/usr/lib/freesounder/apply-dsp-config"
 install -m 0755 files/usr/lib/freesounder/select-audio-output "${ROOTFS_DIR}/usr/lib/freesounder/select-audio-output"
-install -m 0755 files/usr/lib/freesounder/apply-player-agent "${ROOTFS_DIR}/usr/lib/freesounder/apply-player-agent"
-install -m 0755 files/usr/lib/freesounder/run-music-assistant "${ROOTFS_DIR}/usr/lib/freesounder/run-music-assistant"
+install -m 0755 files/usr/lib/freesounder/apply-player-settings "${ROOTFS_DIR}/usr/lib/freesounder/apply-player-settings"
+install -m 0644 files/usr/lib/tmpfiles.d/freesounder.conf "${ROOTFS_DIR}/usr/lib/tmpfiles.d/freesounder.conf"
 install -m 0755 files/usr/lib/freesounder/run-boot-doctor "${ROOTFS_DIR}/usr/lib/freesounder/run-boot-doctor"
 install -m 0755 files/usr/lib/freesounder/write-boot-marker "${ROOTFS_DIR}/usr/lib/freesounder/write-boot-marker"
 install -m 0755 files/usr/lib/freesounder/set-hostname "${ROOTFS_DIR}/usr/lib/freesounder/set-hostname"
@@ -38,10 +32,8 @@ install -m 0755 files/usr/lib/freesounder/status-console "${ROOTFS_DIR}/usr/lib/
 install -m 0755 files/usr/lib/freesounder/sanitize-imager "${ROOTFS_DIR}/usr/lib/freesounder/sanitize-imager"
 install -m 0755 files/usr/lib/freesounder/ssh-developer "${ROOTFS_DIR}/usr/lib/freesounder/ssh-developer"
 install -m 0755 files/usr/sbin/freesounder-setup "${ROOTFS_DIR}/usr/sbin/freesounder-setup"
-install -m 0644 files/etc/systemd/system/freesounder-role.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-role.service"
-install -m 0644 files/etc/systemd/system/freesounder-music-assistant.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-music-assistant.service"
-install -m 0644 files/etc/systemd/system/freesounder-control-api.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-control-api.service"
-install -m 0644 files/etc/systemd/system/freesounder-player-agent.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-player-agent.service"
+install -m 0644 files/etc/systemd/system/freesounderd.service "${ROOTFS_DIR}/etc/systemd/system/freesounderd.service"
+install -m 0644 files/etc/systemd/system/freesounder-spotify.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-spotify.service"
 install -m 0644 files/etc/systemd/system/freesounder-ble-provisioning.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-ble-provisioning.service"
 install -d "${ROOTFS_DIR}/etc/systemd/system/bluetooth.service.d"
 install -m 0644 files/etc/systemd/system/bluetooth.service.d/10-freesounder-experimental.conf \
@@ -96,10 +88,8 @@ if [ -f "${ROOTFS_DIR}/boot/firmware/config.txt" ]; then
 		cat >> "${ROOTFS_DIR}/boot/firmware/config.txt" << 'CFG'
 
 # --- freesounder-dac-start ---
-# Official DAC+ and DigiAMP+ use the same overlay. Leave commented until
-# you run: sudo freesounder-setup set-dac dacplus
-# dtparam=audio=off
-# dtoverlay=hifiberry-dacplus
+# DAC: auto. HATs with an ID EEPROM load their own overlay; pick a board
+# without one in the app (room sound settings), e.g. dtoverlay=hifiberry-dac.
 # --- freesounder-dac-end ---
 CFG
 	fi

@@ -1,13 +1,17 @@
 #!/bin/bash -e
-# Enable freesounder units and grant the first user Docker/audio access.
-systemctl enable docker.service
+# Enable freesounder units. Every player is equal: freesounderd decides at
+# runtime whether this player leads a group (snapserver, Spotify Connect,
+# AirPlay via snapserver, radio) or follows another one (snapclient only).
 systemctl enable avahi-daemon.service
-systemctl enable freesounder-role.service
-systemctl enable freesounder-music-assistant.service
-systemctl enable freesounder-control-api.service
-systemctl enable freesounder-player-agent.service
-# snapclient ships its own unit; keep it enabled.
+systemctl enable freesounderd.service
 systemctl enable snapclient.service || true
+# Started/stopped by freesounderd, not at boot.
+systemctl disable snapserver.service 2>/dev/null || true
+# snapserver launches shairport-sync itself (one AirPlay receiver per group).
+systemctl disable shairport-sync.service 2>/dev/null || true
+systemctl mask shairport-sync.service 2>/dev/null || true
+# AirPlay 2 timing helper (only present with the AirPlay 2 build).
+systemctl enable nqptp.service 2>/dev/null || true
 # Onboard Bluetooth for Improv Wi-Fi setup. No A2DP / Bluetooth audio is registered.
 systemctl enable bluetooth.service || true
 systemctl enable NetworkManager.service || true
@@ -19,7 +23,7 @@ systemctl enable freesounder-boot-doctor-early.service
 
 # The first user is renamed on first boot but keeps supplementary groups.
 if getent passwd pi >/dev/null; then
-	for grp in docker audio gpio i2c spi video plugdev; do
+	for grp in audio gpio i2c spi video plugdev; do
 		if getent group "$grp" >/dev/null; then
 			usermod -aG "$grp" pi || true
 		fi
@@ -60,7 +64,7 @@ fi
 if ! getent passwd fsadmin >/dev/null; then
 	useradd -m -s /bin/bash -G sudo fsadmin
 fi
-for grp in docker audio gpio i2c spi video plugdev sudo; do
+for grp in audio gpio i2c spi video plugdev sudo; do
 	if getent group "$grp" >/dev/null; then
 		usermod -aG "$grp" fsadmin || true
 	fi
@@ -77,9 +81,9 @@ else
 	rm -f "$hash_file"
 fi
 
-# Host-role first boot will docker pull; leave a stamp dir.
-mkdir -p /var/lib/freesounder/ma-data
-chmod 0755 /var/lib/freesounder /var/lib/freesounder/ma-data
+mkdir -p /var/lib/freesounder/spotify
+chmod 0755 /var/lib/freesounder
+chmod 0700 /var/lib/freesounder/spotify
 
 # Drop the pi-gen build-host apt workaround so the shipped image uses normal apt.
 rm -f /etc/apt/apt.conf.d/99-freesounder-build-apt

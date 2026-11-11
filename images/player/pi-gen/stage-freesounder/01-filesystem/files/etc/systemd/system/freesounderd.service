@@ -1,0 +1,19 @@
+[Unit]
+Description=FreeSounder player daemon (rooms, groups, sources, v2 API on :8080)
+After=network-online.target avahi-daemon.service sound.target
+Wants=network-online.target avahi-daemon.service
+
+[Service]
+Type=simple
+Environment=FREESOUNDER_HOST=0.0.0.0
+Environment=FREESOUNDER_PORT=8080
+Environment=FREESOUNDER_MDNS_ENABLED=true
+WorkingDirectory=/var/lib/freesounder
+ExecStartPre=+/usr/bin/install -d -m 0755 /run/freesounder
+ExecStart=/opt/freesounder/venv/bin/freesounderd
+Restart=always
+RestartSec=3
+User=root
+
+[Install]
+WantedBy=multi-user.target

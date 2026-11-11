@@ -45,8 +45,8 @@ role() {
 
 ble_block() {
 	PY=python3
-	if [[ -x /opt/freesounder/control-api/.venv/bin/python ]]; then
-		PY=/opt/freesounder/control-api/.venv/bin/python
+	if [[ -x /opt/freesounder/venv/bin/python ]]; then
+		PY=/opt/freesounder/venv/bin/python
 	fi
 	"$PY" - <<'PY'
 import json
@@ -125,8 +125,8 @@ PY
 
 wifi_block() {
 	PY=python3
-	if [[ -x /opt/freesounder/control-api/.venv/bin/python ]]; then
-		PY=/opt/freesounder/control-api/.venv/bin/python
+	if [[ -x /opt/freesounder/venv/bin/python ]]; then
+		PY=/opt/freesounder/venv/bin/python
 	fi
 	"$PY" - <<'PY'
 import json
@@ -150,8 +150,8 @@ PY
 
 services_block() {
 	PY=python3
-	if [[ -x /opt/freesounder/control-api/.venv/bin/python ]]; then
-		PY=/opt/freesounder/control-api/.venv/bin/python
+	if [[ -x /opt/freesounder/venv/bin/python ]]; then
+		PY=/opt/freesounder/venv/bin/python
 	fi
 	"$PY" - <<'PY'
 try:

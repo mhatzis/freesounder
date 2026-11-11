@@ -1,0 +1,12 @@
+[Unit]
+Description=FreeSounder Spotify Connect (go-librespot; group leaders only, started by freesounderd)
+After=network-online.target avahi-daemon.service freesounderd.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/go-librespot --config_dir /var/lib/freesounder/spotify
+Restart=on-failure
+RestartSec=3
+User=root
+Nice=-5

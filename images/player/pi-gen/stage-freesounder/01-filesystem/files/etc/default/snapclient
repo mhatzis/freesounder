@@ -1,5 +1,5 @@
-# Default snapclient options baked into the image.
-# apply-runtime-config rewrites this on boot to add --host, and always keeps
-# --soundcard freesounder so ALSA tone controls are used from first start.
+# FreeSounder: snapclient's server comes from /run/freesounder/snapclient.env,
+# written by freesounderd (127.0.0.1 on a group leader, the leader's IP on a
+# member). See snapclient.service.d/10-freesounder.conf.
 START_SNAPCLIENT=true
 SNAPCLIENT_OPTS="--soundcard freesounder"

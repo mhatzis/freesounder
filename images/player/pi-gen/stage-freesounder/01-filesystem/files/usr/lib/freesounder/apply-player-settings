@@ -1,0 +1,11 @@
+#!/bin/bash
+# Hook run by freesounderd after setup or a room-name / DAC change. It runs
+# after the API replied, in the background.
+set -euo pipefail
+
+if [[ "${FREESOUNDER_DAC_CHANGED:-0}" == "1" ]]; then
+	/usr/lib/freesounder/apply-dac-overlay || true
+fi
+/usr/lib/freesounder/apply-dsp-config || true
+# fs-new -> fs-<room>; also tells avahi.
+/usr/lib/freesounder/apply-hostname || true

@@ -2,7 +2,7 @@
 Description=Set FreeSounder appliance hostname (fs-new or fs-<room>)
 DefaultDependencies=no
 After=local-fs.target systemd-remount-fs.service
-Before=avahi-daemon.service NetworkManager.service bluetooth.service freesounder-ble-provisioning.service freesounder-player-agent.service freesounder-control-api.service sysinit.target
+Before=avahi-daemon.service NetworkManager.service bluetooth.service freesounder-ble-provisioning.service freesounderd.service sysinit.target
 Wants=local-fs.target
 
 [Service]

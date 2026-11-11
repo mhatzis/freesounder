@@ -1,8 +1,15 @@
 #!/bin/bash
-# Set or clear the HiFiBerry DAC+/DigiAMP+ overlay in config.txt.
-# Both official DAC+ and DigiAMP+ use dtoverlay=hifiberry-dacplus.
+# Set or clear the I2S DAC overlay in config.txt.
+#   auto  : nothing forced. HATs with an ID EEPROM (official Raspberry Pi
+#           DAC+/DigiAMP+, most HiFiBerry and IQaudio boards) are detected by
+#           the firmware, which loads their overlay itself; select-audio-output
+#           then prefers the HAT's sound card over HDMI.
+#   none  : onboard / USB audio only.
+#   dacplus, digiampplus : dtoverlay=hifiberry-dacplus (no EEPROM needed).
+#   hifiberry-dac        : dtoverlay=hifiberry-dac (PCM5102A boards, no EEPROM).
+#   iqaudio-dacplus      : dtoverlay=iqaudio-dacplus.
 set -euo pipefail
-choice=${1:-$(tr -d '[:space:]' < /etc/freesounder/dac 2>/dev/null || echo none)}
+choice=${1:-$(tr -d '[:space:]' < /etc/freesounder/dac 2>/dev/null || echo auto)}
 cfg=""
 for candidate in /boot/firmware/config.txt /boot/config.txt; do
 	if [[ -f "$candidate" ]]; then
@@ -29,24 +36,31 @@ if start in text and end in text:
 p.write_text(text)
 PY
 
+overlay=""
 case "$choice" in
-	none|"")
+	auto|"")
+		printf 'auto\n' > /etc/freesounder/dac
+		echo "DAC: auto (EEPROM HATs load their own overlay)."
+		exit 0
+		;;
+	none)
 		printf 'none\n' > /etc/freesounder/dac
 		echo "DAC overlay cleared (onboard / USB audio)."
+		exit 0
 		;;
-	dacplus|digiampplus|hifiberry-dacplus)
-		{
-			echo "# --- freesounder-dac-start ---"
-			echo "# Official DAC+ and DigiAMP+ both use hifiberry-dacplus."
-			echo "dtparam=audio=off"
-			echo "dtoverlay=hifiberry-dacplus"
-			echo "# --- freesounder-dac-end ---"
-		} >> "$cfg"
-		printf '%s\n' "$choice" > /etc/freesounder/dac
-		echo "Wrote dtoverlay=hifiberry-dacplus to $cfg (reboot to apply)."
-		;;
+	dacplus|digiampplus|hifiberry-dacplus) overlay=hifiberry-dacplus ;;
+	hifiberry-dac) overlay=hifiberry-dac ;;
+	iqaudio-dacplus) overlay=iqaudio-dacplus ;;
 	*)
-		echo "Unknown DAC '$choice' (none, dacplus, digiampplus)" >&2
+		echo "Unknown DAC '$choice' (auto, none, dacplus, digiampplus, hifiberry-dac, iqaudio-dacplus)" >&2
 		exit 1
 		;;
 esac
+{
+	echo "# --- freesounder-dac-start ---"
+	echo "# Set from the FreeSounder app (room sound settings: $choice)."
+	echo "dtoverlay=$overlay"
+	echo "# --- freesounder-dac-end ---"
+} >> "$cfg"
+printf '%s\n' "$choice" > /etc/freesounder/dac
+echo "Wrote dtoverlay=$overlay to $cfg (reboot to apply)."
