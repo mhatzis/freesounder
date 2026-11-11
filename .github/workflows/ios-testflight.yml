@@ -121,8 +121,9 @@ jobs:
           BUILD_NUMBER: ${{ github.run_number }}
         run: |
           set -euo pipefail
-          pip3 install --user PyJWT cryptography requests
-          python3 << 'PY'
+          python3 -m venv "$RUNNER_TEMP/asc-venv"
+          "$RUNNER_TEMP/asc-venv/bin/pip" install PyJWT cryptography requests
+          "$RUNNER_TEMP/asc-venv/bin/python" << 'PY'
           import json, os, time, pathlib, textwrap, re
           import jwt
           import requests
@@ -136,18 +137,20 @@ jobs:
               + "\n".join(textwrap.wrap(body, 64))
               + "\n-----END PRIVATE KEY-----\n"
           )
-          now = int(time.time())
-          token = jwt.encode(
-              {"iss": issuer, "iat": now, "exp": now + 18 * 60, "aud": "appstoreconnect-v1"},
-              pem,
-              algorithm="ES256",
-              headers={"kid": key_id},
-          )
-          headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+          def headers():
+              now = int(time.time())
+              token = jwt.encode(
+                  {"iss": issuer, "iat": now, "exp": now + 18 * 60, "aud": "appstoreconnect-v1"},
+                  pem,
+                  algorithm="ES256",
+                  headers={"kid": key_id},
+              )
+              return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
           base = "https://api.appstoreconnect.apple.com/v1"
           apps = requests.get(
               f"{base}/apps",
-              headers=headers,
+              headers=headers(),
               params={"filter[bundleId]": os.environ["BUNDLE_ID"]},
               timeout=60,
           )
@@ -158,7 +161,7 @@ jobs:
           for _ in range(40):
               res = requests.get(
                   f"{base}/builds",
-                  headers=headers,
+                  headers=headers(),
                   params={
                       "filter[app]": app_id,
                       "filter[version]": os.environ["BUILD_NUMBER"],
@@ -185,7 +188,7 @@ jobs:
           group = os.environ["ASC_BETA_GROUP_ID"]
           add = requests.post(
               f"{base}/betaGroups/{group}/relationships/builds",
-              headers=headers,
+              headers=headers(),
               json={"data": [{"type": "builds", "id": build_id}]},
               timeout=60,
           )
