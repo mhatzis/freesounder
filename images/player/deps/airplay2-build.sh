@@ -23,6 +23,10 @@ for spec in "nqptp=${NQPTP_VERSION}" "shairport-sync=${SHAIRPORT_VERSION}"; do
 	dpkg-source -x ./${name}_*.dsc "$name-src"
 	(
 		cd "$name-src"
+		# sid uses debhelper compat 14; trixie's debhelper 13.24 builds it at 13
+		# (single binary package, so dh_auto_install already targets it).
+		sed -i -E 's/debhelper-compat \(= 14\)/debhelper-compat (= 13)/; s/,?[[:space:]]*dh-sequence-single-binary//' debian/control
+		grep -n "Build-Depends" debian/control
 		# Satisfy Build-Depends from trixie.
 		mk-build-deps -i -r -t "apt-get -y --no-install-recommends" debian/control
 		dch --local "~fs13" --distribution trixie "Rebuild for Raspberry Pi OS trixie (FreeSounder)."
