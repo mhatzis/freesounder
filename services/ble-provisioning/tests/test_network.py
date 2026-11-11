@@ -296,7 +296,7 @@ def test_services_status_lines_show_ma_starting_and_lan_ip() -> None:
             return {"version": "0.3.0", "ma_state": "starting", "ma_detail": "Unpacking"}
         return {"state": "configured"}
 
-    live = read_services_live(run=run, http=http, port_open=lambda port: False)
+    live = read_services_live(run=run, http=http, port_open=lambda port, host="127.0.0.1": False)
     text = "\n".join(services_status_lines(live, "192.168.1.24"))
     assert "LAN IP      : 192.168.1.24" in text
     assert "control API : up :8080" in text
@@ -308,8 +308,42 @@ def test_services_status_lines_show_ma_starting_and_lan_ip() -> None:
 def test_services_status_lines_when_nothing_answers() -> None:
     from freesounder_ble_provisioning.status import read_services_live, services_status_lines
 
-    live = read_services_live(run=lambda argv: "", http=lambda url: None, port_open=lambda p: False)
+    live = read_services_live(
+        run=lambda argv: "", http=lambda url: None, port_open=lambda p, h="127.0.0.1": False
+    )
     text = "\n".join(services_status_lines(live, None))
     assert "LAN IP      : none yet" in text
     assert "control API : not answering" in text
     assert "player agent: not answering" in text
+
+
+def test_services_status_lines_show_snapclient_and_snapserver(tmp_path, monkeypatch) -> None:
+    from freesounder_ble_provisioning import status
+
+    defaults = tmp_path / "snapclient"
+    defaults.write_text(
+        'START_SNAPCLIENT=true\nSNAPCLIENT_OPTS="--host 192.168.1.24 --soundcard freesounder"\n'
+    )
+    output = tmp_path / "audio-output"
+    output.write_text("pcm=default:CARD=vc4hdmi1\ncard=1\nreason=HDMI1 (display connected)\n")
+    monkeypatch.setattr(status, "SNAPCLIENT_DEFAULTS", defaults)
+    monkeypatch.setattr(status, "AUDIO_OUTPUT_PATH", output)
+
+    def run(argv: list[str]) -> str:
+        if argv[0] == "journalctl":
+            return "Connected to 192.168.1.24\nError: Failed to open PCM device freesounder"
+        return "active" if argv[0] == "systemctl" else ""
+
+    seen: list[tuple[int, str]] = []
+
+    def port_open(port: int, host: str = "127.0.0.1") -> bool:
+        seen.append((port, host))
+        return port == 1705
+
+    live = status.read_services_live(run=run, http=lambda url: None, port_open=port_open)
+    text = "\n".join(status.services_status_lines(live, "192.168.1.30"))
+    assert "snapclient  : unit active -> 192.168.1.24" in text
+    assert "snapserver  : :1704 closed, :1705 open" in text
+    assert "audio out   : default:CARD=vc4hdmi1 (HDMI1 (display connected))" in text
+    assert "snap error  : Error: Failed to open PCM device freesounder" in text
+    assert (1704, "192.168.1.24") in seen

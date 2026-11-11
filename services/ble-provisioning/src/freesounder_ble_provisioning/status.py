@@ -311,6 +311,34 @@ def _run_text(argv: list[str], timeout: float = 4.0) -> str:
     return (proc.stdout or "").strip()
 
 
+SNAPCLIENT_DEFAULTS = Path("/etc/default/snapclient")
+AUDIO_OUTPUT_PATH = Path("/etc/freesounder/audio-output")
+
+
+def _snap_host(text: str) -> str:
+    import shlex
+
+    for line in text.splitlines():
+        if line.startswith("SNAPCLIENT_OPTS="):
+            try:
+                args = " ".join(shlex.split(line.partition("=")[2])).split()
+            except ValueError:
+                return "127.0.0.1"
+            for flag in ("--host", "-h"):
+                if flag in args and args.index(flag) + 1 < len(args):
+                    return args[args.index(flag) + 1]
+    return "127.0.0.1"
+
+
+def _audio_output(text: str) -> str:
+    values = dict(line.partition("=")[::2] for line in text.splitlines() if "=" in line)
+    pcm = values.get("pcm", "").strip()
+    if not pcm:
+        return "not selected yet (ALSA default)"
+    reason = values.get("reason", "").strip()
+    return f"{pcm} ({reason})" if reason else pcm
+
+
 def read_services_live(run=_run_text, http=_http_json, port_open=_port_open) -> dict[str, Any]:
     """Snapshot of the three household services (no secrets)."""
 
@@ -324,7 +352,22 @@ def read_services_live(run=_run_text, http=_http_json, port_open=_port_open) -> 
     fmt = "{{.State.Status}} since {{.State.StartedAt}}"
     container = run(["docker", "inspect", "-f", fmt, "music-assistant"])
     preload = sorted(str(p) for p in Path("/var/lib/freesounder/ma-image").glob("*.tar"))
+    snap_host = _snap_host(_read_optional(SNAPCLIENT_DEFAULTS))
+    journal = run(
+        ["journalctl", "-u", "snapclient.service", "-b", "-n", "40", "--no-pager", "-o", "cat"]
+    )
+    snap_errors = [
+        line
+        for line in journal.splitlines()
+        if any(word in line.lower() for word in ("error", "failed", "exception", "cannot"))
+    ]
     return {
+        "snapclient_unit": unit("snapclient.service"),
+        "snap_host": snap_host,
+        "snapserver_stream": port_open(1704, snap_host),
+        "snapserver_control": port_open(1705, snap_host),
+        "snapclient_last_error": snap_errors[-1][:110] if snap_errors else "",
+        "audio_output": _audio_output(_read_optional(AUDIO_OUTPUT_PATH)),
         "control_api_unit": unit("freesounder-control-api.service"),
         "control_api": http(CONTROL_API_HEALTH),
         "agent_unit": unit("freesounder-player-agent.service"),
@@ -365,5 +408,14 @@ def services_status_lines(live: dict[str, Any], lan_ip: str | None) -> list[str]
         lines.append(f"  MA launcher : {launcher}")
     if live.get("ma_preload"):
         lines.append("  MA image    : bundled archive not unpacked yet")
+    if "snapclient_unit" in live:
+        snap_unit, snap_host = live.get("snapclient_unit"), live.get("snap_host")
+        lines.append(f"  snapclient  : unit {snap_unit} -> {snap_host}")
+        stream = "open" if live.get("snapserver_stream") else "closed"
+        control = "open" if live.get("snapserver_control") else "closed"
+        lines.append(f"  snapserver  : :1704 {stream}, :1705 {control}")
+        lines.append(f"  audio out   : {live.get('audio_output')}")
+        if live.get("snapclient_last_error"):
+            lines.append(f"  snap error  : {live.get('snapclient_last_error')}")
     lines.append(f"  role        : {live.get('role')}")
     return lines
