@@ -1,13 +1,14 @@
 #!/bin/sh
-HOST=$(hostname -s 2>/dev/null || echo freesounder)
+HOST=$(hostname -s 2>/dev/null || echo fs-new)
 cat << MOTD
 
 freesounder player (${HOST})
 ------------------
-This board is a locked-down appliance. There is no login password and the
-first-user wizard is disabled. Use the FreeSounder app to set it up over
-Bluetooth or the local network. The hostname is ${HOST}; the room name in
-the app is the user-facing label.
+This board is a locked-down appliance. The first-user wizard is disabled.
+Use the FreeSounder app to set it up over Bluetooth or the local network.
+The default hostname is fs-new; after you name the room in the app it
+becomes fs-<room>. Local console login (tty2 and above) uses the fsadmin
+account created at image build time. tty1 is a status screen, not a login.
 
   sudo freesounder-setup status
   sudo freesounder-setup doctor

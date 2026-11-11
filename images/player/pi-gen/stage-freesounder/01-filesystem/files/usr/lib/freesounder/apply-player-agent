@@ -10,14 +10,8 @@ fi
 
 /usr/lib/freesounder/apply-dsp-config || true
 
-# Pretty hostname follows the room name. The static hostname stays
-# freesounder-XXXX (see set-hostname).
-if [[ -f /etc/freesounder/name ]]; then
-	name=$(tr -d '\n' < /etc/freesounder/name)
-	if [[ -n "$name" ]] && command -v hostnamectl >/dev/null; then
-		hostnamectl set-hostname --pretty "$name" || true
-	fi
-fi
+# Pretty hostname follows the room name; static hostname becomes fs-<room>.
+/usr/lib/freesounder/apply-hostname || true
 
 systemctl daemon-reload || true
 systemctl try-restart snapclient.service 2>/dev/null || true

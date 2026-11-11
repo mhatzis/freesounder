@@ -5,7 +5,7 @@
 IMG_NAME=freesounder
 PI_GEN_RELEASE="freesounder player"
 RELEASE=trixie
-TARGET_HOSTNAME=freesounder
+TARGET_HOSTNAME=fs-new
 ENABLE_SSH=0
 ENABLE_CLOUD_INIT=1
 # Placeholder account only (locked, nologin). Users do not set a username

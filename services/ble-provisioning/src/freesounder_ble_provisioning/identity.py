@@ -82,10 +82,20 @@ def persist_name(name: str, config_dir: Path | None = None) -> None:
 
 
 def persist_hostname(hostname: str) -> None:
-    """Set the pretty hostname only. The static name stays freesounder-XXXX."""
+    """Set the pretty hostname and the static name to fs-<room> when possible."""
     try:
         import subprocess
 
+        helper = Path("/usr/lib/freesounder/apply-hostname")
+        if helper.is_file():
+            subprocess.run(
+                [str(helper), hostname],
+                check=False,
+                timeout=10,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            return
         subprocess.run(
             ["hostnamectl", "set-hostname", "--pretty", hostname],
             check=False,

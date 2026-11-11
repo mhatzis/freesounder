@@ -61,7 +61,7 @@ BLE setup: $(ble_state)
 SSH      : $(ssh_state)
 
 This player is a locked-down appliance.
-There is no login on this screen.
+There is no login on this screen (fsadmin is on tty2+).
 Set it up in the FreeSounder app (Bluetooth or the local network).
 mDNS     : ${host}.local
 STATUS

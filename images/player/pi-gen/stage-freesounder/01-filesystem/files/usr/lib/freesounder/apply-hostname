@@ -1,0 +1,53 @@
+#!/bin/bash
+# Set the pretty hostname from the room name and the static hostname to
+# fs-<slug>. Used after adopt / a room-name change. Idempotent.
+set -euo pipefail
+
+slugify() {
+	printf '%s' "$1" \
+		| tr '[:upper:]' '[:lower:]' \
+		| tr -cs 'a-z0-9' '-' \
+		| sed -e 's/^-*//' -e 's/-*$//' \
+		| cut -c1-60
+}
+
+pretty=""
+if [[ $# -ge 1 && -n "${1:-}" ]]; then
+	pretty=$1
+elif [[ -f /etc/freesounder/name ]]; then
+	pretty=$(tr -d '\n' < /etc/freesounder/name)
+fi
+pretty=${pretty#"${pretty%%[![:space:]]*}"}
+pretty=${pretty%"${pretty##*[![:space:]]}"}
+
+install -d /etc/freesounder
+if [[ -n "$pretty" ]]; then
+	printf '%s\n' "$pretty" >/etc/freesounder/name
+fi
+
+static="fs-new"
+if [[ -n "$pretty" ]]; then
+	# Honour an already-legal fs-* hostname; otherwise derive from the room.
+	if [[ "$pretty" =~ ^fs-[a-z0-9]([a-z0-9-]*[a-z0-9])?$ && ${#pretty} -le 63 ]]; then
+		static=$pretty
+	else
+		slug=$(slugify "$pretty")
+		if [[ -n "$slug" ]]; then
+			static="fs-${slug}"
+		fi
+	fi
+fi
+
+printf '%s\n' "$static" >/etc/freesounder/hostname
+printf '%s\n' "$static" >/etc/hostname
+if command -v hostnamectl >/dev/null; then
+	hostnamectl set-hostname --static "$static" || hostnamectl set-hostname "$static" || true
+	if [[ -n "$pretty" ]]; then
+		hostnamectl set-hostname --pretty "$pretty" || true
+	fi
+else
+	hostname "$static" || true
+fi
+if command -v avahi-set-host-name >/dev/null; then
+	avahi-set-host-name "$static" 2>/dev/null || true
+fi

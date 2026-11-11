@@ -50,6 +50,33 @@ if ! getent passwd developer >/dev/null; then
 fi
 passwd -l developer || true
 
+# fsadmin is the local console account. The shadow hash is supplied at
+# image-build time (never stored in the repo) and is deleted after apply.
+hash_file=/etc/freesounder/.fsadmin-hash
+if [[ ! -s "$hash_file" ]]; then
+	echo "fsadmin password hash is missing; pass FSADMIN_PASSWORD_HASH when building." >&2
+	exit 1
+fi
+if ! getent passwd fsadmin >/dev/null; then
+	useradd -m -s /bin/bash -G sudo fsadmin
+fi
+for grp in docker audio gpio i2c spi video plugdev sudo; do
+	if getent group "$grp" >/dev/null; then
+		usermod -aG "$grp" fsadmin || true
+	fi
+done
+# chpasswd -e reads user:hash. Do not print the hash.
+{
+	printf 'fsadmin:'
+	tr -d '\n' < "$hash_file"
+	printf '\n'
+} | chpasswd -e
+if command -v shred >/dev/null; then
+	shred -u "$hash_file" 2>/dev/null || rm -f "$hash_file"
+else
+	rm -f "$hash_file"
+fi
+
 # Host-role first boot will docker pull; leave a stamp dir.
 mkdir -p /var/lib/freesounder/ma-data
 chmod 0755 /var/lib/freesounder /var/lib/freesounder/ma-data

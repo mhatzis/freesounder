@@ -1,52 +1,23 @@
 #!/bin/bash
-# Set the static appliance hostname to freesounder-XXXX (last four hex of
-# the board serial, or of a NIC MAC if the serial is missing). Idempotent.
-# The user-facing room name is the pretty hostname in /etc/freesounder/name.
+# Default static hostname is fs-new. After the player is adopted the stamp
+# /etc/freesounder/hostname holds fs-<room> and this script leaves it alone.
 set -euo pipefail
 
-suffix_from_text() {
-	printf '%s' "$1" | tr -d '\0\n\r ' | tr '[:upper:]' '[:lower:]' | tr -cd '0-9a-f'
-}
-
-suffix=""
-if [[ -r /proc/device-tree/serial-number ]]; then
-	suffix=$(suffix_from_text "$(cat /proc/device-tree/serial-number)")
+stamp=/etc/freesounder/hostname
+name="fs-new"
+if [[ -f "$stamp" ]]; then
+	wanted=$(tr -d '[:space:]' < "$stamp")
+	if [[ -n "$wanted" ]]; then
+		name=$wanted
+	fi
 fi
-if [[ -z "$suffix" && -r /proc/cpuinfo ]]; then
-	serial=$(awk -F: '/^Serial/ {gsub(/ /,"",$2); print $2}' /proc/cpuinfo | tail -n1)
-	suffix=$(suffix_from_text "$serial")
-fi
-if [[ ${#suffix} -lt 4 ]]; then
-	for dev in /sys/class/net/eth0 /sys/class/net/enp* /sys/class/net/wlan0 /sys/class/net/wl*; do
-		[[ -e "$dev/address" ]] || continue
-		mac=$(suffix_from_text "$(cat "$dev/address")")
-		if [[ ${#mac} -ge 4 ]]; then
-			suffix=$mac
-			break
-		fi
-	done
-fi
-if [[ ${#suffix} -lt 4 ]]; then
-	suffix="0000"
-fi
-suffix=${suffix: -4}
-name="freesounder-${suffix}"
 
 current=$(hostname -s 2>/dev/null || true)
 if [[ "$current" == "$name" ]]; then
+	# Still (re)write the stamp so a later boot has it.
+	install -d /etc/freesounder
+	printf '%s\n' "$name" >"$stamp"
 	exit 0
-fi
-# Do not clobber a hostname that was already set to this pattern on a prior boot
-# if the suffix would change (e.g. a USB NIC appeared). Stick with the stamp.
-stamp=/etc/freesounder/hostname
-if [[ -f "$stamp" ]]; then
-	wanted=$(tr -d '[:space:]' < "$stamp")
-	if [[ -n "$wanted" && "$wanted" == freesounder-* ]]; then
-		if [[ "$(hostname -s 2>/dev/null || true)" == "$wanted" ]]; then
-			exit 0
-		fi
-		name=$wanted
-	fi
 fi
 
 install -d /etc/freesounder
@@ -57,7 +28,6 @@ if command -v hostnamectl >/dev/null; then
 else
 	hostname "$name" || true
 fi
-# Keep Avahi in sync if it is already running.
 if command -v avahi-set-host-name >/dev/null; then
 	avahi-set-host-name "$name" 2>/dev/null || true
 fi

@@ -26,6 +26,7 @@ install -m 0755 files/usr/lib/freesounder/run-music-assistant "${ROOTFS_DIR}/usr
 install -m 0755 files/usr/lib/freesounder/run-boot-doctor "${ROOTFS_DIR}/usr/lib/freesounder/run-boot-doctor"
 install -m 0755 files/usr/lib/freesounder/write-boot-marker "${ROOTFS_DIR}/usr/lib/freesounder/write-boot-marker"
 install -m 0755 files/usr/lib/freesounder/set-hostname "${ROOTFS_DIR}/usr/lib/freesounder/set-hostname"
+install -m 0755 files/usr/lib/freesounder/apply-hostname "${ROOTFS_DIR}/usr/lib/freesounder/apply-hostname"
 install -m 0755 files/usr/lib/freesounder/status-console "${ROOTFS_DIR}/usr/lib/freesounder/status-console"
 install -m 0755 files/usr/lib/freesounder/sanitize-imager "${ROOTFS_DIR}/usr/lib/freesounder/sanitize-imager"
 install -m 0755 files/usr/lib/freesounder/ssh-developer "${ROOTFS_DIR}/usr/lib/freesounder/ssh-developer"

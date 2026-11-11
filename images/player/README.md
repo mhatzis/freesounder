@@ -25,10 +25,12 @@ or hostname in Imager — the image ignores those customisations.
    `freesounder-*-lite-arm64.img.xz` file (Imager accepts a compressed `.img.xz`).
 4. Storage: your microSD, USB SSD, or (Pi 5) NVMe, as appropriate.
 5. Skip **OS customisation** for user, password, hostname, and SSH. The first
-   boot sets the hostname to `freesounder-XXXX` (last four hex digits of the
-   board serial or MAC). The room name you choose in the app is the
-   user-facing label; it does not change the hostname. HDMI on tty1 shows a
-   status screen (hostname, room, IP, BLE, SSH), not a login prompt.
+   boot sets the hostname to `fs-new`. When you name the room in the app the
+   hostname becomes `fs-<room>` (for example, Living Room → `fs-living-room`).
+   HDMI on tty1 shows a status screen (hostname, room, IP, BLE, SSH), not a
+   login prompt. A local `fsadmin` account is available on tty2 and above;
+   its password is set at image build time and is not stored in the source
+   tree. Do not set a different user in Imager — those settings are ignored.
 6. You do **not** need to set Wi-Fi in Imager. An unprovisioned board with no
    Ethernet and no working Wi-Fi advertises over Bluetooth as
    `FreeSounder-XXXX`. The FreeSounder app walks you through joining a
@@ -61,7 +63,7 @@ plug in powered speakers (DAC+) or passives (DigiAMP+; check PSU needs).
 
 ## What is installed
 
-- Raspberry Pi OS Lite, 64-bit (Trixie), hostname `freesounder-XXXX` on first boot, SSH disabled
+- Raspberry Pi OS Lite, 64-bit (Trixie), hostname `fs-new` until adopted (`fs-<room>` after), SSH disabled
 - `snapclient`, ALSA utilities, Avahi
 - Docker Engine (`docker.io`) and a systemd unit that starts Music Assistant
   **only** in the host role
@@ -77,7 +79,11 @@ plug in powered speakers (DAC+) or passives (DigiAMP+; check PSU needs).
   into `/etc/default/snapclient`)
 - `freesounder-setup` for role, host, room name, DAC overlay, and optional MA token
 
-No passwords, API tokens, or wireless secrets are baked into the image.
+No plaintext passwords, API tokens, or wireless secrets are stored in the
+source tree. The published image includes a local `fsadmin` account whose
+shadow hash is supplied to `build.sh` via `FSADMIN_PASSWORD_HASH` (or
+`FSADMIN_PASSWORD_HASH_FILE`). SSH stays off until developer mode is enabled
+in the app.
 
 ## Build it yourself
 
@@ -86,8 +92,12 @@ binfmt (for cross builds), and the packages listed in the pi-gen README
 (`debootstrap`, `parted`, `quilt`, `kpartx`, `qemu-user-static`, `mtools`, …):
 
 ```bash
-sudo ./images/player/build.sh
+sudo FSADMIN_PASSWORD_HASH_FILE=/path/to/crypt-hash ./images/player/build.sh
 ```
+
+The hash must be a crypt(3) string (`openssl passwd -6`). You can also pass
+`FSADMIN_PASSWORD_FILE` (plaintext on the build host only; it is hashed and
+not copied into the image or the repo).
 
 This clones the official [pi-gen](https://github.com/RPi-Distro/pi-gen)
 **arm64** branch, builds Lite (stages 0–2) plus
@@ -113,9 +123,8 @@ the build machine; it is installed **inside** the image.
   `sudo freesounder-setup set-ma-token` after creating one in the MA UI.
 - Automatic host failover is **not** in the first beta; back up
   `/var/lib/freesounder/ma-data`.
-- The default hostname `freesounder` will clash if two unconfigured boards
-  share a LAN. Rename them in Imager, with `hostnamectl`, or by adopting
-  the player in the app (that also sets a hostname-friendly label).
+- Unadopted boards share the hostname `fs-new` and can clash on mDNS if two
+  sit on the same LAN. Adopt each one in the app so it becomes `fs-<room>`.
 - Tone controls use ALSA LADSPA (`caps`). A CamillaDSP YAML file is written
   as well, but CamillaDSP is not bundled in this image. Changing DAC still
   needs a reboot. These paths have not been tested on real Pi hardware yet.

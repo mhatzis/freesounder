@@ -15,11 +15,37 @@ export PATH="/usr/local/sbin:/usr/sbin:/sbin:${PATH}"
 
 if [[ "$(id -u)" -ne 0 ]]; then
 	echo "Re-running under sudo..."
-	exec sudo --preserve-env=FREESOUNDER_ROOT,PI_GEN_REF,PI_GEN_URL,WORK_ROOT,PI_GEN_DIR,DEPLOY_DIR,PATH \
+	exec sudo --preserve-env=FREESOUNDER_ROOT,PI_GEN_REF,PI_GEN_URL,WORK_ROOT,PI_GEN_DIR,DEPLOY_DIR,PATH,FSADMIN_PASSWORD_HASH,FSADMIN_PASSWORD_HASH_FILE,FSADMIN_PASSWORD_FILE,FSADMIN_PASSWORD \
 		"$0" "$@"
 fi
 
 mkdir -p "$WORK_ROOT" "$DEPLOY_DIR"
+
+# fsadmin's shadow hash is required. Accept a crypt hash directly, a hash
+# file, or (build-host only) a password in the environment / a password file.
+# Never write the plaintext into the tree or echo it.
+if [[ -z "${FSADMIN_PASSWORD_HASH:-}" && -n "${FSADMIN_PASSWORD_HASH_FILE:-}" && -f "${FSADMIN_PASSWORD_HASH_FILE}" ]]; then
+	FSADMIN_PASSWORD_HASH="$(tr -d '\n' < "${FSADMIN_PASSWORD_HASH_FILE}")"
+	export FSADMIN_PASSWORD_HASH
+fi
+if [[ -z "${FSADMIN_PASSWORD_HASH:-}" ]]; then
+	_pass=""
+	if [[ -n "${FSADMIN_PASSWORD_FILE:-}" && -f "${FSADMIN_PASSWORD_FILE}" ]]; then
+		_pass="$(tr -d '\n' < "${FSADMIN_PASSWORD_FILE}")"
+	elif [[ -n "${FSADMIN_PASSWORD:-}" ]]; then
+		_pass="${FSADMIN_PASSWORD}"
+	fi
+	if [[ -n "$_pass" ]]; then
+		FSADMIN_PASSWORD_HASH="$(printf '%s' "$_pass" | openssl passwd -6 -stdin)"
+		export FSADMIN_PASSWORD_HASH
+	fi
+	unset _pass
+	unset FSADMIN_PASSWORD
+fi
+if [[ -z "${FSADMIN_PASSWORD_HASH:-}" ]]; then
+	echo "FSADMIN_PASSWORD_HASH, FSADMIN_PASSWORD_HASH_FILE, FSADMIN_PASSWORD_FILE, or FSADMIN_PASSWORD is required to create fsadmin." >&2
+	exit 1
+fi
 
 if [[ ! -d "$PI_GEN_DIR/.git" ]]; then
 	echo "Cloning pi-gen (${PI_GEN_REF})..."
