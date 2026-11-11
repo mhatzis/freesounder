@@ -181,3 +181,8 @@ advertises `_freesounder._tcp`. Every board also runs
 ```bash
 cd services/player-agent && uv sync --group dev && uv run ruff check src tests && uv run pytest
 ```
+
+
+## Music services (app 0.5.0)
+
+Provider sign-in happens in the Flutter app (**Settings → Music services**), through the control API, not the Music Assistant page at `:8095`. See [music-services.md](music-services.md) for endpoints, the OAuth flow, and which services are limited (notably Apple Music).

@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../state/playback_store.dart';
 import 'add_player_sheet.dart';
+import 'music_services_screen.dart';
 
 /// Household connection: discovered systems, manual address, demo switch.
 class SettingsScreen extends ConsumerStatefulWidget {
@@ -158,6 +159,21 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             title: const Text('Add a player'),
             subtitle: const Text('Set up a new Pi over Bluetooth, or adopt one already on your network'),
             onTap: () => showAddPlayerSheet(context),
+          ),
+          const SizedBox(height: 16),
+          Text('Music', style: text.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
+          const SizedBox(height: 8),
+          ListTile(
+            key: const Key('music-services-tile'),
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.library_music_outlined),
+            title: const Text('Music services'),
+            subtitle: const Text('Add Spotify, Tidal and other sources without leaving the app'),
+            onTap: () {
+              Navigator.of(context).push(
+                MaterialPageRoute<void>(builder: (_) => const MusicServicesScreen()),
+              );
+            },
           ),
           if (_busy) ...[
             const SizedBox(height: 16),

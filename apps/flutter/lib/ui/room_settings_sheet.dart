@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../app_version.dart';
 import '../models/player_settings.dart';
 import '../state/playback_store.dart';
 
@@ -281,7 +282,7 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
                     key: const Key('player-version-tap'),
                     onTap: _onVersionTap,
                     child: Text(
-                      'FreeSounder 0.4.0',
+                      'FreeSounder $appVersion',
                       textAlign: TextAlign.center,
                       style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
                     ),

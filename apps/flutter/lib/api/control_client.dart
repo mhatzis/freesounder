@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+import '../models/music_service.dart';
 import '../models/now_playing.dart';
 import '../models/player_settings.dart';
 import '../models/room.dart';
@@ -128,6 +129,101 @@ class ControlApiClient {
     );
     _ensureOk(response);
     return SshDeveloperStatus.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+  }
+
+  Future<MusicServicesCatalog> musicServicesCatalog() async {
+    final response = await _http.get(_uri('/api/v1/music-services/catalog'));
+    _ensureOk(response);
+    return MusicServicesCatalog.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+  }
+
+  Future<List<MusicService>> listMusicServices() async {
+    final response = await _http.get(_uri('/api/v1/music-services'));
+    _ensureOk(response);
+    final data = jsonDecode(response.body) as List<dynamic>;
+    return [for (final item in data) MusicService.fromJson(item as Map<String, dynamic>)];
+  }
+
+  Future<MusicService> getMusicService(String instanceId) async {
+    final response = await _http.get(_uri('/api/v1/music-services/$instanceId'));
+    _ensureOk(response);
+    return MusicService.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+  }
+
+  Future<Map<String, dynamic>> addMusicService(String domain, {Map<String, dynamic> values = const {}}) async {
+    final response = await _http.post(
+      _uri('/api/v1/music-services'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'domain': domain, 'values': values}),
+    );
+    _ensureOk(response);
+    return jsonDecode(response.body) as Map<String, dynamic>;
+  }
+
+  Future<MusicService> updateMusicService(String instanceId, Map<String, dynamic> values) async {
+    final response = await _http.patch(
+      _uri('/api/v1/music-services/$instanceId'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'values': values}),
+    );
+    _ensureOk(response);
+    return MusicService.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+  }
+
+  Future<void> removeMusicService(String instanceId) async {
+    final response = await _http.delete(_uri('/api/v1/music-services/$instanceId'));
+    _ensureOk(response);
+  }
+
+  Future<AuthSession> startMusicServiceAuth({String? domain, String? instanceId}) async {
+    final response = await _http.post(
+      _uri('/api/v1/music-services/auth'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        if (domain != null) 'domain': domain,
+        if (instanceId != null) 'instance_id': instanceId,
+      }),
+    );
+    _ensureOk(response);
+    return AuthSession.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+  }
+
+  Future<AuthSession> getMusicServiceAuth(String sessionId) async {
+    final response = await _http.get(_uri('/api/v1/music-services/auth/$sessionId'));
+    _ensureOk(response);
+    return AuthSession.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+  }
+
+  Future<AuthSession> submitMusicServiceAuth(String sessionId, Map<String, dynamic> values) async {
+    final response = await _http.post(
+      _uri('/api/v1/music-services/auth/$sessionId/submit'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'values': values}),
+    );
+    _ensureOk(response);
+    return AuthSession.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+  }
+
+  Future<AuthSession> abortMusicServiceAuth(String sessionId) async {
+    final response = await _http.post(_uri('/api/v1/music-services/auth/$sessionId/abort'));
+    _ensureOk(response);
+    return AuthSession.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+  }
+
+  Future<SpotifyConnectStatus> spotifyConnectStatus() async {
+    final response = await _http.get(_uri('/api/v1/music-services/spotify-connect'));
+    _ensureOk(response);
+    return SpotifyConnectStatus.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+  }
+
+  Future<SpotifyConnectStatus> setSpotifyConnect(String playerId, bool enabled) async {
+    final response = await _http.post(
+      _uri('/api/v1/music-services/spotify-connect/$playerId'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({'enabled': enabled}),
+    );
+    _ensureOk(response);
+    return SpotifyConnectStatus.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
   }
 
   Stream<Map<String, dynamic>> connectEvents() {

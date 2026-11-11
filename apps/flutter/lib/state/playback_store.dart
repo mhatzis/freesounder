@@ -110,6 +110,9 @@ class PlaybackStore extends Notifier<PlaybackState> {
   StreamSubscription<Map<String, dynamic>>? _events;
   late MockHousehold _mock;
 
+  ControlApiClient? get client => _client;
+  MockHousehold get mockHousehold => _mock;
+
   @override
   PlaybackState build() {
     _mock = MockHousehold();
