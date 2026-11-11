@@ -33,6 +33,8 @@ class DaemonSettings(BaseSettings):
     snapserver_rpc: str = "http://127.0.0.1:1780/jsonrpc"
     ffmpeg_bin: str = "ffmpeg"
     radio_browser_base: str | None = None
+    # Look up album art for radio "Artist - Title" via the free iTunes Search API.
+    radio_art_lookup: bool = True
     apply_command: str | None = Field(
         default="/usr/lib/freesounder/apply-player-settings",
         description="Hook run after room name / DSP / DAC changes. Empty to skip.",

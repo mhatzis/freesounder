@@ -69,6 +69,8 @@ class Lan:
         self.apps: dict[str, Any] = {}
         self.snapservers: dict[str, FakeSnapserver] = {}
         self.spotify: dict[str, dict[str, Any] | None] = {}
+        self.spotify_calls: list[tuple[str, str, Any]] = []
+        self.itunes: list[dict[str, Any]] = []
         self.down: set[str] = set()
 
     def transport(self, local_ip: str) -> httpx.MockTransport:
@@ -84,10 +86,21 @@ class Lan:
                 import json
 
                 return httpx.Response(200, json=server.handle(json.loads(request.content)))
+            if host == "itunes.apple.com":
+                return httpx.Response(200, json={"results": self.itunes})
             if port == 3678:
+                import json
+
                 status = self.spotify.get(host)
                 if request.url.path == "/status":
                     return httpx.Response(200 if status else 204, json=status)
+                body = json.loads(request.content) if request.content else None
+                self.spotify_calls.append((host, request.url.path, body))
+                if not status:
+                    return httpx.Response(204)
+                if request.url.path == "/context/tracks":
+                    uri = request.url.params.get("uri")
+                    return httpx.Response(200, json={"uri": uri, "ready": True, "tracks": []})
                 return httpx.Response(200, json={})
             app = self.apps.get(host)
             if app is None:

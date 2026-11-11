@@ -92,6 +92,27 @@ class RadioPlayBody(BaseModel):
     favicon: str | None = None
 
 
+class SpotifyLoginBody(BaseModel):
+    """The app's Spotify Web API token, used once so go-librespot signs in."""
+
+    username: str = Field(min_length=1, max_length=200)
+    access_token: str = Field(min_length=10, max_length=4096, repr=False)
+
+
+class SpotifyPlayBody(BaseModel):
+    uri: str = Field(min_length=8, max_length=200)
+    skip_to_uri: str | None = Field(default=None, max_length=200)
+    position_ms: int | None = Field(default=None, ge=0)
+
+
+class SpotifyContextBody(BaseModel):
+    uri: str = Field(min_length=8, max_length=200)
+
+
+class SeekBody(BaseModel):
+    position_ms: int = Field(ge=0)
+
+
 class RadioStation(BaseModel):
     stationuuid: str
     name: str

@@ -12,7 +12,7 @@ from typing import Any
 import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from starlette.websockets import WebSocketDisconnect
 
 from freesounderd import __version__, peers
@@ -27,7 +27,11 @@ from freesounderd.models import (
     PlayerSettings,
     PlayerSettingsPatch,
     RadioPlayBody,
+    SeekBody,
     SetupBody,
+    SpotifyContextBody,
+    SpotifyLoginBody,
+    SpotifyPlayBody,
     SshDeveloperBody,
     SshDeveloperStatus,
     VolumeBody,
@@ -255,6 +259,42 @@ def create_app(
             return {"ok": True}
 
         app.add_api_route(f"/api/v2/groups/{{gid}}/{action}", _control, methods=["POST"])
+
+    @app.post("/api/v2/groups/{gid}/seek")
+    async def group_seek(gid: str, body: SeekBody) -> dict[str, Any]:
+        await engine.seek(gid, body.position_ms)
+        return {"ok": True}
+
+    # -------------------------------------------------------------- spotify
+    # POST so peers can forward them with signed bodies.
+    @app.post("/api/v2/groups/{gid}/spotify")
+    async def spotify_info(gid: str) -> dict[str, Any]:
+        return await engine.spotify_info(gid)
+
+    @app.get("/api/v2/groups/{gid}/spotify")
+    async def spotify_info_get(gid: str) -> dict[str, Any]:
+        return await engine.spotify_info(gid)
+
+    @app.post("/api/v2/groups/{gid}/spotify/login")
+    async def spotify_login(gid: str, body: SpotifyLoginBody) -> dict[str, Any]:
+        return await engine.spotify_login(gid, body.model_dump())
+
+    @app.post("/api/v2/groups/{gid}/spotify/play")
+    async def spotify_play(gid: str, body: SpotifyPlayBody) -> dict[str, Any]:
+        return await engine.spotify_play(gid, body.model_dump(exclude_none=True))
+
+    @app.post("/api/v2/groups/{gid}/spotify/context-tracks")
+    async def spotify_context_tracks(gid: str, body: SpotifyContextBody) -> dict[str, Any]:
+        return await engine.spotify_context_tracks(gid, body.uri)
+
+    @app.get("/api/v2/art/airplay")
+    async def airplay_art(t: str | None = None) -> Response:
+        del t  # cache-buster only
+        cover = await engine.airplay_cover()
+        if cover is None:
+            raise HTTPException(status_code=404, detail="No AirPlay cover art")
+        data, mime = cover
+        return Response(content=data, media_type=mime, headers={"Cache-Control": "max-age=300"})
 
     @app.get("/api/v2/groups/{gid}/now-playing")
     async def group_now_playing(gid: str) -> dict[str, Any]:

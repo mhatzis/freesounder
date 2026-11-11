@@ -22,6 +22,7 @@ from typing import Any
 import httpx
 
 from freesounderd import __version__, peers
+from freesounderd.artwork import AirplayArt, ArtLookup, split_stream_title
 from freesounderd.config import DaemonSettings
 from freesounderd.discovery import Discovery, local_ip
 from freesounderd.radio import RadioBrowser, RadioPlayer
@@ -38,10 +39,13 @@ from freesounderd.spotify import (
 )
 from freesounderd.spotify import (
     LibrespotClient,
+    clear_credentials,
     is_paused,
     is_playing,
     now_playing_fields,
+    read_state,
     render_config,
+    stored_username,
 )
 from freesounderd.store import Store, board_model, detected_hat, hostname
 from freesounderd.system import System
@@ -169,6 +173,11 @@ class Engine:
             settings.ffmpeg_bin, str(settings.run_dir / "radio.fifo"), settings.manage_system
         )
         self.radio_browser = RadioBrowser(self.http, settings.radio_browser_base)
+        self.art = ArtLookup(self.http, enabled=settings.radio_art_lookup)
+        self.art.on_found = self.kick
+        self.airplay_art = AirplayArt()
+        self._spotify_login_active = False
+        self._spotify_login_lock = asyncio.Lock()
         features = store.features()
         self.airplay_version = settings.airplay_version or int(features.get("airplay", 0) or 0)
 
@@ -333,6 +342,10 @@ class Engine:
                     "hostname": rec.get("hostname"),
                     "version": rec.get("version"),
                     "source": group["source"],
+                    "now_playing": {
+                        k: (group.get("now_playing") or {}).get(k)
+                        for k in ("title", "artist", "album", "image_url")
+                    },
                 }
             )
         out.sort(key=lambda r: r["name"].lower())
@@ -359,6 +372,12 @@ class Engine:
             "position": np.get("position"),
             "duration": np.get("duration"),
             "station": group.get("station"),
+            "station_name": np.get("station_name"),
+            "station_image_url": np.get("station_image_url"),
+            "stream_title": np.get("stream_title"),
+            "uri": np.get("uri"),
+            "context_uri": np.get("context_uri"),
+            "context_name": np.get("context_name"),
         }
 
     def txt(self) -> dict[str, str]:
@@ -596,12 +615,13 @@ class Engine:
                 if server_active:
                     await self.system.systemctl("restart", SNAPSERVER_UNIT)
             await self.system.ensure_active(SNAPSERVER_UNIT)
-            spot_path = self.settings.spotify_dir / "config.yml"
-            spot_changed = self.system.write_if_changed(spot_path, spotify_conf)
-            if spot_changed and await self.system.is_active(SPOTIFY_UNIT):
-                if not await self.spotify.set_device_name(name):
-                    await self.system.systemctl("restart", SPOTIFY_UNIT)
-            await self.system.ensure_active(SPOTIFY_UNIT)
+            if not self._spotify_login_active:
+                spot_path = self.settings.spotify_dir / "config.yml"
+                spot_changed = self.system.write_if_changed(spot_path, spotify_conf, 0o600)
+                if spot_changed and await self.system.is_active(SPOTIFY_UNIT):
+                    if not await self.spotify.set_device_name(name):
+                        await self.system.systemctl("restart", SPOTIFY_UNIT)
+                await self.system.ensure_active(SPOTIFY_UNIT)
         await self._target_snapclient("127.0.0.1")
         await self._update_sources()
         await self._reconcile_snapcast()
@@ -667,26 +687,55 @@ class Engine:
             return now_playing_fields(self._spotify_status)
         if self.source == "radio" and self.radio.station:
             st = self.radio.station
-            title = self.radio.stream_title
+            logo = st.get("favicon") or None
+            artist, song = split_stream_title(self.radio.stream_title)
+            art = self.art.cached(artist, song)
             return {
-                "title": title or st.get("name"),
-                "artist": st.get("name") if title else None,
+                "title": song or st.get("name"),
+                "artist": artist or (st.get("name") if song else None),
                 "album": None,
-                "image_url": st.get("favicon") or None,
+                "image_url": art or logo,
+                "station_name": st.get("name"),
+                "station_image_url": logo,
+                "stream_title": self.radio.stream_title,
             }
         if self.source == "airplay":
-            meta = (airplay.get("properties") or {}).get("metadata") or {}
+            props = airplay.get("properties") or {}
+            meta = props.get("metadata") or {}
             artist = meta.get("artist")
             if isinstance(artist, list):
                 artist = ", ".join(artist)
+            tag = self.airplay_art.update(meta)
+            position = props.get("position")
             return {
                 "title": meta.get("title"),
                 "artist": artist,
                 "album": meta.get("album"),
-                "image_url": meta.get("artUrl"),
+                "image_url": f"{self.base_url()}/api/v2/art/airplay?t={tag}" if tag else None,
                 "duration": meta.get("duration"),
+                "position": position if isinstance(position, int | float) else None,
             }
         return {}
+
+    def base_url(self) -> str:
+        return f"http://{self.settings.advertise_ip or local_ip()}:{self.settings.port}"
+
+    async def airplay_cover(self) -> tuple[bytes, str] | None:
+        art = self.airplay_art
+        if art.data:
+            return art.data, art.mime
+        if art.source_path:
+            rpc = httpx.URL(self.settings.snapserver_rpc)
+            url = f"{rpc.scheme}://{rpc.host}:{rpc.port}{art.source_path}"
+            try:
+                res = await self.http.get(url, timeout=5)
+            except httpx.HTTPError:
+                return None
+            if res.status_code == 200 and res.content:
+                art.data = res.content
+                art.mime = res.headers.get("content-type", "image/jpeg")
+                return art.data, art.mime
+        return None
 
     async def _reconcile_snapcast(self) -> None:
         server = self._server_status
@@ -851,7 +900,12 @@ class Engine:
         return await self.forward(pid, "POST", "/api/v2/peer/command", body)
 
     async def forward(
-        self, pid: str, method: str, path: str, body: dict[str, Any] | None = None
+        self,
+        pid: str,
+        method: str,
+        path: str,
+        body: dict[str, Any] | None = None,
+        wait: float = 10,
     ) -> Any:
         rec = self.peers.get(pid)
         hh = self.store.household()
@@ -863,7 +917,7 @@ class Engine:
         headers["X-FS-Forwarded"] = "1"
         url = f"http://{rec['ip']}:{rec.get('port', 8080)}{path}"
         try:
-            res = await self.http.request(method, url, content=raw, headers=headers, timeout=10)
+            res = await self.http.request(method, url, content=raw, headers=headers, timeout=wait)
         except httpx.HTTPError as exc:
             raise EngineError(502, f"{rec.get('room', pid)} did not answer: {exc}") from exc
         try:
@@ -1038,6 +1092,139 @@ class Engine:
                 await self._start_radio(station)
             else:
                 raise EngineError(409, "Nothing to play yet. Pick a radio station first.")
+
+    # ------------------------------------------------------------------ spotify
+    def _spotify_leader(self, gid: str) -> str:
+        if gid.endswith(SOLO_SUFFIX):
+            raise EngineError(409, "This room is still playing for its old group.")
+        return self.resolve_leader(gid)
+
+    async def spotify_info(self, gid: str) -> dict[str, Any]:
+        leader = self._spotify_leader(gid)
+        if leader != self.id:
+            return await self.forward(leader, "POST", f"/api/v2/groups/{leader}/spotify", {})
+        return await self._spotify_info_local()
+
+    async def _spotify_info_local(self) -> dict[str, Any]:
+        status = await self.spotify.status()
+        state = read_state(self.settings.spotify_dir)
+        return {
+            "leader_id": self.id,
+            "group_id": self.id,
+            "device_name": self.my_group_name(),
+            "device_id": (status or {}).get("device_id") or state.get("device_id"),
+            "logged_in": status is not None,
+            "username": (status or {}).get("username")
+            or stored_username(self.settings.spotify_dir),
+            "signing_in": self._spotify_login_active,
+        }
+
+    async def spotify_login(self, gid: str, body: dict[str, Any]) -> dict[str, Any]:
+        leader = self._spotify_leader(gid)
+        if leader != self.id:
+            return await self.forward(
+                leader, "POST", f"/api/v2/groups/{leader}/spotify/login", body, wait=75
+            )
+        username = str(body.get("username") or "").strip()
+        token = str(body.get("access_token") or "").strip()
+        if not username or not token:
+            raise EngineError(400, "username and access_token are required")
+        if not self.settings.manage_system:
+            return await self._spotify_info_local()
+        async with self._spotify_login_lock:
+            current = await self.spotify.status()
+            if current and current.get("username") == username:
+                return await self._spotify_info_local()
+            self._spotify_login_active = True
+            spot_path = self.settings.spotify_dir / "config.yml"
+            name = self.my_group_name()
+            fifo = str(self.settings.run_dir / "spotify.fifo")
+            ok = False
+            try:
+                await self.system.systemctl("stop", SPOTIFY_UNIT)
+                clear_credentials(self.settings.spotify_dir)
+                self.system.write_if_changed(
+                    spot_path,
+                    render_config(device_name=name, fifo=fifo, token_login=(username, token)),
+                    0o600,
+                )
+                await self.system.systemctl("start", SPOTIFY_UNIT)
+                ok = await self._wait_spotify_user(username, 25)
+            finally:
+                # Never leave the token on disk: back to the normal config,
+                # which reuses the credentials go-librespot just stored.
+                self.system.write_if_changed(
+                    spot_path, render_config(device_name=name, fifo=fifo), 0o600
+                )
+                await self.system.systemctl("restart", SPOTIFY_UNIT)
+                self._spotify_login_active = False
+            if ok:
+                ok = await self._wait_spotify_user(username, 20)
+        self.kick()
+        info = await self._spotify_info_local()
+        if not ok:
+            raise EngineError(
+                502,
+                "Spotify did not accept the sign-in on this player. Spotify Connect "
+                "needs a Premium account; check the account is Premium and try again.",
+            )
+        return info
+
+    async def _wait_spotify_user(self, username: str, seconds: float) -> bool:
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            status = await self.spotify.status()
+            if status and status.get("username"):
+                return True
+            await asyncio.sleep(1)
+        return False
+
+    async def spotify_play(self, gid: str, body: dict[str, Any]) -> dict[str, Any]:
+        leader = self._spotify_leader(gid)
+        if leader != self.id:
+            return await self.forward(
+                leader, "POST", f"/api/v2/groups/{leader}/spotify/play", body, wait=20
+            )
+        uri = str(body.get("uri") or "")
+        if not uri.startswith("spotify:"):
+            raise EngineError(400, "uri must be a spotify: URI")
+        async with self._lock:
+            await self._switch_source("spotify")
+            ok, message = await self.spotify.play(
+                uri,
+                skip_to_uri=body.get("skip_to_uri") or None,
+                position_ms=body.get("position_ms"),
+            )
+            if not ok:
+                raise EngineError(409 if "signed in" in message else 502, message)
+            self._prev_playing["spotify"] = True
+            self.source = "spotify"
+        self.kick()
+        return {"ok": True, **(await self._spotify_info_local())}
+
+    async def spotify_context_tracks(self, gid: str, uri: str) -> dict[str, Any]:
+        leader = self._spotify_leader(gid)
+        if leader != self.id:
+            return await self.forward(
+                leader, "POST", f"/api/v2/groups/{leader}/spotify/context-tracks", {"uri": uri}
+            )
+        data = await self.spotify.context_tracks(uri)
+        if data is None:
+            raise EngineError(409, "Spotify is not signed in on this player yet.")
+        return data
+
+    async def seek(self, gid: str, position_ms: int) -> None:
+        leader = self.resolve_leader(gid)
+        if leader != self.id:
+            await self.forward(
+                leader, "POST", f"/api/v2/groups/{leader}/seek", {"position_ms": position_ms}
+            )
+            return
+        if self.source != "spotify":
+            raise EngineError(409, "Seeking works for Spotify only.")
+        if not await self.spotify.seek(position_ms):
+            raise EngineError(502, "Spotify player did not seek")
+        self.kick()
 
     async def play_radio(self, gid: str, body: dict[str, Any]) -> dict[str, Any]:
         leader = self.resolve_leader(gid)

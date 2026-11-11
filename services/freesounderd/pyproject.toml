@@ -1,6 +1,6 @@
 [project]
 name = "freesounderd"
-version = "0.6.0"
+version = "0.6.1"
 description = "FreeSounder player daemon: one equal service per speaker (setup, rooms, groups, sources, DSP)."
 readme = "README.md"
 license = { text = "Apache-2.0" }
