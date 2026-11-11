@@ -39,9 +39,10 @@ class ControlApiClient {
     return jsonDecode(response.body);
   }
 
-  Future<dynamic> _send(String method, String path, [Object? body]) async {
+  Future<dynamic> _send(String method, String path, [Object? body, bool slow = false]) async {
     final request = http.Request(method, _uri(path))
       ..headers.addAll(_json)
+      ..headers.addAll(slow ? const {TimeoutClient.slowHeader: '1'} : const {})
       ..body = jsonEncode(body ?? const <String, dynamic>{});
     final response = await http.Response.fromStream(await _http.send(request));
     _ensureOk(response);
@@ -115,6 +116,41 @@ class ControlApiClient {
 
   Future<void> playRadio(String roomOrGroupId, RadioStation station) =>
       _send('POST', '/api/v2/groups/$roomOrGroupId/radio', station.toPlayJson());
+
+  /// Seek the group's Spotify playback (milliseconds).
+  Future<void> seek(String roomOrGroupId, int positionMs) =>
+      _send('POST', '/api/v2/groups/$roomOrGroupId/seek', {'position_ms': positionMs});
+
+  /// The group leader's Spotify Connect device and sign-in state.
+  Future<PlayerSpotify> spotifyInfo(String roomOrGroupId) async {
+    final data = await _send('POST', '/api/v2/groups/$roomOrGroupId/spotify');
+    return PlayerSpotify.fromJson(data as Map<String, dynamic>);
+  }
+
+  /// Sign the group's Spotify device in with the app's token (used once; the
+  /// player keeps go-librespot's own stored credentials, not the token).
+  Future<PlayerSpotify> spotifyLogin(String roomOrGroupId, {required String username, required String accessToken}) async {
+    final data = await _send(
+      'POST',
+      '/api/v2/groups/$roomOrGroupId/spotify/login',
+      {'username': username, 'access_token': accessToken},
+      true,
+    );
+    return PlayerSpotify.fromJson(data as Map<String, dynamic>);
+  }
+
+  /// Play a Spotify URI (album, playlist, artist, show or track) on the group.
+  /// [skipToUri] starts a context at that track.
+  Future<void> spotifyPlay(String roomOrGroupId, String uri, {String? skipToUri}) =>
+      _send('POST', '/api/v2/groups/$roomOrGroupId/spotify/play', {'uri': uri, 'skip_to_uri': ?skipToUri});
+
+  /// Track list of a context from go-librespot (works for playlists the Web
+  /// API won't list in development mode).
+  Future<List<Map<String, dynamic>>> spotifyContextTracks(String roomOrGroupId, String uri) async {
+    final data = await _send('POST', '/api/v2/groups/$roomOrGroupId/spotify/context-tracks', {'uri': uri});
+    final tracks = (data as Map<String, dynamic>)['tracks'] as List? ?? const [];
+    return [for (final t in tracks) t as Map<String, dynamic>];
+  }
 
   Future<List<UnclaimedPlayer>> listUnclaimed() async {
     final data = await _getJson('/api/v2/players/unclaimed') as List<dynamic>;
@@ -281,20 +317,50 @@ class SystemHealth {
 class TimeoutClient extends http.BaseClient {
   TimeoutClient(this._inner, this.timeout);
 
+  /// Request header (stripped before sending) for calls that may take a minute.
+  static const slowHeader = 'x-fs-slow';
+
   final http.Client _inner;
   final Duration timeout;
 
   @override
   Future<http.StreamedResponse> send(http.BaseRequest request) {
+    final slow = request.headers.remove(slowHeader) != null;
+    final limit = slow ? const Duration(seconds: 90) : timeout;
     return _inner.send(request).timeout(
-          timeout,
+          limit,
           onTimeout: () => throw TimeoutException(
-            '${request.method} ${request.url} did not answer within ${timeout.inSeconds}s',
-            timeout,
+            '${request.method} ${request.url} did not answer within ${limit.inSeconds}s',
+            limit,
           ),
         );
   }
 
   @override
   void close() => _inner.close();
+}
+
+/// A group's Spotify Connect device as its leader reports it.
+class PlayerSpotify {
+  const PlayerSpotify({
+    required this.leaderId,
+    this.deviceId,
+    this.deviceName,
+    this.loggedIn = false,
+    this.username,
+  });
+
+  final String leaderId;
+  final String? deviceId;
+  final String? deviceName;
+  final bool loggedIn;
+  final String? username;
+
+  factory PlayerSpotify.fromJson(Map<String, dynamic> json) => PlayerSpotify(
+        leaderId: json['leader_id'] as String? ?? '',
+        deviceId: json['device_id'] as String?,
+        deviceName: json['device_name'] as String?,
+        loggedIn: json['logged_in'] as bool? ?? false,
+        username: json['username'] as String?,
+      );
 }

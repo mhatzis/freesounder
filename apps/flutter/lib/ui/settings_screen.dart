@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/connection_prefs.dart';
 import '../app_version.dart';
+import '../spotify/spotify_store.dart';
+import '../spotify/ui/spotify_screen.dart';
 import '../state/playback_store.dart';
 import 'add_player_sheet.dart';
 import 'radio_screen.dart';
@@ -184,11 +186,35 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             subtitle: const Text('Search Radio Browser and play a station in the selected room'),
             onTap: () => showRadioScreen(context),
           ),
+          Consumer(
+            builder: (context, ref, _) {
+              final spotify = ref.watch(spotifyProvider);
+              return ListTile(
+                key: const Key('spotify-tile'),
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.library_music_outlined),
+                title: const Text('Spotify'),
+                subtitle: Text(
+                  spotify.signedIn
+                      ? 'Connected${spotify.displayName?.isNotEmpty == true ? ' as ${spotify.displayName}' : ''}. Browse and play in any room.'
+                      : 'Connect your Spotify Premium account to browse and play here',
+                ),
+                trailing: spotify.signedIn
+                    ? TextButton(
+                        key: const Key('spotify-sign-out'),
+                        onPressed: () => ref.read(spotifyProvider.notifier).signOut(),
+                        child: const Text('Sign out'),
+                      )
+                    : null,
+                onTap: () => showSpotifyScreen(context),
+              );
+            },
+          ),
           const ListTile(
             key: Key('streaming-hint-tile'),
             contentPadding: EdgeInsets.zero,
             leading: Icon(Icons.cast_outlined),
-            title: Text('Spotify and AirPlay'),
+            title: Text('Spotify app and AirPlay'),
             subtitle: Text(
               'Every room or group shows up in the Spotify app (Spotify Connect) and in '
               'AirPlay as one speaker, for example "Kitchen + 1". Pick it there.',

@@ -14,7 +14,15 @@ class Room {
     this.relayingFor,
     this.source,
     this.url,
+    this.nowTitle,
+    this.nowArtist,
+    this.nowImageUrl,
   });
+
+  /// Summary of what the room's group plays (from the rooms list).
+  final String? nowTitle;
+  final String? nowArtist;
+  final String? nowImageUrl;
 
   final String id;
   final String name;
@@ -57,6 +65,9 @@ class Room {
       relayingFor: json['relaying_for'] as String?,
       source: json['source'] as String?,
       url: json['url'] as String?,
+      nowTitle: (json['now_playing'] as Map?)?['title'] as String?,
+      nowArtist: (json['now_playing'] as Map?)?['artist'] as String?,
+      nowImageUrl: (json['now_playing'] as Map?)?['image_url'] as String?,
     );
   }
 
@@ -83,6 +94,9 @@ class Room {
       relayingFor: relayingFor,
       source: source,
       url: url,
+      nowTitle: nowTitle,
+      nowArtist: nowArtist,
+      nowImageUrl: nowImageUrl,
     );
   }
 }

@@ -8,6 +8,7 @@ import '../api/discovery.dart';
 import '../api/first_player.dart';
 import '../api/mock_data.dart';
 import '../models/now_playing.dart';
+import '../spotify/spotify_store.dart';
 import '../models/player_settings.dart';
 import '../models/radio_station.dart';
 import '../models/room.dart';
@@ -33,6 +34,7 @@ class PlaybackState {
     required this.rooms,
     this.activeRoomId,
     this.nowPlaying,
+    this.nowPlayingByRoom = const {},
     this.mockMode = true,
     this.connected = false,
     this.discovering = false,
@@ -47,6 +49,9 @@ class PlaybackState {
   final List<Room> rooms;
   final String? activeRoomId;
   final NowPlaying? nowPlaying;
+
+  /// Latest now-playing per room (every room's group, from the event stream).
+  final Map<String, NowPlaying> nowPlayingByRoom;
   final bool mockMode;
   final bool connected;
   final bool discovering;
@@ -79,6 +84,7 @@ class PlaybackState {
     List<Room>? rooms,
     String? activeRoomId,
     NowPlaying? nowPlaying,
+    Map<String, NowPlaying>? nowPlayingByRoom,
     bool? mockMode,
     bool? connected,
     bool? discovering,
@@ -96,6 +102,7 @@ class PlaybackState {
       rooms: rooms ?? this.rooms,
       activeRoomId: activeRoomId ?? this.activeRoomId,
       nowPlaying: nowPlaying ?? this.nowPlaying,
+      nowPlayingByRoom: nowPlayingByRoom ?? this.nowPlayingByRoom,
       mockMode: mockMode ?? this.mockMode,
       connected: connected ?? this.connected,
       discovering: discovering ?? this.discovering,
@@ -381,9 +388,11 @@ class PlaybackStore extends Notifier<PlaybackState> {
       state = state.copyWith(rooms: rooms, connected: true, clearError: true);
     } else if (event == 'now_playing' && data is Map<String, dynamic>) {
       final np = NowPlaying.fromJson(data);
-      if (np.playerId == state.activeRoomId) {
-        state = state.copyWith(nowPlaying: np);
-      }
+      final byRoom = Map<String, NowPlaying>.of(state.nowPlayingByRoom)..[np.playerId] = np;
+      state = state.copyWith(
+        nowPlayingByRoom: byRoom,
+        nowPlaying: np.playerId == state.activeRoomId ? np : null,
+      );
     } else if (event == 'health' && data is Map<String, dynamic>) {
       final ok = data['status'] == 'ok';
       state = state.copyWith(connected: ok);
@@ -421,11 +430,7 @@ class PlaybackStore extends Notifier<PlaybackState> {
       state = state.copyWith(nowPlaying: next);
       return;
     }
-    if (shouldPause) {
-      await _client?.pause(room.id);
-    } else {
-      await _client?.play(room.id);
-    }
+    await _transport(room.id, shouldPause ? 'pause' : 'play');
   }
 
   Future<void> skipNext() async {
@@ -442,7 +447,7 @@ class PlaybackStore extends Notifier<PlaybackState> {
       }
       return;
     }
-    await _client?.next(room.id);
+    await _transport(room.id, 'next');
   }
 
   Future<void> setVolume(String roomId, int level) async {
@@ -464,7 +469,7 @@ class PlaybackStore extends Notifier<PlaybackState> {
     if (room == null || state.mockMode) {
       return;
     }
-    await _client?.previous(room.id);
+    await _transport(room.id, 'previous');
   }
 
   /// Volume for the whole group the room is in (every room moves together).
@@ -571,6 +576,71 @@ class PlaybackStore extends Notifier<PlaybackState> {
       throw ControlApiException('Not connected to a player');
     }
     await client.playRadio(target, station);
+  }
+
+  /// Demo mode: pretend [roomId]'s group started playing [np].
+  void showDemoNowPlaying(String roomId, NowPlaying np) {
+    _mock.nowPlaying[roomId] = np;
+    final byRoom = Map<String, NowPlaying>.of(state.nowPlayingByRoom)..[roomId] = np;
+    state = state.copyWith(
+      nowPlayingByRoom: byRoom,
+      nowPlaying: roomId == state.activeRoomId ? np : null,
+    );
+  }
+
+  /// Now-playing for any room: live event data, else the rooms-list summary.
+  NowPlaying? nowPlayingFor(String roomId) {
+    if (roomId == state.activeRoomId && state.nowPlaying != null) {
+      return state.nowPlaying;
+    }
+    if (state.mockMode) {
+      return _mock.nowPlaying[roomId];
+    }
+    return state.nowPlayingByRoom[roomId];
+  }
+
+  /// Seek Spotify playback in the active room's group (seconds).
+  Future<void> seek(double seconds) async {
+    final room = state.activeRoom;
+    final np = state.nowPlaying;
+    if (room == null || np == null) {
+      return;
+    }
+    final updated = np.copyWith(position: seconds, receivedAt: DateTime.now());
+    state = state.copyWith(nowPlaying: updated);
+    if (state.mockMode) {
+      _mock.nowPlaying[room.id] = updated;
+      return;
+    }
+    await _transport(room.id, 'seek', positionMs: (seconds * 1000).round());
+  }
+
+  /// Player first; for Spotify, the Web API when the player can't.
+  Future<void> _transport(String roomId, String action, {int? positionMs}) async {
+    final client = _client;
+    if (client == null) {
+      return;
+    }
+    try {
+      switch (action) {
+        case 'play':
+          await client.play(roomId);
+        case 'pause':
+          await client.pause(roomId);
+        case 'next':
+          await client.next(roomId);
+        case 'previous':
+          await client.previous(roomId);
+        case 'seek':
+          await client.seek(roomId, positionMs ?? 0);
+      }
+    } on Object {
+      final source = nowPlayingFor(roomId)?.source ?? state.activeRoom?.source;
+      if (source != 'spotify' || !ref.read(spotifyProvider).signedIn) {
+        rethrow;
+      }
+      await ref.read(spotifyProvider.notifier).webControl(roomId, action, positionMs: positionMs);
+    }
   }
 
   /// After BLE provisioning in demo mode, surface the player as unclaimed.

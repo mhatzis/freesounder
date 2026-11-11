@@ -4,7 +4,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../state/playback_store.dart';
 import '../theme/tokens.dart';
 import 'add_player_sheet.dart';
+import '../spotify/ui/spotify_screen.dart';
+import 'artwork.dart';
 import 'mini_player.dart';
+import 'now_playing_screen.dart';
 import 'radio_screen.dart';
 import 'room_settings_sheet.dart';
 import 'rooms_panel.dart';
@@ -109,9 +112,7 @@ class _NowPlayingCanvas extends ConsumerWidget {
         ? emptyRoomsTitle(state)
         : (np?.title ?? (state.discovering ? 'Looking for players…' : 'Nothing playing'));
     final subtitle = [np?.artist, np?.album].whereType<String>().where((s) => s.isNotEmpty).join(' — ');
-    final progress = (np?.duration != null && np!.duration! > 0)
-        ? ((np.position ?? 0) / np.duration!).clamp(0.0, 1.0)
-        : null;
+    final hasProgress = np?.duration != null && np!.duration! > 0;
 
     return ColoredBox(
       color: scheme.surface,
@@ -149,7 +150,16 @@ class _NowPlayingCanvas extends ConsumerWidget {
                                 ),
                                 child: ClipRRect(
                                   borderRadius: BorderRadius.circular(28),
-                                  child: _Artwork(url: np?.imageUrl),
+                                  child: Material(
+                                    child: InkWell(
+                                      key: const Key('now-playing-art'),
+                                      onTap: state.rooms.isEmpty ? null : () => showNowPlayingScreen(context),
+                                      child: Artwork(
+                                        urls: np?.artworkCandidates ?? const [],
+                                        icon: np?.source == 'radio' ? Icons.radio : null,
+                                      ),
+                                    ),
+                                  ),
                                 ),
                               ),
                             ),
@@ -191,14 +201,18 @@ class _NowPlayingCanvas extends ConsumerWidget {
                                   style: text.labelMedium?.copyWith(color: scheme.onSurfaceVariant),
                                 ),
                             ],
-                            if (progress != null) ...[
+                            if (hasProgress) ...[
                               const SizedBox(height: 16),
-                              ClipRRect(
-                                borderRadius: BorderRadius.circular(99),
-                                child: LinearProgressIndicator(
-                                  value: progress,
-                                  minHeight: 3,
-                                  backgroundColor: scheme.surfaceContainerHighest,
+                              Ticking(
+                                active: np.isPlaying,
+                                builder: (context) => ClipRRect(
+                                  borderRadius: BorderRadius.circular(99),
+                                  child: LinearProgressIndicator(
+                                    key: const Key('now-playing-progress'),
+                                    value: ((np.livePosition() ?? 0) / np.duration!).clamp(0.0, 1.0),
+                                    minHeight: 3,
+                                    backgroundColor: scheme.surfaceContainerHighest,
+                                  ),
                                 ),
                               ),
                             ],
@@ -299,6 +313,12 @@ class _TopBar extends StatelessWidget {
             ),
           ),
         IconButton(
+          key: const Key('spotify-button'),
+          tooltip: 'Spotify',
+          icon: const Icon(Icons.library_music_outlined),
+          onPressed: () => showSpotifyScreen(context),
+        ),
+        IconButton(
           key: const Key('radio-button'),
           tooltip: 'Radio',
           icon: const Icon(Icons.radio_outlined),
@@ -327,20 +347,4 @@ String? sourceLabel(String? source) {
     'airplay' => 'AirPlay',
     _ => null,
   };
-}
-
-class _Artwork extends StatelessWidget {
-  const _Artwork({this.url});
-
-  final String? url;
-
-  @override
-  Widget build(BuildContext context) {
-    final logo = Image.asset('assets/logo.png', fit: BoxFit.cover, filterQuality: FilterQuality.medium);
-    final src = url;
-    if (src == null || !src.startsWith('http')) {
-      return logo;
-    }
-    return Image.network(src, fit: BoxFit.cover, errorBuilder: (_, _, _) => logo);
-  }
 }

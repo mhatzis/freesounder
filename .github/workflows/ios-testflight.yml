@@ -67,12 +67,16 @@ jobs:
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
 
       - name: Build IPA
+        env:
+          # Optional build-time default Spotify Client ID; empty means each user adds their own.
+          SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
         run: |
           BUILD_NAME="$(sed -n 's/^version: *\([0-9.]*\).*/\1/p' pubspec.yaml)"
           echo "Building $BUILD_NAME (${GITHUB_RUN_NUMBER})"
           flutter build ipa --release \
             --build-name="$BUILD_NAME" \
             --build-number="${GITHUB_RUN_NUMBER}" \
+            --dart-define=SPOTIFY_CLIENT_ID="${SPOTIFY_CLIENT_ID:-}" \
             --export-options-plist=ios/ExportOptions.plist
 
       - name: Upload IPA artifact

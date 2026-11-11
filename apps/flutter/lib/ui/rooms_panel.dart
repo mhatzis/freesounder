@@ -5,6 +5,7 @@ import '../models/room.dart';
 import '../state/playback_store.dart';
 import '../theme/tokens.dart';
 import 'add_player_sheet.dart';
+import 'artwork.dart';
 import 'room_settings_sheet.dart';
 
 /// Rooms list used both in the bottom sheet and the wide right-hand rail.
@@ -36,10 +37,7 @@ class RoomsPanel extends ConsumerWidget {
                     style: Theme.of(context).textTheme.labelSmall?.copyWith(color: scheme.onSurfaceVariant),
                   ),
                 if (!state.connected && !state.mockMode && !state.discovering)
-                  Text(
-                    'Offline',
-                    style: Theme.of(context).textTheme.labelSmall?.copyWith(color: scheme.error),
-                  ),
+                  Text('Offline', style: Theme.of(context).textTheme.labelSmall?.copyWith(color: scheme.error)),
                 IconButton(
                   key: const Key('add-player-button'),
                   tooltip: 'Add a player',
@@ -114,6 +112,11 @@ class _RoomTile extends ConsumerWidget {
     final state = ref.watch(playbackProvider);
     final selected = state.activeRoomId == room.id;
     final scheme = Theme.of(context).colorScheme;
+    final np = ref.read(playbackProvider.notifier).nowPlayingFor(room.id);
+    final nowTitle = np?.hasTrack == true ? np!.title : room.nowTitle;
+    final nowArtist = np?.hasTrack == true ? np!.artist : room.nowArtist;
+    final art = [...?np?.artworkCandidates, ?room.nowImageUrl];
+    final nowLine = [?nowTitle, ?nowArtist].where((s) => s.isNotEmpty).join(' · ');
     return Material(
       color: selected ? scheme.primaryContainer.withValues(alpha: 0.55) : Colors.transparent,
       borderRadius: BorderRadius.circular(16),
@@ -127,17 +130,36 @@ class _RoomTile extends ConsumerWidget {
             children: [
               Row(
                 children: [
-                  Icon(
-                    selected ? Icons.speaker : Icons.speaker_outlined,
-                    color: selected ? scheme.primary : scheme.onSurfaceVariant,
-                  ),
+                  if (art.isNotEmpty || nowLine.isNotEmpty)
+                    ClipRRect(
+                      key: Key('room-art-${room.id}'),
+                      borderRadius: BorderRadius.circular(6),
+                      child: SizedBox(width: 36, height: 36, child: Artwork(urls: art)),
+                    )
+                  else
+                    Icon(
+                      selected ? Icons.speaker : Icons.speaker_outlined,
+                      color: selected ? scheme.primary : scheme.onSurfaceVariant,
+                    ),
                   const SizedBox(width: 12),
                   Expanded(
-                    child: Text(
-                      room.name,
-                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                        fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-                      ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          room.name,
+                          style: Theme.of(context).textTheme.titleSmall
+                              ?.copyWith(fontWeight: selected ? FontWeight.w600 : FontWeight.w500),
+                        ),
+                        if (nowLine.isNotEmpty)
+                          Text(
+                            nowLine,
+                            key: Key('room-now-${room.id}'),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+                          ),
+                      ],
                     ),
                   ),
                   Text(
@@ -167,8 +189,7 @@ class _RoomTile extends ConsumerWidget {
                 value: (room.volume ?? 0).clamp(0, 100).toDouble(),
                 max: 100,
                 label: '${room.volume ?? 0}',
-                onChanged: (value) =>
-                    ref.read(playbackProvider.notifier).setVolume(room.id, value.round()),
+                onChanged: (value) => ref.read(playbackProvider.notifier).setVolume(room.id, value.round()),
               ),
             ],
           ),
@@ -203,10 +224,7 @@ class RoomsBottomSheet extends ConsumerWidget {
             controller: scrollController,
             slivers: [
               const SliverToBoxAdapter(child: _Grabber()),
-              const SliverFillRemaining(
-                hasScrollBody: true,
-                child: RoomsPanel(),
-              ),
+              const SliverFillRemaining(hasScrollBody: true, child: RoomsPanel()),
             ],
           ),
         );
@@ -351,12 +369,12 @@ class _GroupSheetState extends ConsumerState<_GroupSheet> {
                 onChanged: _busy
                     ? null
                     : (v) => setState(() {
-                          if (v == true) {
-                            _selected.add(other.id);
-                          } else {
-                            _selected.remove(other.id);
-                          }
-                        }),
+                        if (v == true) {
+                          _selected.add(other.id);
+                        } else {
+                          _selected.remove(other.id);
+                        }
+                      }),
               ),
             if (widget.room.isGrouped)
               TextButton(
@@ -369,8 +387,7 @@ class _GroupSheetState extends ConsumerState<_GroupSheet> {
                       },
                 child: Text('Take ${widget.room.name} out of the group'),
               ),
-            if (_error != null)
-              Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
+            if (_error != null) Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error)),
             const SizedBox(height: 8),
             FilledButton(
               key: const Key('group-apply'),
