@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' show PlatformDispatcher;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -22,13 +23,16 @@ enum _WizardStep { find, wifi, password, progress, adopt }
 
 /// Wizard: find nearby (BLE + online) players, join Wi-Fi if needed, then adopt.
 class AddPlayerSheet extends ConsumerStatefulWidget {
-  const AddPlayerSheet({super.key, this.transport, this.phoneSsid});
+  const AddPlayerSheet({super.key, this.transport, this.phoneSsid, this.wifiCountry});
 
   /// Optional override so widget tests do not need a radio.
   final NearbyTransport? transport;
 
   /// Optional prefilled phone SSID (tests / demo).
   final String? phoneSsid;
+
+  /// Wi-Fi country override (tests). Defaults to the phone's region, else AU.
+  final String? wifiCountry;
 
   @override
   ConsumerState<AddPlayerSheet> createState() => _AddPlayerSheetState();
@@ -48,6 +52,7 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
   var _working = false;
   String? _error;
   String? _debug;
+  String? _failureDetail;
   String _progress = 'Connecting…';
   StreamSubscription<List<NearbyPlayer>>? _bleSub;
   NearbyTransport? _cachedTransport;
@@ -60,6 +65,45 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
     final NearbyTransport created = widget.transport ?? ref.read(nearbyTransportProvider);
     _cachedTransport = created;
     return created;
+  }
+
+  String get _wifiCountry {
+    final override = widget.wifiCountry;
+    if (override != null && override.length == 2) {
+      return override.toUpperCase();
+    }
+    final region = PlatformDispatcher.instance.locale.countryCode;
+    if (region != null && RegExp(r'^[A-Za-z]{2}$').hasMatch(region)) {
+      return region.toUpperCase();
+    }
+    return 'AU';
+  }
+
+  Future<void> _rescanWifi() async {
+    setState(() {
+      _working = true;
+      _error = null;
+    });
+    try {
+      final networks = await _transport.scanWifi();
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _networks = networks;
+        _network ??= networks.isNotEmpty ? networks.first : null;
+        _working = false;
+      });
+    } on Object catch (err) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _working = false;
+        _error = friendlyError(err);
+        _debug = debugDetail(err);
+      });
+    }
   }
 
   @override
@@ -153,6 +197,7 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
       if (_name.text.isEmpty) {
         _name.text = _suggestedName(info.deviceName.isNotEmpty ? info.deviceName : player.name);
       }
+      await _transport.setWifiCountry(_wifiCountry);
       final networks = await _transport.scanWifi();
       final phone = widget.phoneSsid ?? await _transport.phoneSsid();
       WifiCandidate? prefill;
@@ -208,7 +253,8 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
       _step = _WizardStep.progress;
       _working = true;
       _error = null;
-      _progress = 'Connecting to ${network.ssid}…';
+      _failureDetail = null;
+      _progress = 'Connecting to ${network.ssid}… This can take up to a minute.';
     });
     try {
       final result = await _transport.provision(
@@ -223,7 +269,9 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
         setState(() {
           _working = false;
           _error = result.message;
-          _progress = result.message;
+          _failureDetail = result.detail;
+          _debug = 'Wi-Fi: ${result.reason}${result.detail == null ? '' : ' (${result.detail})'}';
+          _progress = 'Could not join ${network.ssid}.';
         });
         return;
       }
@@ -456,11 +504,23 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
       children: [
         Text('Wi-Fi network', style: text.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
         const SizedBox(height: 8),
-        if (_networks.isEmpty)
+        if (_networks.isEmpty) ...[
           Text(
-            'No networks reported yet. You can type a name below.',
+            'The player did not find any Wi-Fi networks. Scan again, or type your '
+            'network name below.',
+            key: const Key('wifi-empty'),
             style: text.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
-          )
+          ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              key: const Key('wifi-rescan'),
+              onPressed: _working ? null : () => unawaited(_rescanWifi()),
+              icon: const Icon(Icons.refresh),
+              label: const Text('Scan again'),
+            ),
+          ),
+        ]
         else
           for (final network in _networks)
             RadioListTile<String>(
@@ -563,6 +623,24 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
           if (_error != null) ...[
             const SizedBox(height: 8),
             Text(_error!, textAlign: TextAlign.center, style: text.bodySmall?.copyWith(color: scheme.error)),
+            if (_failureDetail != null) ...[
+              const SizedBox(height: 4),
+              Text(
+                'Player said: $_failureDetail',
+                key: const Key('wifi-failure-detail'),
+                textAlign: TextAlign.center,
+                style: text.labelSmall?.copyWith(color: scheme.onSurfaceVariant),
+              ),
+            ],
+            if (ref.watch(developerModeProvider)) ...[
+              const SizedBox(height: 4),
+              Text(
+                'BLE: ${_debug ?? _transport.lastDebug}',
+                key: const Key('ble-debug-line-progress'),
+                textAlign: TextAlign.center,
+                style: text.labelSmall?.copyWith(color: scheme.onSurfaceVariant, fontFamily: 'monospace'),
+              ),
+            ],
             const SizedBox(height: 12),
             TextButton(
               key: const Key('wifi-retry'),

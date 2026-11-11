@@ -18,6 +18,10 @@ const improvCmdScanWifi = 0x04;
 const improvCmdHostname = 0x05;
 const improvCmdDeviceName = 0x06;
 
+/// FreeSounder extension: ISO 3166 Wi-Fi country as one Improv string.
+/// Older players answer UNKNOWN_RPC, which the app ignores.
+const improvCmdWifiCountry = 0x80;
+
 const improvStateAuthorized = 0x02;
 const improvStateProvisioning = 0x03;
 const improvStateProvisioned = 0x04;
@@ -119,4 +123,17 @@ String friendlyImprovError(int code) {
     default:
       return 'The player reported a setup problem. Try again.';
   }
+}
+
+/// Two-letter Wi-Fi country from a locale name such as `en_AU` or
+/// `en-AU`; [fallback] when the locale has no region.
+String wifiCountryFromLocale(String localeName, {String fallback = 'AU'}) {
+  final base = localeName.split('.').first.split('@').first;
+  final parts = base.split(RegExp('[_-]'));
+  for (final part in parts.skip(1)) {
+    if (RegExp(r'^[A-Za-z]{2}$').hasMatch(part)) {
+      return part.toUpperCase();
+    }
+  }
+  return fallback;
 }

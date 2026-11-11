@@ -7,7 +7,7 @@ import 'package:freesounder/api/nearby.dart';
 import 'package:freesounder/state/playback_store.dart';
 import 'package:freesounder/ui/add_player_sheet.dart';
 
-Widget _host({NearbyTransport? transport, String? phoneSsid, bool developer = false}) {
+Widget _host({NearbyTransport? transport, String? phoneSsid, bool developer = false, String? wifiCountry}) {
   return ProviderScope(
     overrides: [
       if (developer) developerModeProvider.overrideWith(_DevOn.new),
@@ -21,6 +21,7 @@ Widget _host({NearbyTransport? transport, String? phoneSsid, bool developer = fa
         body: AddPlayerSheet(
           transport: transport ?? DemoNearbyTransport(delay: Duration.zero),
           phoneSsid: phoneSsid ?? 'Home',
+          wifiCountry: wifiCountry,
         ),
       ),
     ),
@@ -155,6 +156,64 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('wifi-continue')), findsOneWidget);
   });
+
+  testWidgets('sends the Wi-Fi country, offers rescan on an empty list, shows the player reason',
+      (tester) async {
+    tester.view.physicalSize = const Size(400, 1000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    final transport = _RadioOffTransport();
+    await tester.pumpWidget(_host(transport: transport, wifiCountry: 'au', phoneSsid: ''));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('nearby-demo-ble-porch')));
+    await tester.pumpAndSettle();
+
+    expect(transport.countries, ['AU']);
+    expect(find.byKey(const Key('wifi-empty')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('wifi-rescan')));
+    await tester.pumpAndSettle();
+    expect(transport.scans, 2);
+    expect(find.byKey(const Key('wifi-Home')), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('wifi-continue')));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byKey(const Key('wifi-password')), 'password123');
+    await tester.tap(find.byKey(const Key('wifi-join')));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('Wi-Fi radio is switched off'), findsOneWidget);
+    expect(find.textContaining('Player said: wlan0 is unavailable'), findsOneWidget);
+    expect(find.byKey(const Key('wifi-retry')), findsOneWidget);
+  });
+}
+
+class _RadioOffTransport extends DemoNearbyTransport {
+  _RadioOffTransport() : super(delay: Duration.zero);
+
+  final countries = <String>[];
+  var scans = 0;
+
+  @override
+  Future<bool> setWifiCountry(String country) async {
+    countries.add(country);
+    return true;
+  }
+
+  @override
+  Future<List<WifiCandidate>> scanWifi() async {
+    scans += 1;
+    if (scans == 1) {
+      return const [];
+    }
+    return super.scanWifi();
+  }
+
+  @override
+  Future<ProvisionResult> provision({required String ssid, required String password, String? roomName}) async {
+    return const ProvisionResult(ok: false, reason: 'radio_off', detail: 'wlan0 is unavailable (rfkill blocked)');
+  }
 }
 
 class _DevOn extends DeveloperModeNotifier {

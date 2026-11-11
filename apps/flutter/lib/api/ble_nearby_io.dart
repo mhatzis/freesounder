@@ -22,7 +22,10 @@ class BleNearbyTransport implements NearbyTransport {
   static const notifyTimeout = Duration(seconds: 10);
   static const deviceInfoTimeout = Duration(seconds: 10);
   static const scanWifiTimeout = Duration(seconds: 30);
-  static const sendWifiTimeout = Duration(seconds: 60);
+  // The player unblocks the radio, rescans, joins (up to 40 s) and waits
+  // for DHCP (up to 15 s) before it answers.
+  static const sendWifiTimeout = Duration(seconds: 120);
+  static const countryTimeout = Duration(seconds: 10);
   static const nameTimeout = Duration(seconds: 10);
 
   final _controller = StreamController<List<NearbyPlayer>>.broadcast();
@@ -205,6 +208,17 @@ class BleNearbyTransport implements NearbyTransport {
   }
 
   @override
+  Future<bool> setWifiCountry(String country) async {
+    try {
+      await _rpc(BleStep.scanWifi, improvCmdWifiCountry, encodeImprovStrings([country]), countryTimeout);
+      return true;
+    } on Object {
+      // Older players do not know the command; they keep their default.
+      return false;
+    }
+  }
+
+  @override
   Future<void> identify() async {
     try {
       await _rpc(BleStep.deviceInfo, improvCmdIdentify, const [], deviceInfoTimeout);
@@ -232,7 +246,9 @@ class BleNearbyTransport implements NearbyTransport {
     // drop the link right after it joins Wi-Fi, so never read state after.
     final frame = await _rpc(BleStep.sendWifi, improvCmdWifiSettings, payload, sendWifiTimeout);
     final result = provisionResultFrom(decodeImprovResult(frame), playerId: _info.playerId);
-    _lastDebug = result.ok ? 'Wi-Fi sent: joined' : 'Wi-Fi sent: ${result.reason}';
+    _lastDebug = result.ok
+        ? 'Wi-Fi sent: joined'
+        : 'Wi-Fi sent: ${result.reason}${result.detail == null ? '' : ' (${result.detail})'}';
     return result;
   }
 
@@ -294,10 +310,20 @@ class BleNearbyTransport implements NearbyTransport {
           if (value.isEmpty || value.first == improvErrorNone || completer.isCompleted) {
             return;
           }
-          completer.completeError(
-            NearbyException(step, friendlyImprovError(value.first),
-                detail: 'Improv error 0x${value.first.toRadixString(16).padLeft(2, '0')}'),
-          );
+          final code = value.first;
+          final failure = NearbyException(step, friendlyImprovError(code),
+              detail: 'Improv error 0x${code.toRadixString(16).padLeft(2, '0')}');
+          if (code == improvErrorUnableToConnect) {
+            // The reason string arrives on the result characteristic; give it
+            // a moment instead of failing with a generic message.
+            Future<void>.delayed(const Duration(seconds: 3), () {
+              if (!completer.isCompleted) {
+                completer.completeError(failure);
+              }
+            });
+            return;
+          }
+          completer.completeError(failure);
         });
       }
       try {

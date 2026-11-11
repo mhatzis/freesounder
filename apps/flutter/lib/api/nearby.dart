@@ -55,6 +55,7 @@ class ProvisionResult {
     this.ip,
     this.redirect,
     this.reason,
+    this.detail,
     this.playerId,
   });
 
@@ -62,6 +63,9 @@ class ProvisionResult {
   final String? ip;
   final String? redirect;
   final String? reason;
+
+  /// Short, already-redacted explanation from the player (NetworkManager).
+  final String? detail;
   final String? playerId;
 
   String get message {
@@ -74,10 +78,21 @@ class ProvisionResult {
     switch (reason) {
       case 'wrong_password':
         return 'Wrong password. Check it and try again.';
+      case 'invalid_password':
+        return 'Wi-Fi passwords are 8 to 63 characters. Check it and try again.';
       case 'ssid_not_found':
-        return 'That network was not found. Move closer or pick another.';
+        return 'The player cannot see that network. Move it closer to the router, '
+            'or check the name (2.4 GHz and 5 GHz networks both work).';
+      case 'radio_off':
+        return "The player's Wi-Fi radio is switched off or blocked. Restart the player and try again.";
+      case 'wifi_unmanaged':
+        return "The player's Wi-Fi is not available for setup. Restart the player and try again.";
+      case 'no_address':
+        return 'The player joined the network but did not get an address. Check your router allows new devices.';
+      case 'timeout':
+        return 'The network did not answer in time. Move the player closer and try again.';
       default:
-        return 'Could not join the network. Check the password and try again.';
+        return 'The player could not join the network. Check the password and try again.';
     }
   }
 }
@@ -98,6 +113,9 @@ abstract class NearbyTransport {
 
   /// Optional: ask the board to blink its LED. Never plays sound.
   Future<void> identify();
+
+  /// Tell the player which Wi-Fi regulatory country it is in. Best effort.
+  Future<bool> setWifiCountry(String country);
 
   Future<ProvisionResult> provision({
     required String ssid,
@@ -178,6 +196,9 @@ class DemoNearbyTransport implements NearbyTransport {
   Future<void> identify() async {}
 
   @override
+  Future<bool> setWifiCountry(String country) async => true;
+
+  @override
   Future<ProvisionResult> provision({
     required String ssid,
     required String password,
@@ -237,9 +258,11 @@ ProvisionResult provisionResultFrom(List<String> strings, {String? playerId}) {
     final match = RegExp(r'https?://(\[[^\]]+\]|[^:/]+)').firstMatch(first);
     return ProvisionResult(ok: true, redirect: first, ip: match?.group(1), playerId: playerId);
   }
+  final detail = strings.length > 1 ? strings[1].trim() : '';
   return ProvisionResult(
     ok: false,
     reason: first.isEmpty ? 'unable_to_connect' : first,
+    detail: detail.isEmpty ? null : detail,
     playerId: playerId,
   );
 }

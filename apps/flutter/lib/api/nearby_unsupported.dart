@@ -43,4 +43,7 @@ class _UnsupportedNearbyTransport implements NearbyTransport {
 
   @override
   String get lastDebug => 'Bluetooth is not supported on this platform';
+
+  @override
+  Future<bool> setWifiCountry(String country) async => false;
 }

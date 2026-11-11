@@ -127,4 +127,25 @@ void main() {
     expect(friendlyImprovError(improvErrorUnableToConnect), contains('password'));
     expect(friendlyImprovError(0x7f), contains('Try again'));
   });
+
+  test('Wi-Fi country comes from the phone locale, AU when missing', () {
+    expect(wifiCountryFromLocale('en_AU'), 'AU');
+    expect(wifiCountryFromLocale('en-NZ'), 'NZ');
+    expect(wifiCountryFromLocale('de_DE.UTF-8'), 'DE');
+    expect(wifiCountryFromLocale('en'), 'AU');
+    expect(wifiCountryFromLocale('zh_Hant_TW'), 'TW');
+  });
+
+  test('player failure reason and detail are kept and mapped', () {
+    final radio = provisionResultFrom(['radio_off', 'wlan0 is unavailable (rfkill blocked)']);
+    expect(radio.ok, isFalse);
+    expect(radio.reason, 'radio_off');
+    expect(radio.detail, contains('rfkill'));
+    expect(radio.message, contains('radio'));
+    expect(provisionResultFrom(['wrong_password', '']).detail, isNull);
+    expect(provisionResultFrom(['invalid_password']).message, contains('8 to 63'));
+    expect(provisionResultFrom(['no_address']).message, contains('address'));
+    expect(provisionResultFrom(['timeout']).message, contains('in time'));
+  });
 }
+
