@@ -11,7 +11,7 @@ PI_GEN_DIR=${PI_GEN_DIR:-$WORK_ROOT/pi-gen}
 DEPLOY_DIR=${DEPLOY_DIR:-$WORK_ROOT/deploy}
 export FREESOUNDER_ROOT=$REPO_ROOT
 
-export PATH="/usr/sbin:/sbin:${PATH}"
+export PATH="/usr/local/sbin:/usr/sbin:/sbin:${PATH}"
 
 if [[ "$(id -u)" -ne 0 ]]; then
 	echo "Re-running under sudo..."
@@ -74,9 +74,15 @@ python3 "$SCRIPT_DIR/pi-gen/patches/export-prerun-fat-geometry.sed.py" \
 	"$PI_GEN_DIR/export-image/prerun.sh"
 python3 "$SCRIPT_DIR/pi-gen/patches/export-finalise-mtools.sed.py" \
 	"$PI_GEN_DIR/export-image/05-finalise/01-run.sh"
+python3 "$SCRIPT_DIR/pi-gen/patches/export-finalise-unsigned-hash.sed.py" \
+	"$PI_GEN_DIR/export-image/05-finalise/01-run.sh"
 install -m 0755 "$SCRIPT_DIR/pi-gen/patches/flush-bootfs-mtools.sh" \
 	"$PI_GEN_DIR/export-image/flush-bootfs-mtools.sh"
 export FLUSH_BOOTFS_MTOOLS="$PI_GEN_DIR/export-image/flush-bootfs-mtools.sh"
+install -m 0755 "$SCRIPT_DIR/pi-gen/patches/rehash-rootfs-unsigned.sh" \
+	"$PI_GEN_DIR/export-image/05-finalise/rehash-rootfs-unsigned.sh"
+export REHASH_ROOTFS_UNSIGNED="$PI_GEN_DIR/export-image/05-finalise/rehash-rootfs-unsigned.sh"
+export PATH="/usr/local/sbin:/usr/sbin:/sbin:${PATH}"
 
 
 # Copy our config in as the default plus an explicit -c argument.
