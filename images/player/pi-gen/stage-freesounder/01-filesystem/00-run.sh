@@ -14,6 +14,11 @@ install -d "${ROOTFS_DIR}/etc/NetworkManager/system-connections"
 install -d "${ROOTFS_DIR}/etc/alsa/conf.d"
 install -d "${ROOTFS_DIR}/var/lib/freesounder"
 
+# Bake the default hostname even when stages 0–2 were built with an older name.
+printf 'fs-new\n' > "${ROOTFS_DIR}/etc/hostname"
+if [[ -f "${ROOTFS_DIR}/etc/hosts" ]]; then
+	sed -i 's/[[:space:]]freesounder$/	fs-new/' "${ROOTFS_DIR}/etc/hosts" || true
+fi
 install -m 0644 files/etc/freesounder/role "${ROOTFS_DIR}/etc/freesounder/role"
 install -m 0644 files/etc/freesounder/host "${ROOTFS_DIR}/etc/freesounder/host"
 install -m 0644 files/etc/freesounder/dac "${ROOTFS_DIR}/etc/freesounder/dac"
