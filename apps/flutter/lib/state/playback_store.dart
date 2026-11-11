@@ -21,7 +21,7 @@ class AppConfig {
   final bool forceDemo;
 
   /// Optional explicit control-api URL. When null, players are discovered
-  /// via mDNS (`_freesounder._tcp`) and the app falls back to demo mode.
+  /// via mDNS (`_freesounder._tcp`). Demo mode is off unless the user enables it.
   final String? apiBase;
   final Duration discoveryTimeout;
 }
@@ -140,6 +140,18 @@ class PlaybackStore extends Notifier<PlaybackState> {
     );
   }
 
+  PlaybackState _emptyState({String? error, List<DiscoveredHost>? hosts, String? hostUrl}) {
+    return PlaybackState(
+      rooms: const [],
+      mockMode: false,
+      discovering: false,
+      connected: false,
+      error: error,
+      hostUrl: hostUrl,
+      discoveredHosts: hosts ?? const [],
+    );
+  }
+
   Future<void> _connectOrDemo() async {
     final config = ref.read(appConfigProvider);
     final prefs = ref.read(connectionPrefsProvider);
@@ -159,23 +171,24 @@ class PlaybackStore extends Notifier<PlaybackState> {
       unawaited(_refreshHosts());
     }
     if (base == null) {
-      state = _demoState(hosts: hosts);
+      state = _emptyState(hosts: hosts);
       return;
     }
-    final ok = await connectTo(base, persist: false, allowDemoFallback: true);
+    final ok = await connectTo(base, persist: false);
     if (!ok) {
       if (hosts.isEmpty) {
         hosts = await _safeDiscover(config.discoveryTimeout);
       }
       if (hosts.isNotEmpty && hosts.first.url != base) {
-        final retry = await connectTo(hosts.first.url, persist: false, allowDemoFallback: false);
+        final retry = await connectTo(hosts.first.url, persist: false);
         if (retry) {
           return;
         }
       }
-      state = _demoState(
-        error: 'Could not reach your system. Showing demo.',
+      state = _emptyState(
+        error: 'Could not reach your system.',
         hosts: hosts,
+        hostUrl: base,
       );
     }
   }
@@ -203,7 +216,6 @@ class PlaybackStore extends Notifier<PlaybackState> {
   Future<bool> connectTo(
     String rawUrl, {
     bool persist = true,
-    bool allowDemoFallback = false,
   }) async {
     final url = _normaliseUrl(rawUrl);
     if (url == null) {
@@ -243,18 +255,17 @@ class PlaybackStore extends Notifier<PlaybackState> {
       return true;
     } on Object catch (_) {
       await client.close();
-      if (allowDemoFallback) {
-        return false;
-      }
-      if (previous.mockMode || previous.rooms.isEmpty) {
+      if (previous.mockMode) {
         state = _demoState(
-          error: 'Could not connect to $url. Showing demo.',
+          error: 'Could not connect to $url',
           hosts: previous.discoveredHosts,
         );
       } else {
         state = previous.copyWith(
+          rooms: previous.rooms,
           discovering: false,
           connected: false,
+          mockMode: false,
           error: 'Could not connect to $url',
           hostUrl: url,
         );
@@ -464,6 +475,50 @@ class PlaybackStore extends Notifier<PlaybackState> {
     final next = Map<String, PlayerSettings>.of(state.settings)..[playerId] = saved;
     state = state.copyWith(rooms: rooms, settings: next);
     return saved;
+  }
+
+  Future<SshDeveloperStatus> loadSsh(String playerId) async {
+    if (state.mockMode) {
+      return SshDeveloperStatus(
+        enabled: false,
+        hostname: 'freesounder-demo',
+        command: 'ssh developer@freesounder-demo.local',
+        warning: 'Demo mode — SSH is not really enabled on a player.',
+      );
+    }
+    final client = _client;
+    if (client == null) {
+      throw ControlApiException('Not connected to a system');
+    }
+    return client.getSsh(playerId);
+  }
+
+  Future<SshDeveloperStatus> setSsh(
+    String playerId, {
+    required bool enabled,
+    String? publicKey,
+  }) async {
+    if (state.mockMode) {
+      if (!enabled) {
+        return SshDeveloperStatus(
+          enabled: false,
+          hostname: 'freesounder-demo',
+          command: 'ssh developer@freesounder-demo.local',
+        );
+      }
+      return const SshDeveloperStatus(
+        enabled: true,
+        hostname: 'freesounder-demo',
+        command: 'ssh developer@freesounder-demo.local',
+        password: 'demo-ssh-password',
+        warning: 'Demo mode — this password is only an example.',
+      );
+    }
+    final client = _client;
+    if (client == null) {
+      throw ControlApiException('Not connected to a system');
+    }
+    return client.setSsh(playerId, enabled: enabled, confirm: true, publicKey: publicKey);
   }
 }
 

@@ -1,0 +1,54 @@
+#!/bin/sh
+# Neutralise Imager first-user / firstrun / ssh-enable files on the boot
+# partition. The appliance hostname and users are managed by FreeSounder.
+# Safe to run from initramfs (POSIX sh) or systemd. BOOT_MNT is the mount.
+set -e
+BOOT_MNT=${1:-}
+
+if [ -z "$BOOT_MNT" ]; then
+	for cand in /boot/firmware /boot; do
+		if [ -d "$cand" ]; then
+			BOOT_MNT=$cand
+			break
+		fi
+	done
+fi
+[ -n "$BOOT_MNT" ] && [ -d "$BOOT_MNT" ] || exit 0
+
+# Drop userconf and the ssh flag so userconfig/sshswitch cannot act.
+for f in userconf userconf.txt ssh ssh.txt; do
+	if [ -e "$BOOT_MNT/$f" ]; then
+		mv "$BOOT_MNT/$f" "$BOOT_MNT/${f}.imager-ignored" 2>/dev/null || rm -f "$BOOT_MNT/$f"
+	fi
+done
+
+# Replace user-data so cloud-init cannot create users or change hostname.
+if [ -f "$BOOT_MNT/user-data" ]; then
+	if ! grep -q 'freesounder-appliance' "$BOOT_MNT/user-data" 2>/dev/null; then
+		cp "$BOOT_MNT/user-data" "$BOOT_MNT/user-data.imager-ignored" 2>/dev/null || true
+	fi
+	cat >"$BOOT_MNT/user-data" <<'UD'
+#cloud-config
+# freesounder-appliance: users and hostname are not taken from Imager.
+users: []
+disable_root: true
+ssh_pwauth: false
+hostname: null
+UD
+fi
+
+# If Imager scheduled firstrun.sh, make it a no-op that removes itself.
+if [ -f "$BOOT_MNT/firstrun.sh" ]; then
+	if ! grep -q 'freesounder-appliance' "$BOOT_MNT/firstrun.sh" 2>/dev/null; then
+		cp "$BOOT_MNT/firstrun.sh" "$BOOT_MNT/firstrun.sh.imager-ignored" 2>/dev/null || true
+	fi
+	cat >"$BOOT_MNT/firstrun.sh" <<'FR'
+#!/bin/sh
+# freesounder-appliance: Imager first-run customisation is ignored.
+rm -f /boot/firmware/firstrun.sh /boot/firstrun.sh
+exit 0
+FR
+	chmod 0755 "$BOOT_MNT/firstrun.sh" 2>/dev/null || true
+fi
+sync
+exit 0

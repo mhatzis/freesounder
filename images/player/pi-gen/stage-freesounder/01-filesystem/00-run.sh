@@ -25,6 +25,10 @@ install -m 0755 files/usr/lib/freesounder/apply-player-agent "${ROOTFS_DIR}/usr/
 install -m 0755 files/usr/lib/freesounder/run-music-assistant "${ROOTFS_DIR}/usr/lib/freesounder/run-music-assistant"
 install -m 0755 files/usr/lib/freesounder/run-boot-doctor "${ROOTFS_DIR}/usr/lib/freesounder/run-boot-doctor"
 install -m 0755 files/usr/lib/freesounder/write-boot-marker "${ROOTFS_DIR}/usr/lib/freesounder/write-boot-marker"
+install -m 0755 files/usr/lib/freesounder/set-hostname "${ROOTFS_DIR}/usr/lib/freesounder/set-hostname"
+install -m 0755 files/usr/lib/freesounder/status-console "${ROOTFS_DIR}/usr/lib/freesounder/status-console"
+install -m 0755 files/usr/lib/freesounder/sanitize-imager "${ROOTFS_DIR}/usr/lib/freesounder/sanitize-imager"
+install -m 0755 files/usr/lib/freesounder/ssh-developer "${ROOTFS_DIR}/usr/lib/freesounder/ssh-developer"
 install -m 0755 files/usr/sbin/freesounder-setup "${ROOTFS_DIR}/usr/sbin/freesounder-setup"
 install -m 0644 files/etc/systemd/system/freesounder-role.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-role.service"
 install -m 0644 files/etc/systemd/system/freesounder-music-assistant.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-music-assistant.service"
@@ -36,6 +40,10 @@ install -m 0644 files/etc/systemd/system/freesounder-boot-doctor.timer "${ROOTFS
 install -m 0644 files/etc/systemd/system/freesounder-boot-mark.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-boot-mark.service"
 install -m 0644 files/etc/systemd/system/freesounder-boot-sysinit.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-boot-sysinit.service"
 install -m 0644 files/etc/systemd/system/freesounder-boot-doctor-early.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-boot-doctor-early.service"
+install -m 0644 files/etc/systemd/system/freesounder-hostname.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-hostname.service"
+install -m 0644 files/etc/systemd/system/freesounder-status.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-status.service"
+install -m 0644 files/etc/systemd/system/freesounder-sanitize-imager.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-sanitize-imager.service"
+install -m 0644 files/etc/systemd/system/freesounder-ssh-reset.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-ssh-reset.service"
 install -m 0644 files/etc/default/snapclient "${ROOTFS_DIR}/etc/default/snapclient"
 install -m 0644 files/etc/alsa/conf.d/99-freesounder.conf "${ROOTFS_DIR}/etc/alsa/conf.d/99-freesounder.conf"
 install -m 0755 files/etc/update-motd.d/20-freesounder "${ROOTFS_DIR}/etc/update-motd.d/20-freesounder"
@@ -55,6 +63,9 @@ CFG
 	fi
 fi
 
+install -d "${ROOTFS_DIR}/etc/cloud/cloud.cfg.d"
+install -m 0644 files/etc/cloud/cloud.cfg.d/99-freesounder-appliance.cfg \
+	"${ROOTFS_DIR}/etc/cloud/cloud.cfg.d/99-freesounder-appliance.cfg"
 install -d "${ROOTFS_DIR}/etc/systemd/system/cloud-init-network.service.d"
 install -d "${ROOTFS_DIR}/etc/systemd/system/cloud-init-local.service.d"
 install -d "${ROOTFS_DIR}/etc/systemd/system/cloud-init-main.service.d"

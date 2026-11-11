@@ -1,20 +1,19 @@
 #!/bin/sh
-cat << 'MOTD'
+HOST=$(hostname -s 2>/dev/null || echo freesounder)
+cat << MOTD
 
-freesounder player
+freesounder player (${HOST})
 ------------------
-This image has no baked-in password. Create the first user with Raspberry Pi
-Imager (OS customisation) when flashing, or complete the first-boot wizard
-on a keyboard and display.
+This board is a locked-down appliance. There is no login password and the
+first-user wizard is disabled. Use the FreeSounder app to set it up over
+Bluetooth or the local network. The hostname is ${HOST}; the room name in
+the app is the user-facing label.
 
   sudo freesounder-setup status
   sudo freesounder-setup doctor
-  sudo freesounder-setup set-role auto|host|room
-  sudo freesounder-setup set-host <hostname-or-ip>
-  sudo freesounder-setup set-dac none|dacplus|digiampplus
 
-The household host (default when RAM is 4 GB or more) runs Music Assistant
-and needs the network on first boot to pull ghcr.io/music-assistant/server.
-Rooms run snapclient against the host you set with set-host.
+SSH is off unless you enable developer mode from the app
+(Settings → player → tap the version seven times). It turns itself off
+again after a reboot.
 
 MOTD

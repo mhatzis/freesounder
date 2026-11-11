@@ -130,7 +130,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           Text('Demo', style: text.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
           const SizedBox(height: 4),
           Text(
-            'Demo mode lets you try the app without a Pi. It stays on until you connect to a real system.',
+            'Demo mode lets you try the app without a Pi. It stays off unless you turn it on, and then it is remembered on this device.',
             style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
           ),
           SwitchListTile(

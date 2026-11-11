@@ -115,3 +115,54 @@ def test_settings_validation(client: TestClient) -> None:
     assert bad.status_code == 422
     bad_limit = client.patch("/api/v1/settings", json={"volume_limit": 0})
     assert bad_limit.status_code == 422
+
+
+def test_developer_ssh_uses_helper(tmp_env: AgentSettings, tmp_path: Path) -> None:
+    helper = tmp_path / "ssh-developer"
+    state = tmp_path / "ssh-state.json"
+    helper.write_text(
+        "\n".join(
+            [
+                "#!/usr/bin/env python3",
+                "import json, pathlib, sys",
+                f"state = pathlib.Path({str(state)!r})",
+                "off = {",
+                "  'enabled': False, 'username': 'developer',",
+                "  'hostname': 'freesounder-test', 'port': 22,",
+                "  'command': 'ssh developer@freesounder-test.local',",
+                "  'password': None, 'expires': 'reboot',",
+                "}",
+                "cmd = sys.argv[1] if len(sys.argv) > 1 else 'status'",
+                "if cmd == 'status':",
+                "    data = json.loads(state.read_text()) if state.is_file() else off",
+                "elif cmd == 'enable':",
+                "    data = {**off, 'enabled': True, 'password': 'once-only'}",
+                "    state.write_text(json.dumps(data))",
+                "elif cmd == 'disable':",
+                "    data = off",
+                "    state.write_text(json.dumps(data))",
+                "else:",
+                "    raise SystemExit(2)",
+                "print(json.dumps(data))",
+            ]
+        )
+        + "\n"
+    )
+    helper.chmod(0o755)
+    tmp_env.ssh_command = str(helper)
+    store = PlayerStore(tmp_env)
+    app = create_app(tmp_env, store, enable_mdns=False)
+    with TestClient(app) as client:
+        assert client.get("/api/v1/developer/ssh").json()["enabled"] is False
+        denied = client.post("/api/v1/developer/ssh", json={"enabled": True})
+        assert denied.status_code == 400
+        enabled = client.post(
+            "/api/v1/developer/ssh",
+            json={"enabled": True, "confirm": True, "public_key": "ssh-ed25519 AAAA demo"},
+        )
+        assert enabled.status_code == 200
+        assert enabled.json()["password"] == "once-only"
+        assert enabled.json()["enabled"] is True
+        disabled = client.post("/api/v1/developer/ssh", json={"enabled": False})
+        assert disabled.status_code == 200
+        assert disabled.json()["enabled"] is False

@@ -26,8 +26,29 @@ if getent passwd pi >/dev/null; then
 	done
 fi
 
-# SSH is already requested via ENABLE_SSH=1; make sure the unit is on.
-systemctl enable ssh.service || systemctl enable sshd.service || true
+# Locked-down appliance: no first-user wizard, no SSH by default, tty1 is
+# a status screen. Developer SSH is enabled only from the app and resets
+# on reboot.
+systemctl disable --now ssh.service ssh.socket 2>/dev/null || true
+systemctl disable sshswitch.service 2>/dev/null || true
+systemctl mask sshswitch.service userconfig.service 2>/dev/null || true
+systemctl disable getty@tty1.service 2>/dev/null || true
+systemctl mask getty@tty1.service 2>/dev/null || true
+systemctl enable freesounder-hostname.service
+systemctl enable freesounder-status.service
+systemctl enable freesounder-sanitize-imager.service
+systemctl enable freesounder-ssh-reset.service
+
+# Keep the placeholder pi account locked and unusable for login.
+if getent passwd pi >/dev/null; then
+	passwd -l pi || true
+	usermod -s /usr/sbin/nologin pi || true
+fi
+passwd -l root || true
+if ! getent passwd developer >/dev/null; then
+	useradd -m -s /usr/sbin/nologin -G sudo developer || useradd -m -s /usr/sbin/nologin developer
+fi
+passwd -l developer || true
 
 # Host-role first boot will docker pull; leave a stamp dir.
 mkdir -p /var/lib/freesounder/ma-data

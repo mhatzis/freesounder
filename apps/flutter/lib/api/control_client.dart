@@ -105,6 +105,31 @@ class ControlApiClient {
     return PlayerSettings.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
   }
 
+  Future<SshDeveloperStatus> getSsh(String playerId) async {
+    final response = await _http.get(_uri('/api/v1/players/$playerId/developer/ssh'));
+    _ensureOk(response);
+    return SshDeveloperStatus.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+  }
+
+  Future<SshDeveloperStatus> setSsh(
+    String playerId, {
+    required bool enabled,
+    bool confirm = false,
+    String? publicKey,
+  }) async {
+    final response = await _http.post(
+      _uri('/api/v1/players/$playerId/developer/ssh'),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'enabled': enabled,
+        'confirm': confirm,
+        if (publicKey != null && publicKey.isNotEmpty) 'public_key': publicKey,
+      }),
+    );
+    _ensureOk(response);
+    return SshDeveloperStatus.fromJson(jsonDecode(response.body) as Map<String, dynamic>);
+  }
+
   Stream<Map<String, dynamic>> connectEvents() {
     final httpUri = Uri.parse(baseUrl);
     final scheme = httpUri.scheme == 'https' ? 'wss' : 'ws';

@@ -48,6 +48,15 @@ fi
 	echo "Boot dev: ${BOOT_PART_DEV}"
 } >"$TARGET/freesounder-initramfs.txt"
 chmod 0644 "$TARGET/freesounder-initramfs.txt" 2>/dev/null
+
+# Neutralise Imager first-user / firstrun / ssh-enable files so a headless
+# appliance never sits at the username wizard or auto-enables SSH.
+if [ -x /usr/lib/freesounder/sanitize-imager ]; then
+	/usr/lib/freesounder/sanitize-imager "$TARGET"
+elif [ -x "${rootmnt}/usr/lib/freesounder/sanitize-imager" ]; then
+	"${rootmnt}/usr/lib/freesounder/sanitize-imager" "$TARGET"
+fi
+
 sync
 umount "$TARGET" 2>/dev/null
 rmdir "$TARGET" 2>/dev/null

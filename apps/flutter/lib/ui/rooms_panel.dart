@@ -51,10 +51,32 @@ class RoomsPanel extends ConsumerWidget {
           ),
           Expanded(
             child: rooms.isEmpty
-                ? Center(
-                    child: Text(
-                      state.discovering ? 'Looking for players…' : 'No rooms yet',
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
+                ? Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text(
+                          state.discovering
+                              ? 'Looking for players…'
+                              : (state.mockMode ? 'No rooms yet' : 'Set up your first player'),
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.bodyLarge,
+                        ),
+                        if (!state.discovering && !state.mockMode) ...[
+                          const SizedBox(height: 16),
+                          FilledButton(
+                            key: const Key('rooms-setup-add-player'),
+                            onPressed: () => showAddPlayerSheet(context),
+                            child: const Text('Add a player'),
+                          ),
+                          TextButton(
+                            key: const Key('rooms-setup-try-demo'),
+                            onPressed: () => ref.read(playbackProvider.notifier).useDemo(),
+                            child: const Text('Try demo'),
+                          ),
+                        ],
+                      ],
                     ),
                   )
                 : ListView.separated(

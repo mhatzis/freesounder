@@ -1,0 +1,14 @@
+[Unit]
+Description=Set FreeSounder appliance hostname (freesounder-XXXX)
+DefaultDependencies=no
+After=local-fs.target systemd-remount-fs.service
+Before=avahi-daemon.service NetworkManager.service bluetooth.service freesounder-ble-provisioning.service freesounder-player-agent.service freesounder-control-api.service sysinit.target
+Wants=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/freesounder/set-hostname
+
+[Install]
+WantedBy=sysinit.target multi-user.target

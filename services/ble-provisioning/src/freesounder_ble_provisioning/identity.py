@@ -82,11 +82,12 @@ def persist_name(name: str, config_dir: Path | None = None) -> None:
 
 
 def persist_hostname(hostname: str) -> None:
+    """Set the pretty hostname only. The static name stays freesounder-XXXX."""
     try:
         import subprocess
 
         subprocess.run(
-            ["hostnamectl", "set-hostname", hostname],
+            ["hostnamectl", "set-hostname", "--pretty", hostname],
             check=False,
             timeout=10,
             stdout=subprocess.DEVNULL,

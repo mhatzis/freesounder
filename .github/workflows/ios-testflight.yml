@@ -4,7 +4,8 @@ on:
   workflow_dispatch:
   push:
     tags:
-      - "v*"
+      # App releases only (v0.4.0). Image tags like v0.4.0-alpha-image are excluded.
+      - "v[0-9]+.[0-9]+.[0-9]+"
 
 # Reuse the iOS Distribution certificate stored in repo secrets.
 # Do not mint a new distribution certificate on each run — Apple limits them.
@@ -68,7 +69,7 @@ jobs:
       - name: Build IPA
         run: |
           flutter build ipa --release \
-            --build-name=0.3.0 \
+            --build-name=0.4.0 \
             --build-number="${GITHUB_RUN_NUMBER}" \
             --export-options-plist=ios/ExportOptions.plist
 
@@ -109,3 +110,86 @@ jobs:
             --apiKey "$ASC_KEY_ID" \
             --apiIssuer "$ASC_ISSUER_ID" \
             --output-format xml
+
+      - name: Add build to Internal beta group
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+          ASC_BETA_GROUP_ID: f9da97e0-7e7a-4483-8744-5715c49260f0
+          BUNDLE_ID: com.mhatzis.freesounder
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          pip3 install --user PyJWT cryptography requests
+          python3 << 'PY'
+          import json, os, time, pathlib, textwrap, re
+          import jwt
+          import requests
+
+          key_id = os.environ["ASC_KEY_ID"]
+          issuer = os.environ["ASC_ISSUER_ID"]
+          raw = os.environ["ASC_KEY_P8"]
+          body = re.sub(r"-----[^-]+-----|\s", "", raw)
+          pem = (
+              "-----BEGIN PRIVATE KEY-----\n"
+              + "\n".join(textwrap.wrap(body, 64))
+              + "\n-----END PRIVATE KEY-----\n"
+          )
+          now = int(time.time())
+          token = jwt.encode(
+              {"iss": issuer, "iat": now, "exp": now + 18 * 60, "aud": "appstoreconnect-v1"},
+              pem,
+              algorithm="ES256",
+              headers={"kid": key_id},
+          )
+          headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+          base = "https://api.appstoreconnect.apple.com/v1"
+          apps = requests.get(
+              f"{base}/apps",
+              headers=headers,
+              params={"filter[bundleId]": os.environ["BUNDLE_ID"]},
+              timeout=60,
+          )
+          apps.raise_for_status()
+          app_id = apps.json()["data"][0]["id"]
+          build_id = None
+          processing = None
+          for _ in range(40):
+              res = requests.get(
+                  f"{base}/builds",
+                  headers=headers,
+                  params={
+                      "filter[app]": app_id,
+                      "filter[version]": os.environ["BUILD_NUMBER"],
+                      "sort": "-uploadedDate",
+                      "limit": 5,
+                  },
+                  timeout=60,
+              )
+              res.raise_for_status()
+              items = res.json().get("data") or []
+              if items:
+                  processing = items[0]["attributes"].get("processingState")
+                  print(f"build {items[0]['id']} processingState={processing}")
+                  if processing == "VALID":
+                      build_id = items[0]["id"]
+                      break
+                  if processing in {"INVALID", "FAILED"}:
+                      raise SystemExit(f"TestFlight build {processing}")
+              else:
+                  print("waiting for the uploaded build to appear")
+              time.sleep(30)
+          if not build_id:
+              raise SystemExit(f"Build did not become VALID in time (last state={processing})")
+          group = os.environ["ASC_BETA_GROUP_ID"]
+          add = requests.post(
+              f"{base}/betaGroups/{group}/relationships/builds",
+              headers=headers,
+              json={"data": [{"type": "builds", "id": build_id}]},
+              timeout=60,
+          )
+          if add.status_code not in {200, 201, 204, 409}:
+              raise SystemExit(f"Could not add build to group: {add.status_code} {add.text}")
+          print(f"Added build {build_id} to Internal group {group} (HTTP {add.status_code})")
+          PY

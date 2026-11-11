@@ -18,7 +18,19 @@ Widget _host(Widget child) {
   );
 }
 
+Widget _liveHost(Widget child) {
+  return ProviderScope(
+    overrides: [
+      appConfigProvider.overrideWithValue(
+        const AppConfig(forceDemo: false, discoveryTimeout: Duration.zero),
+      ),
+    ],
+    child: MaterialApp(home: child),
+  );
+}
+
 void main() {
+
   testWidgets('rooms panel lists mock rooms and can select one', (tester) async {
     await tester.pumpWidget(
       _host(const Scaffold(body: RoomsPanel())),
@@ -141,5 +153,56 @@ void main() {
     );
     expect(container.read(playbackProvider).rooms.map((room) => room.id), contains('attic-pi'));
     expect(container.read(playbackProvider).rooms.map((room) => room.name), contains('Attic'));
+  });
+
+  testWidgets('without a player, shows empty setup state not demo', (tester) async {
+    tester.view.physicalSize = const Size(400, 800);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(_liveHost(const AppShell()));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Set up your first player'), findsWidgets);
+    expect(find.byKey(const Key('setup-add-player')), findsOneWidget);
+    expect(find.byKey(const Key('setup-enter-address')), findsOneWidget);
+    expect(find.byKey(const Key('setup-try-demo')), findsOneWidget);
+    expect(find.text('Demo'), findsNothing);
+    expect(find.text('Morning Light'), findsNothing);
+
+    await tester.tap(find.byKey(const Key('setup-try-demo')));
+    await tester.pumpAndSettle();
+    expect(find.text('Morning Light'), findsWidgets);
+    expect(find.text('Demo'), findsWidgets);
+  });
+
+  testWidgets('developer SSH is hidden until version is tapped seven times', (tester) async {
+    tester.view.physicalSize = const Size(400, 1000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(_host(const AppShell()));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const Key('now-playing-room-settings')));
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.byKey(const Key('player-version-tap')));
+    expect(find.text('FreeSounder 0.4.0'), findsOneWidget);
+    expect(find.byKey(const Key('ssh-developer-switch')), findsNothing);
+
+    for (var i = 0; i < 7; i++) {
+      await tester.tap(find.byKey(const Key('player-version-tap')));
+      await tester.pump();
+    }
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('ssh-developer-switch')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('ssh-developer-switch')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('demo-ssh-password'), findsOneWidget);
+    expect(find.textContaining('ssh developer@freesounder-demo.local'), findsOneWidget);
   });
 }

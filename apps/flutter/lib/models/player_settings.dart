@@ -105,3 +105,40 @@ class DiscoveredHost {
   final String url;
   final String name;
 }
+
+
+/// Ephemeral developer SSH access for a player.
+class SshDeveloperStatus {
+  const SshDeveloperStatus({
+    required this.enabled,
+    this.username = 'developer',
+    this.hostname = '',
+    this.port = 22,
+    this.command,
+    this.password,
+    this.expires = 'reboot',
+    this.warning,
+  });
+
+  factory SshDeveloperStatus.fromJson(Map<String, dynamic> json) {
+    return SshDeveloperStatus(
+      enabled: json['enabled'] as bool? ?? false,
+      username: json['username'] as String? ?? 'developer',
+      hostname: json['hostname'] as String? ?? '',
+      port: json['port'] as int? ?? 22,
+      command: json['command'] as String?,
+      password: json['password'] as String?,
+      expires: json['expires'] as String? ?? 'reboot',
+      warning: json['warning'] as String?,
+    );
+  }
+
+  final bool enabled;
+  final String username;
+  final String hostname;
+  final int port;
+  final String? command;
+  final String? password;
+  final String expires;
+  final String? warning;
+}

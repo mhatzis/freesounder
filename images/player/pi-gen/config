@@ -6,15 +6,13 @@ IMG_NAME=freesounder
 PI_GEN_RELEASE="freesounder player"
 RELEASE=trixie
 TARGET_HOSTNAME=freesounder
-ENABLE_SSH=1
+ENABLE_SSH=0
 ENABLE_CLOUD_INIT=1
-# Do not bake a user password. Create the first user with Raspberry Pi Imager
-# (OS customisation) or the first-boot wizard. FIRST_USER_NAME exists only in
-# the build chroot and is renamed on first boot unless Imager supplies a user.
+# Placeholder account only (locked, nologin). Users do not set a username
+# or password; FIRST_USER_NAME exists for the build chroot.
 FIRST_USER_NAME=pi
-# FIRST_USER_PASS is intentionally unset — the account stays locked until
-# customisation or the wizard sets a password.
-DISABLE_FIRST_BOOT_USER_RENAME=0
+# FIRST_USER_PASS is unset and must stay unset.
+DISABLE_FIRST_BOOT_USER_RENAME=1
 PASSWORDLESS_SUDO=0
 LOCALE_DEFAULT=en_GB.UTF-8
 KEYBOARD_KEYMAP=us

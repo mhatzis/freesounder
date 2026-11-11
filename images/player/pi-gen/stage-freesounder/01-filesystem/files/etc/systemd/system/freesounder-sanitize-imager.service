@@ -1,0 +1,14 @@
+[Unit]
+Description=Ignore Imager user and first-run customisation
+DefaultDependencies=no
+After=local-fs.target boot-firmware.mount
+Before=cloud-init-main.service cloud-init-local.service cloud-init-network.service userconfig.service sshswitch.service
+Wants=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/freesounder/sanitize-imager /boot/firmware
+
+[Install]
+WantedBy=cloud-init.target sysinit.target

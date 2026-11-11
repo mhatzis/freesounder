@@ -28,6 +28,8 @@ from freesounder_control_api.models import (
     PlayerSettingsPatch,
     Room,
     SearchResponse,
+    SshDeveloperBody,
+    SshDeveloperStatus,
     SystemInfo,
     UnclaimedPlayer,
     VolumeBody,
@@ -276,6 +278,33 @@ def create_app(
             backend.rename_room(player_id, body.name)
         await hub.broadcast("rooms", [r.model_dump() for r in await backend.list_rooms()])
         return result
+
+
+    @app.get("/api/v1/players/{player_id}/developer/ssh", response_model=SshDeveloperStatus)
+    async def get_player_ssh(player_id: str) -> SshDeveloperStatus:
+        """SSH developer status for an adopted player (proxied to the agent)."""
+        try:
+            return await players.ssh_status(player_id)
+        except PlayerNotFound as exc:
+            raise HTTPException(status_code=404, detail=f"Player not found: {exc}") from exc
+
+    @app.post("/api/v1/players/{player_id}/developer/ssh", response_model=SshDeveloperStatus)
+    async def set_player_ssh(player_id: str, body: SshDeveloperBody) -> SshDeveloperStatus:
+        """Enable or disable ephemeral SSH on an adopted player.
+
+        Requires confirm=true to enable. The control API currently has no
+        authentication; only use this on a trusted household LAN.
+        """
+        if body.enabled and not body.confirm:
+            raise HTTPException(
+                status_code=400,
+                detail="Set confirm=true to enable developer SSH. "
+                "The control API has no authentication.",
+            )
+        try:
+            return await players.set_ssh(player_id, body)
+        except PlayerNotFound as exc:
+            raise HTTPException(status_code=404, detail=f"Player not found: {exc}") from exc
 
     @app.websocket("/api/v1/ws")
     async def websocket(ws: WebSocket) -> None:

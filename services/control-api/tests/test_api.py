@@ -221,3 +221,53 @@ def test_player_settings_roundtrip_and_volume_limit(client: TestClient) -> None:
 
     bad = client.patch("/api/v1/players/kitchen/settings", json={"bass": 20})
     assert bad.status_code == 422
+
+
+def test_developer_ssh_requires_confirm_and_mocks_password(client: TestClient) -> None:
+    missing = client.post(
+        "/api/v1/players/kitchen/developer/ssh",
+        json={"enabled": True},
+    )
+    assert missing.status_code == 400
+
+    denied = client.post(
+        "/api/v1/players/kitchen/developer/ssh",
+        json={"enabled": True, "confirm": False},
+    )
+    assert denied.status_code == 400
+
+    unknown = client.post(
+        "/api/v1/players/does-not-exist/developer/ssh",
+        json={"enabled": True, "confirm": True},
+    )
+    assert unknown.status_code == 404
+
+    status = client.get("/api/v1/players/kitchen/developer/ssh")
+    assert status.status_code == 200
+    assert status.json()["enabled"] is False
+    assert "no authentication" in status.json()["warning"].lower()
+
+    enabled = client.post(
+        "/api/v1/players/kitchen/developer/ssh",
+        json={"enabled": True, "confirm": True},
+    )
+    assert enabled.status_code == 200
+    body = enabled.json()
+    assert body["enabled"] is True
+    assert body["password"] == "demo-ssh-password"
+    assert body["username"] == "developer"
+    assert body["command"].startswith("ssh developer@")
+    assert body["expires"] == "reboot"
+
+    # GET after enable does not repeat the one-time password.
+    again = client.get("/api/v1/players/kitchen/developer/ssh")
+    assert again.status_code == 200
+    assert again.json()["enabled"] is True
+    assert again.json()["password"] is None
+
+    disabled = client.post(
+        "/api/v1/players/kitchen/developer/ssh",
+        json={"enabled": False, "confirm": True},
+    )
+    assert disabled.status_code == 200
+    assert disabled.json()["enabled"] is False

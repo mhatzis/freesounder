@@ -1,0 +1,20 @@
+[Unit]
+Description=FreeSounder HDMI status screen (tty1)
+After=local-fs.target freesounder-hostname.service
+Conflicts=getty@tty1.service userconfig.service
+ConditionPathExists=/dev/tty1
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/freesounder/status-console
+StandardInput=tty
+StandardOutput=tty
+StandardError=journal
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

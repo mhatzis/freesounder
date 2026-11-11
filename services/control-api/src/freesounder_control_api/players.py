@@ -17,6 +17,8 @@ from freesounder_control_api.models import (
     AdoptBody,
     PlayerSettings,
     PlayerSettingsPatch,
+    SshDeveloperBody,
+    SshDeveloperStatus,
     UnclaimedPlayer,
 )
 
@@ -53,6 +55,10 @@ class PlayerIndex(Protocol):
         self, player_id: str, patch: PlayerSettingsPatch
     ) -> PlayerSettings: ...
 
+    async def ssh_status(self, player_id: str) -> SshDeveloperStatus: ...
+
+    async def set_ssh(self, player_id: str, body: SshDeveloperBody) -> SshDeveloperStatus: ...
+
 
 class PlayerNotFound(KeyError):
     """No agent (or mock player) matches the requested id."""
@@ -80,6 +86,7 @@ class MockPlayerIndex:
         }
         self.adopted: list[UnclaimedPlayer] = []
         self._on_adopted: Any = None
+        self.ssh: dict[str, SshDeveloperStatus] = {}
 
     def bind_adopt(self, callback: Any) -> None:
         """Optional hook so a mock backend can add a new room."""
@@ -134,6 +141,51 @@ class MockPlayerIndex:
         self.settings[player_id] = updated
         return updated
 
+    def _ssh_host(self, player_id: str) -> str:
+        if player_id in self.unclaimed:
+            return self.unclaimed[player_id].name
+        for item in self.adopted:
+            if item.id == player_id:
+                return item.name
+        settings = self.settings.get(player_id)
+        if settings:
+            return settings.name.lower().replace(" ", "-")
+        return player_id
+
+    async def ssh_status(self, player_id: str) -> SshDeveloperStatus:
+        if player_id in self.ssh:
+            current = self.ssh[player_id]
+            return current.model_copy(update={"password": None})
+        if player_id not in self.settings and player_id not in self.unclaimed:
+            raise PlayerNotFound(player_id)
+        host = self._ssh_host(player_id)
+        return SshDeveloperStatus(
+            enabled=False,
+            hostname=host,
+            command=f"ssh developer@{host}.local",
+        )
+
+    async def set_ssh(self, player_id: str, body: SshDeveloperBody) -> SshDeveloperStatus:
+        if player_id not in self.settings and player_id not in self.unclaimed:
+            raise PlayerNotFound(player_id)
+        host = self._ssh_host(player_id)
+        if not body.enabled:
+            status = SshDeveloperStatus(
+                enabled=False,
+                hostname=host,
+                command=f"ssh developer@{host}.local",
+            )
+            self.ssh[player_id] = status
+            return status
+        status = SshDeveloperStatus(
+            enabled=True,
+            hostname=host,
+            command=f"ssh developer@{host}.local",
+            password="demo-ssh-password",
+        )
+        self.ssh[player_id] = status
+        return status
+
 
 class LanPlayerIndex:
     """Browse `_freesounder-player._tcp` and forward HTTP to the chosen agent."""
@@ -185,6 +237,20 @@ class LanPlayerIndex:
             json=patch.model_dump(exclude_none=True),
         )
         return PlayerSettings.model_validate(data)
+
+    async def ssh_status(self, player_id: str) -> SshDeveloperStatus:
+        url = await self._resolve_url(player_id, None)
+        data = await _request_json("GET", f"{url}/api/v1/developer/ssh")
+        return SshDeveloperStatus.model_validate(data)
+
+    async def set_ssh(self, player_id: str, body: SshDeveloperBody) -> SshDeveloperStatus:
+        url = await self._resolve_url(player_id, None)
+        data = await _request_json(
+            "POST",
+            f"{url}/api/v1/developer/ssh",
+            json=body.model_dump(exclude_none=True),
+        )
+        return SshDeveloperStatus.model_validate(data)
 
     async def _resolve_url(self, player_id: str | None, explicit_url: str | None) -> str:
         if explicit_url:

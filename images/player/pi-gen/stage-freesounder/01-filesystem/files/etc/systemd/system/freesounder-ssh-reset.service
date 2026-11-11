@@ -1,0 +1,13 @@
+[Unit]
+Description=Disable developer SSH after reboot
+After=local-fs.target
+Before=ssh.service ssh.socket sshswitch.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# /run is empty after reboot, so always drop leftover enablement.
+ExecStart=/usr/lib/freesounder/ssh-developer disable
+
+[Install]
+WantedBy=multi-user.target

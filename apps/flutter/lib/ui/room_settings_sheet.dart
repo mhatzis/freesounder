@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/player_settings.dart';
@@ -35,6 +36,10 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
   PlayerSettings? _settings;
   var _loading = true;
   var _saving = false;
+  var _developerUnlocked = false;
+  var _versionTaps = 0;
+  var _sshBusy = false;
+  SshDeveloperStatus? _ssh;
   String? _error;
 
   @override
@@ -61,9 +66,19 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
       if (!mounted) {
         return;
       }
+      SshDeveloperStatus? ssh;
+      try {
+        ssh = await ref.read(playbackProvider.notifier).loadSsh(widget.roomId);
+      } on Object {
+        ssh = null;
+      }
+      if (!mounted) {
+        return;
+      }
       setState(() {
         _settings = loaded;
         _name.text = loaded.name;
+        _ssh = ssh;
         _loading = false;
       });
     } on Object catch (err) {
@@ -99,6 +114,38 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
       }
       setState(() {
         _saving = false;
+        _error = err.toString();
+      });
+    }
+  }
+
+
+  void _onVersionTap() {
+    setState(() {
+      _versionTaps += 1;
+      if (_versionTaps >= 7) {
+        _developerUnlocked = true;
+      }
+    });
+  }
+
+  Future<void> _toggleSsh(bool enabled) async {
+    setState(() => _sshBusy = true);
+    try {
+      final next = await ref.read(playbackProvider.notifier).setSsh(widget.roomId, enabled: enabled);
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _ssh = next;
+        _sshBusy = false;
+      });
+    } on Object catch (err) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _sshBusy = false;
         _error = err.toString();
       });
     }
@@ -228,6 +275,48 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
                         style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
                       ),
                     ],
+                  ],
+                  const SizedBox(height: 20),
+                  GestureDetector(
+                    key: const Key('player-version-tap'),
+                    onTap: _onVersionTap,
+                    child: Text(
+                      'FreeSounder 0.4.0',
+                      textAlign: TextAlign.center,
+                      style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+                    ),
+                  ),
+                  if (_developerUnlocked) ...[
+                    const SizedBox(height: 16),
+                    Text('Developer', style: text.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 4),
+                    Text(
+                      'SSH is off by default and turns itself off after a reboot. '
+                      'The household API has no login of its own — only enable this on your own network.',
+                      style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+                    ),
+                    SwitchListTile(
+                      key: const Key('ssh-developer-switch'),
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Enable SSH'),
+                      value: _ssh?.enabled ?? false,
+                      onChanged: _sshBusy ? null : (value) => _toggleSsh(value),
+                    ),
+                    if (_ssh?.command != null) ...[
+                      SelectableText(_ssh!.command!, style: text.bodyMedium),
+                      const SizedBox(height: 4),
+                    ],
+                    if (_ssh?.password != null) ...[
+                      SelectableText('Password: ${_ssh!.password}', style: text.bodyMedium),
+                      TextButton(
+                        onPressed: () {
+                          Clipboard.setData(ClipboardData(text: _ssh!.password!));
+                        },
+                        child: const Text('Copy password'),
+                      ),
+                    ],
+                    if (_ssh?.warning != null)
+                      Text(_ssh!.warning!, style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant)),
                   ],
                   if (_error != null) ...[
                     const SizedBox(height: 8),

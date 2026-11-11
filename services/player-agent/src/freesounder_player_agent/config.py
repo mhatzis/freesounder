@@ -24,6 +24,10 @@ class AgentSettings(BaseSettings):
         default="/usr/lib/freesounder/apply-player-agent",
         description="Hook run after adopt or settings changes. Empty to skip.",
     )
+    ssh_command: str | None = Field(
+        default="/usr/lib/freesounder/ssh-developer",
+        description="Helper that enables or disables ephemeral SSH.",
+    )
 
 
 def load_settings() -> AgentSettings:

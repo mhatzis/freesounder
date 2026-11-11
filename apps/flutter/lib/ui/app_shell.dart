@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../state/playback_store.dart';
 import '../theme/tokens.dart';
+import 'add_player_sheet.dart';
 import 'mini_player.dart';
 import 'room_settings_sheet.dart';
 import 'rooms_panel.dart';
@@ -92,17 +93,20 @@ class _AppShellState extends ConsumerState<AppShell> {
 }
 
 
-class _NowPlayingCanvas extends StatelessWidget {
+class _NowPlayingCanvas extends ConsumerWidget {
   const _NowPlayingCanvas({required this.state});
 
   final PlaybackState state;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final scheme = Theme.of(context).colorScheme;
     final text = Theme.of(context).textTheme;
     final np = state.nowPlaying;
-    final title = np?.title ?? (state.discovering ? 'Looking for players…' : 'Nothing playing');
+    final setupNeeded = !state.mockMode && state.rooms.isEmpty;
+    final title = setupNeeded
+        ? (state.discovering ? 'Looking for players…' : 'Set up your first player')
+        : (np?.title ?? (state.discovering ? 'Looking for players…' : 'Nothing playing'));
     final subtitle = [np?.artist, np?.album].whereType<String>().where((s) => s.isNotEmpty).join(' — ');
     final progress = (np?.duration != null && np!.duration! > 0)
         ? ((np.position ?? 0) / np.duration!).clamp(0.0, 1.0)
@@ -200,7 +204,34 @@ class _NowPlayingCanvas extends StatelessWidget {
                             ],
                             if (state.error != null && !state.mockMode) ...[
                               const SizedBox(height: 16),
-                              Text(state.error!, style: TextStyle(color: scheme.error)),
+                              Text(state.error!, style: TextStyle(color: scheme.error), textAlign: TextAlign.center),
+                            ],
+                            if (setupNeeded && !state.discovering) ...[
+                              const SizedBox(height: 24),
+                              FilledButton(
+                                key: const Key('setup-add-player'),
+                                onPressed: () => showAddPlayerSheet(context),
+                                child: const Text('Add a player'),
+                              ),
+                              const SizedBox(height: 8),
+                              OutlinedButton(
+                                key: const Key('setup-enter-address'),
+                                onPressed: () {
+                                  Navigator.of(context).push(
+                                    MaterialPageRoute<void>(builder: (_) => const SettingsScreen()),
+                                  );
+                                },
+                                child: const Text('Enter address'),
+                              ),
+                              const SizedBox(height: 8),
+                              TextButton(
+                                key: const Key('setup-try-demo'),
+                                onPressed: () => ref.read(playbackProvider.notifier).useDemo(),
+                                child: Text(
+                                  'Try demo',
+                                  style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+                                ),
+                              ),
                             ],
                           ],
                         ),

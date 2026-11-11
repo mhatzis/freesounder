@@ -16,46 +16,44 @@ that first built it. Treat early builds as alpha.
 
 ## Flash with Raspberry Pi Imager
 
+Players are locked-down appliances. You should not set a username, password,
+or hostname in Imager — the image ignores those customisations.
+
 1. Install [Raspberry Pi Imager](https://www.raspberrypi.com/software/).
 2. Choose **Raspberry Pi Device** (Pi 4 or Pi 5 — the same image).
 3. Operating system: choose **Use custom** and select the
    `freesounder-*-lite-arm64.img.xz` file (Imager accepts a compressed `.img.xz`).
 4. Storage: your microSD, USB SSD, or (Pi 5) NVMe, as appropriate.
-5. Open **OS customisation** (the gear / “Edit settings”) **before** writing:
-   - Set a **username and password**. This image does **not** ship a default
-     login. SSH is enabled, but you cannot log in until a user exists.
-   - Set the hostname if you do not want the default `freesounder` (each room
-     should have a unique name, for example `kitchen` or `lounge`).
-   - You do **not** need to set Wi-Fi in Imager. An unprovisioned board with no
-     Ethernet and no working Wi-Fi advertises over Bluetooth as
-     `FreeSounder-XXXX`. The FreeSounder app walks you through joining a
-     network (Improv Wi-Fi). Ethernet still works if you plug a cable in.
-   - Optionally set Wi-Fi here anyway if you prefer, and set a wireless
-     country. The household host should prefer Ethernet when you have it.
-   - You can also set locale and timezone here (the image default timezone is UTC).
-6. Write the image, eject the media, and boot the Pi.
+5. Skip **OS customisation** for user, password, hostname, and SSH. The first
+   boot sets the hostname to `freesounder-XXXX` (last four hex digits of the
+   board serial or MAC). The room name you choose in the app is the
+   user-facing label; it does not change the hostname. HDMI on tty1 shows a
+   status screen (hostname, room, IP, BLE, SSH), not a login prompt.
+6. You do **not** need to set Wi-Fi in Imager. An unprovisioned board with no
+   Ethernet and no working Wi-Fi advertises over Bluetooth as
+   `FreeSounder-XXXX`. The FreeSounder app walks you through joining a
+   network (Improv Wi-Fi). Ethernet still works if you plug a cable in.
+7. Write the image, eject the media, and boot the Pi.
 
 First boot on a 4 GB host needs **internet access** so Docker can pull
 `ghcr.io/music-assistant/server`. Rooms only need the LAN to reach the host.
-If the board has no network yet, use **Settings → Add a player** in the app
-and choose the nearby Bluetooth player, then join Wi-Fi; adoption continues
-once it appears on the network.
+If the board has no network yet, open the app (demo mode is off by default)
+and choose **Set up your first player** / **Add a player**, then join Wi-Fi
+over Bluetooth; adoption continues once it appears on the network.
 
-After login:
+Prefer the FreeSounder app for everyday setup: **Add a player** to name a new
+Pi and join it, and the gear on a room for bass, treble, balance, bass boost,
+volume limit and DAC.
 
-```bash
-sudo freesounder-setup status
-sudo freesounder-setup doctor
-sudo freesounder-setup set-role auto    # or host / room
-sudo freesounder-setup set-host <hostname-or-ip-of-the-household-host>
-sudo freesounder-setup set-name Kitchen
-sudo freesounder-setup set-dac dacplus  # DAC+ or DigiAMP+ (same overlay)
-```
+SSH is **off**. There is no bootfs `ssh` flag and the first-user wizard is
+disabled. To open a shell for development, connect the app to the household
+host, open the player’s settings, tap the version label seven times, and
+enable SSH. The app shows a one-time password (or you can send a public key).
+SSH turns itself off after a reboot or when you toggle it off. The household
+control API has no authentication; only use developer SSH on a trusted LAN.
 
-Prefer the FreeSounder app for everyday setup: **Settings → Connect** to reach
-an existing host, **Add a player** to name a new Pi and join it, and the gear
-on a room for bass, treble, balance, bass boost, volume limit and DAC.
-`freesounder-setup` remains for SSH and first-boot recovery.
+`freesounder-setup` remains on the image for recovery if you already have a
+shell (status, doctor, role, host, DAC).
 
 DAC+: `dtoverlay=hifiberry-dacplus` in `/boot/firmware/config.txt`. Official
 DigiAMP+ uses the same overlay. A reboot is required after `set-dac`. Then
@@ -63,7 +61,7 @@ plug in powered speakers (DAC+) or passives (DigiAMP+; check PSU needs).
 
 ## What is installed
 
-- Raspberry Pi OS Lite, 64-bit (Trixie), hostname `freesounder`, SSH enabled
+- Raspberry Pi OS Lite, 64-bit (Trixie), hostname `freesounder-XXXX` on first boot, SSH disabled
 - `snapclient`, ALSA utilities, Avahi
 - Docker Engine (`docker.io`) and a systemd unit that starts Music Assistant
   **only** in the host role

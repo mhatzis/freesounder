@@ -1,0 +1,91 @@
+#!/bin/bash
+# Enable or disable ephemeral developer SSH. State lives in /run so a reboot
+# drops access. Intended to be called by the player agent.
+# Usage: ssh-developer status|enable|disable [--public-key-file PATH]
+set -euo pipefail
+
+USER_NAME=developer
+STATE=/run/freesounder/ssh-developer.json
+install -d /run/freesounder
+
+host=$(hostname -s 2>/dev/null || echo freesounder)
+cmd_for() {
+	printf 'ssh %s@%s.local' "$USER_NAME" "$host"
+}
+
+json_status() {
+	local enabled=$1 password=${2:-}
+	if [[ "$enabled" == "true" ]]; then
+		cat <<JSON
+{"enabled": true, "username": "${USER_NAME}", "hostname": "${host}", "port": 22, "command": "$(cmd_for)", "password": ${password:+\"$password\"}${password:-null}, "expires": "reboot"}
+JSON
+	else
+		cat <<JSON
+{"enabled": false, "username": "${USER_NAME}", "hostname": "${host}", "port": 22, "command": "$(cmd_for)", "password": null, "expires": "reboot"}
+JSON
+	fi
+}
+
+lock_account() {
+	passwd -l "$USER_NAME" >/dev/null 2>&1 || true
+	usermod -s /usr/sbin/nologin "$USER_NAME" >/dev/null 2>&1 || true
+	rm -f /home/${USER_NAME}/.ssh/authorized_keys
+	# Keep the home directory; drop keys only.
+}
+
+disable_ssh() {
+	systemctl disable --now ssh.service ssh.socket >/dev/null 2>&1 || true
+	lock_account
+	rm -f "$STATE"
+	json_status false
+}
+
+ensure_user() {
+	if ! getent passwd "$USER_NAME" >/dev/null; then
+		useradd -m -s /usr/sbin/nologin -G sudo "$USER_NAME" >/dev/null 2>&1 || useradd -m -s /usr/sbin/nologin "$USER_NAME"
+	fi
+}
+
+case "${1:-status}" in
+	status)
+		if [[ -f "$STATE" ]] && systemctl is-active --quiet ssh.service 2>/dev/null; then
+			# Re-emit without the one-time password (it is only shown at enable).
+			python3 - "$STATE" "$host" <<'PY' 2>/dev/null || cat "$STATE"
+import json, sys
+from pathlib import Path
+raw = json.loads(Path(sys.argv[1]).read_text())
+raw["password"] = None
+raw["hostname"] = sys.argv[2]
+print(json.dumps(raw))
+PY
+		else
+			json_status false
+		fi
+		;;
+	enable)
+		shift || true
+		keyfile=""
+		if [[ "${1:-}" == "--public-key-file" ]]; then
+			keyfile=${2:-}
+		fi
+		ensure_user
+		password=$(openssl rand -base64 18 | tr -d '/+=' | head -c 20)
+		echo "${USER_NAME}:${password}" | chpasswd
+		usermod -s /bin/bash "$USER_NAME"
+		if [[ -n "$keyfile" && -f "$keyfile" ]]; then
+			install -d -m 700 -o "$USER_NAME" -g "$USER_NAME" /home/${USER_NAME}/.ssh
+			install -m 600 -o "$USER_NAME" -g "$USER_NAME" "$keyfile" /home/${USER_NAME}/.ssh/authorized_keys
+		fi
+		systemctl unmask ssh.service >/dev/null 2>&1 || true
+		systemctl enable --now ssh.service >/dev/null 2>&1 || systemctl start ssh.service
+		json_status true "$password" | tee "$STATE"
+		chmod 0600 "$STATE"
+		;;
+	disable)
+		disable_ssh
+		;;
+	*)
+		echo "Usage: ssh-developer status|enable|disable [--public-key-file PATH]" >&2
+		exit 2
+		;;
+esac

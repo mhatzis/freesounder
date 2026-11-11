@@ -57,6 +57,9 @@ Set `FREESOUNDER_MOCK_MA=true` to serve in-memory rooms with no Music Assistant.
 - `POST /api/v1/players/adopt` — `{ "id": "...", "name": "Kitchen" }` or `{ "url": "http://...", "name": "Kitchen" }`
 - `GET /api/v1/players/{player_id}/settings`
 - `PATCH /api/v1/players/{player_id}/settings` — name, volume_limit (1–100), bass/treble/balance (−10..+10 dB), loudness, dac (`none` / `dacplus` / `digiampplus`)
+- `GET /api/v1/players/{player_id}/developer/ssh` — ephemeral developer SSH status
+- `POST /api/v1/players/{player_id}/developer/ssh` — `{ "enabled": true, "confirm": true, "public_key": "ssh-ed25519 …" }`. Proxies to an adopted player's agent. `confirm` must be true to enable. SSH turns off after reboot. **The API has no authentication**; anyone on the LAN who can reach the household host can call this.
+
 - `WebSocket /api/v1/ws` — `rooms`, `now_playing`, `health` events
 
 Grouping is implemented with Music Assistant sync-group commands (`players.group`,

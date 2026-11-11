@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from freesounder_player_agent import __version__
@@ -17,7 +17,10 @@ from freesounder_player_agent.models import (
     Health,
     PlayerSettings,
     PlayerSettingsPatch,
+    SshDeveloperBody,
+    SshDeveloperStatus,
 )
+from freesounder_player_agent.ssh import ssh_set, ssh_status
 from freesounder_player_agent.store import PlayerStore
 
 
@@ -79,5 +82,24 @@ def create_app(
         with suppress(Exception):
             await advertiser.update()
         return result
+
+    @app.get("/api/v1/developer/ssh", response_model=SshDeveloperStatus)
+    async def get_ssh() -> SshDeveloperStatus:
+        return ssh_status(settings.ssh_command, store.info().hostname)
+
+    @app.post("/api/v1/developer/ssh", response_model=SshDeveloperStatus)
+    async def set_ssh(body: SshDeveloperBody) -> SshDeveloperStatus:
+        if body.enabled and not body.confirm:
+            raise HTTPException(
+                status_code=400,
+                detail="Set confirm=true to enable developer SSH. "
+                "The control API has no authentication.",
+            )
+        return ssh_set(
+            settings.ssh_command,
+            store.info().hostname,
+            enabled=body.enabled,
+            public_key=body.public_key,
+        )
 
     return app

@@ -151,3 +151,31 @@ class SystemInfo(BaseModel):
     version: str
     role: str = "host"
     mock: bool = False
+
+
+SSH_API_WARNING = (
+    "The control API has no authentication. Anyone on this LAN who can reach "
+    "the household host can call this endpoint with confirm=true. Only enable "
+    "SSH from a device already on the household."
+)
+
+
+class SshDeveloperBody(BaseModel):
+    """Enable or disable ephemeral developer SSH on an adopted player."""
+
+    enabled: bool
+    confirm: bool = False
+    public_key: str | None = None
+
+
+class SshDeveloperStatus(BaseModel):
+    """Developer SSH state for a player. Password is only set when enabling."""
+
+    enabled: bool
+    username: str = "developer"
+    hostname: str
+    port: int = 22
+    command: str | None = None
+    password: str | None = None
+    expires: str = "reboot"
+    warning: str = SSH_API_WARNING

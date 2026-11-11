@@ -1,0 +1,69 @@
+#!/bin/bash
+# HDMI status screen on tty1. No login prompt; refreshes every few seconds.
+set +e
+exec >/dev/tty1 2>&1
+printf '\033[?25l' 2>/dev/null
+trap 'printf "\033[?25h" 2>/dev/null' EXIT
+
+ble_state() {
+	if systemctl is-active --quiet freesounder-ble-provisioning.service 2>/dev/null; then
+		if [[ -f /etc/freesounder/configured ]]; then
+			echo "idle (adopted)"
+		else
+			echo "advertising setup"
+		fi
+	else
+		echo "idle"
+	fi
+}
+
+ssh_state() {
+	if [[ -f /run/freesounder/ssh-developer.json ]] && systemctl is-active --quiet ssh.service 2>/dev/null; then
+		echo "developer mode (off after reboot)"
+	else
+		echo "disabled"
+	fi
+}
+
+ips() {
+	hostname -I 2>/dev/null | awk '{$1=$1; print}' | head -c 200
+}
+
+room_name() {
+	if [[ -f /etc/freesounder/name ]]; then
+		tr -d '\n' </etc/freesounder/name
+	fi
+}
+
+role() {
+	if [[ -x /usr/lib/freesounder/detect-role ]]; then
+		/usr/lib/freesounder/detect-role 2>/dev/null
+	else
+		echo "?"
+	fi
+}
+
+while true; do
+	host=$(hostname -s 2>/dev/null || echo freesounder)
+	pretty=$(room_name)
+	addr=$(ips)
+	[[ -n "$addr" ]] || addr="no network yet"
+	clear 2>/dev/null
+	printf '\033[H'
+	cat <<STATUS
+FreeSounder
+-----------
+Hostname : ${host}
+Room     : ${pretty:-not set yet (use the app)}
+Role     : $(role)
+Address  : ${addr}
+BLE setup: $(ble_state)
+SSH      : $(ssh_state)
+
+This player is a locked-down appliance.
+There is no login on this screen.
+Set it up in the FreeSounder app (Bluetooth or the local network).
+mDNS     : ${host}.local
+STATUS
+	sleep 5
+done
