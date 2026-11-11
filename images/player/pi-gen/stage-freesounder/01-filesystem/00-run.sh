@@ -22,6 +22,7 @@ fi
 install -m 0644 files/etc/freesounder/role "${ROOTFS_DIR}/etc/freesounder/role"
 install -m 0644 files/etc/freesounder/host "${ROOTFS_DIR}/etc/freesounder/host"
 install -m 0644 files/etc/freesounder/dac "${ROOTFS_DIR}/etc/freesounder/dac"
+install -m 0644 files/etc/freesounder/music-assistant-image "${ROOTFS_DIR}/etc/freesounder/music-assistant-image"
 install -m 0755 files/usr/lib/freesounder/detect-role "${ROOTFS_DIR}/usr/lib/freesounder/detect-role"
 install -m 0755 files/usr/lib/freesounder/apply-runtime-config "${ROOTFS_DIR}/usr/lib/freesounder/apply-runtime-config"
 install -m 0755 files/usr/lib/freesounder/apply-dac-overlay "${ROOTFS_DIR}/usr/lib/freesounder/apply-dac-overlay"

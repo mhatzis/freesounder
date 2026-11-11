@@ -271,3 +271,99 @@ def wifi_status_lines(live: dict[str, Any], saved: dict[str, Any]) -> list[str]:
     else:
         lines.append("  last join   : no attempt yet")
     return lines
+
+
+# --- Household services: control API, player agent, Music Assistant ---------
+
+MA_STATUS_PATH = Path("/run/freesounder/ma-status.json")
+CONTROL_API_HEALTH = "http://127.0.0.1:8080/health"
+AGENT_HEALTH = "http://127.0.0.1:8090/health"
+
+
+def _http_json(url: str, timeout: float = 1.5) -> dict[str, Any] | None:
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310
+            data = json.loads(response.read().decode("utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _port_open(port: int, host: str = "127.0.0.1", timeout: float = 0.5) -> bool:
+    import socket
+
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _run_text(argv: list[str], timeout: float = 4.0) -> str:
+    import subprocess
+
+    try:
+        proc = subprocess.run(argv, check=False, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return (proc.stdout or "").strip()
+
+
+def read_services_live(run=_run_text, http=_http_json, port_open=_port_open) -> dict[str, Any]:
+    """Snapshot of the three household services (no secrets)."""
+
+    def unit(name: str) -> str:
+        return run(["systemctl", "is-active", name]) or "unknown"
+
+    try:
+        ma_status = json.loads(MA_STATUS_PATH.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        ma_status = {}
+    fmt = "{{.State.Status}} since {{.State.StartedAt}}"
+    container = run(["docker", "inspect", "-f", fmt, "music-assistant"])
+    preload = sorted(str(p) for p in Path("/var/lib/freesounder/ma-image").glob("*.tar"))
+    return {
+        "control_api_unit": unit("freesounder-control-api.service"),
+        "control_api": http(CONTROL_API_HEALTH),
+        "agent_unit": unit("freesounder-player-agent.service"),
+        "agent": http(AGENT_HEALTH),
+        "ma_unit": unit("freesounder-music-assistant.service"),
+        "ma_status": ma_status,
+        "ma_container": container or "not running",
+        "ma_port": port_open(8095),
+        "ma_preload": preload,
+        "role": _read_optional(Path("/run/freesounder/effective-role")).strip() or "?",
+    }
+
+
+def services_status_lines(live: dict[str, Any], lan_ip: str | None) -> list[str]:
+    lines = [f"  LAN IP      : {lan_ip or 'none yet'}"]
+    api = live.get("control_api")
+    if api:
+        version = api.get("version", "?")
+        unit = live.get("control_api_unit")
+        lines.append(f"  control API : up :8080 (v{version}, unit {unit})")
+        state = api.get("ma_state") or ("connected" if api.get("ma_connected") else "unavailable")
+        detail = api.get("ma_detail")
+        lines.append(f"  API -> MA   : {state}" + (f" - {detail}" if detail else ""))
+    else:
+        unit = live.get("control_api_unit")
+        lines.append(f"  control API : not answering on :8080 (unit {unit})")
+    agent = live.get("agent")
+    if agent:
+        lines.append(f"  player agent: up :8090 ({agent.get('state', '?')})")
+    else:
+        lines.append(f"  player agent: not answering on :8090 (unit {live.get('agent_unit')})")
+    ma = live.get("ma_status") or {}
+    ma_line = f"  Music Asst. : unit {live.get('ma_unit')}, container {live.get('ma_container')}"
+    ma_line += ", :8095 open" if live.get("ma_port") else ", :8095 closed"
+    lines.append(ma_line)
+    if ma:
+        launcher = f"{ma.get('state', '?')} - {ma.get('detail', '')}".rstrip(" -")
+        lines.append(f"  MA launcher : {launcher}")
+    if live.get("ma_preload"):
+        lines.append("  MA image    : bundled archive not unpacked yet")
+    lines.append(f"  role        : {live.get('role')}")
+    return lines

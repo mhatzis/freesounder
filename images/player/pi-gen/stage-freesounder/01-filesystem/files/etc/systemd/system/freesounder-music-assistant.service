@@ -4,6 +4,8 @@ Documentation=https://www.music-assistant.io/installation/
 After=network-online.target docker.service freesounder-role.service
 Wants=network-online.target
 Requires=docker.service
+# Keep retrying (e.g. Docker slow at first boot); never give up permanently.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple

@@ -39,6 +39,15 @@ REPORT=$(mktemp)
 	echo
 	echo "== journalctl -u freesounder-ble-provisioning (last 50) =="
 	journalctl -u freesounder-ble-provisioning -n 50 --no-pager 2>/dev/null || true
+	for unit in freesounder-music-assistant freesounder-control-api freesounder-player-agent; do
+		echo
+		echo "== journalctl -u ${unit} (last 30) =="
+		journalctl -u "$unit" -n 30 --no-pager 2>/dev/null || true
+	done
+	echo
+	echo "== docker ps -a / images =="
+	docker ps -a --format '{{.Names}} {{.Image}} {{.Status}}' 2>/dev/null || echo "docker not answering"
+	docker images --format '{{.Repository}}:{{.Tag}} {{.Size}}' 2>/dev/null || true
 } >"$REPORT" 2>&1
 
 if [ -n "$BOOT" ]; then

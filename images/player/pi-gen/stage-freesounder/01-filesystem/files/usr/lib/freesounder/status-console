@@ -148,6 +148,25 @@ except Exception as exc:
 PY
 }
 
+services_block() {
+	PY=python3
+	if [[ -x /opt/freesounder/control-api/.venv/bin/python ]]; then
+		PY=/opt/freesounder/control-api/.venv/bin/python
+	fi
+	"$PY" - <<'PY'
+try:
+    from freesounder_ble_provisioning.doctor import lan_ip
+    from freesounder_ble_provisioning.status import read_services_live, services_status_lines
+except Exception as exc:
+    print(f"  (service status unavailable: {exc})")
+    raise SystemExit(0)
+try:
+    print("\n".join(services_status_lines(read_services_live(), lan_ip())))
+except Exception as exc:
+    print(f"  (service status failed: {exc})")
+PY
+}
+
 while true; do
 	host=$(hostname -s 2>/dev/null || echo fs-new)
 	pretty=$(room_name)
@@ -170,6 +189,9 @@ $(ble_block)
 
 Wi-Fi
 $(wifi_block)
+
+Services
+$(services_block)
 
 This player is a locked-down appliance.
 There is no login on this screen (fsadmin is on tty2+).

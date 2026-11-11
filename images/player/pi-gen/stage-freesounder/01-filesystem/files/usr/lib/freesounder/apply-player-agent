@@ -1,19 +1,45 @@
 #!/bin/bash
-# Hook run by the player agent after adopt or settings changes.
+# Hook run by the player agent after adopt or settings changes. The agent runs
+# it after replying, but the control API that proxied the request may still be
+# finishing, so restarts are deferred a few seconds and only done on change.
 set -euo pipefail
 
-/usr/lib/freesounder/apply-runtime-config || true
+env_file=/etc/freesounder/control-api.env
+before=$(sha256sum "$env_file" 2>/dev/null | cut -d' ' -f1 || true)
+snap_before=$(sha256sum /etc/default/snapclient 2>/dev/null | cut -d' ' -f1 || true)
 
 if [[ "${FREESOUNDER_DAC_CHANGED:-0}" == "1" ]]; then
 	/usr/lib/freesounder/apply-dac-overlay || true
 fi
-
 /usr/lib/freesounder/apply-dsp-config || true
 
-# Pretty hostname follows the room name; static hostname becomes fs-<room>.
+# Hostname first: control-api.env carries the mDNS name derived from it.
 /usr/lib/freesounder/apply-hostname || true
+/usr/lib/freesounder/apply-runtime-config || true
+
+after=$(sha256sum "$env_file" 2>/dev/null | cut -d' ' -f1 || true)
+snap_after=$(sha256sum /etc/default/snapclient 2>/dev/null | cut -d' ' -f1 || true)
+
+later() {
+	# Run after a delay, outside the agent's request (and its cgroup).
+	if command -v systemd-run >/dev/null; then
+		systemd-run --quiet --collect --on-active=3 --timer-property=AccuracySec=500ms "$@" \
+			|| "$@" || true
+	else
+		"$@" || true
+	fi
+}
 
 systemctl daemon-reload || true
-systemctl try-restart snapclient.service 2>/dev/null || true
-systemctl try-restart freesounder-control-api.service 2>/dev/null || true
-# The agent is the caller; do not restart it here (it would kill this hook).
+if [[ "$snap_before" != "$snap_after" ]]; then
+	later /bin/systemctl try-restart snapclient.service
+fi
+if [[ "$before" != "$after" ]]; then
+	later /bin/systemctl try-restart freesounder-control-api.service
+fi
+# Becoming the household host: make sure Music Assistant is running.
+if [[ "$(/usr/lib/freesounder/detect-role)" == "host" ]] \
+	&& ! systemctl is-active --quiet freesounder-music-assistant.service; then
+	later /bin/systemctl restart freesounder-music-assistant.service
+fi
+# The agent is the caller; do not restart it here.

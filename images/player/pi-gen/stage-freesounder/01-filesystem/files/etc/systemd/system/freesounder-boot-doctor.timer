@@ -1,8 +1,9 @@
 [Unit]
-Description=Run FreeSounder doctor one minute after boot
+Description=Run FreeSounder doctor after boot and every 5 minutes
 
 [Timer]
 OnBootSec=1min
+OnUnitActiveSec=5min
 AccuracySec=5s
 Persistent=false
 Unit=freesounder-boot-doctor.service

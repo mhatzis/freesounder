@@ -281,3 +281,35 @@ def test_status_parsers(tmp_path: Path) -> None:
     joined = "\n".join(lines)
     assert "7 networks" in joined
     assert "'Home' wrong_password: Secrets" in joined
+
+
+def test_services_status_lines_show_ma_starting_and_lan_ip() -> None:
+    from freesounder_ble_provisioning.status import read_services_live, services_status_lines
+
+    def run(argv: list[str]) -> str:
+        if argv[0] == "systemctl":
+            return "active"
+        return "running since 2026-11-11T08:00:00Z"
+
+    def http(url: str):
+        if "8080" in url:
+            return {"version": "0.3.0", "ma_state": "starting", "ma_detail": "Unpacking"}
+        return {"state": "configured"}
+
+    live = read_services_live(run=run, http=http, port_open=lambda port: False)
+    text = "\n".join(services_status_lines(live, "192.168.1.24"))
+    assert "LAN IP      : 192.168.1.24" in text
+    assert "control API : up :8080" in text
+    assert "API -> MA   : starting - Unpacking" in text
+    assert "player agent: up :8090 (configured)" in text
+    assert ":8095 closed" in text
+
+
+def test_services_status_lines_when_nothing_answers() -> None:
+    from freesounder_ble_provisioning.status import read_services_live, services_status_lines
+
+    live = read_services_live(run=lambda argv: "", http=lambda url: None, port_open=lambda p: False)
+    text = "\n".join(services_status_lines(live, None))
+    assert "LAN IP      : none yet" in text
+    assert "control API : not answering" in text
+    assert "player agent: not answering" in text

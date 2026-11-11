@@ -1,14 +1,74 @@
 #!/bin/bash
+# Start Music Assistant on the household host.
+#
+# The image ships the MA container preloaded (/var/lib/freesounder/ma-image),
+# so a fresh host needs no internet: load it once, wait for a LAN address (MA
+# detects its own IP at start-up, and the Wi-Fi only exists after BLE setup),
+# then run it with host networking on port 8095. Progress goes to
+# /run/freesounder/ma-status.json for the control API, tty1 and doctor.
 set -euo pipefail
+
+STATUS=/run/freesounder/ma-status.json
+PRELOAD_DIR=/var/lib/freesounder/ma-image
+IMAGE_FILE=/etc/freesounder/music-assistant-image
+DATA=/var/lib/freesounder/ma-data
+mkdir -p /run/freesounder "$DATA"
+
+status() {
+	local state=$1 detail=$2
+	printf '{"state":"%s","detail":"%s","image":"%s","updated":"%s"}\n' \
+		"$state" "${detail//\"/\'}" "${image:-}" "$(date -Is)" > "$STATUS.tmp"
+	mv -f "$STATUS.tmp" "$STATUS"
+	echo "music-assistant: $state: $detail"
+}
+
 effective=$(/usr/lib/freesounder/detect-role)
+image=$(tr -d '[:space:]' < "$IMAGE_FILE" 2>/dev/null || true)
+image=${image:-ghcr.io/music-assistant/server:2.10.9}
 if [[ "$effective" != "host" ]]; then
-	echo "Role is $effective; not starting Music Assistant."
+	status off "This player is a room (role $effective); Music Assistant runs on the host."
 	exit 0
 fi
-mkdir -p /var/lib/freesounder/ma-data
-# First host boot (and later updates) needs the network to pull the official image.
-# --network host and /data are required by Music Assistant's standalone install docs.
-exec docker run --name music-assistant --rm \
+
+for _ in $(seq 1 60); do
+	docker info >/dev/null 2>&1 && break
+	status starting "Waiting for Docker"
+	sleep 2
+done
+
+if ! docker image inspect "$image" >/dev/null 2>&1; then
+	archive=$(ls -1 "$PRELOAD_DIR"/*.tar 2>/dev/null | head -n1 || true)
+	if [[ -n "$archive" ]]; then
+		status loading "Unpacking Music Assistant (first start, a few minutes)"
+		if docker load -i "$archive"; then
+			# Reclaim ~700 MB once the image is inside Docker.
+			docker image inspect "$image" >/dev/null 2>&1 && rm -f "$archive"
+		else
+			status error "Could not load the bundled Music Assistant image"
+		fi
+	fi
+fi
+if ! docker image inspect "$image" >/dev/null 2>&1; then
+	status pulling "Downloading Music Assistant (needs internet)"
+	if ! docker pull "$image"; then
+		status error "Music Assistant is not installed and could not be downloaded"
+		exit 1
+	fi
+fi
+
+# MA picks its stream/announce IP at start-up: wait for a real LAN address.
+for i in $(seq 1 600); do
+	if ip -4 route show default 2>/dev/null | grep -q . \
+		|| ip -4 -o addr show scope global 2>/dev/null | grep -q inet; then
+		break
+	fi
+	(( i % 15 == 1 )) && status waiting "Waiting for the network (finish Wi-Fi setup in the app)"
+	sleep 1
+done
+
+docker rm -f music-assistant >/dev/null 2>&1 || true
+status starting "Music Assistant is starting"
+exec docker run --name music-assistant --rm --pull never \
 	--network host \
-	--volume /var/lib/freesounder/ma-data:/data \
-	ghcr.io/music-assistant/server:latest
+	--volume "$DATA":/data \
+	"$image"

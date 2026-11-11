@@ -21,7 +21,9 @@ from freesounder_ble_provisioning.protocol import (
 from freesounder_ble_provisioning.status import (
     STATUS_PATH,
     WIFI_STATUS_PATH,
+    read_services_live,
     read_wifi_live,
+    services_status_lines,
     wifi_status_lines,
 )
 
@@ -33,6 +35,7 @@ def collect_report() -> str:
     lines += _section("Units", _unit_lines())
     lines += _section("Network", _network_lines())
     lines += _section("Wi-Fi", _wifi_lines())
+    lines += _section("Services", _services_lines())
     lines += _section(
         "Advertisement budget",
         [
@@ -108,6 +111,10 @@ def _unit_lines() -> list[str]:
         "hciuart.service",
         "NetworkManager.service",
         "freesounder-ble-provisioning.service",
+        "docker.service",
+        "freesounder-music-assistant.service",
+        "freesounder-control-api.service",
+        "freesounder-player-agent.service",
     ):
         enabled = _systemctl("is-enabled", unit)
         active = _systemctl("is-active", unit)
@@ -153,6 +160,21 @@ def _wifi_lines() -> list[str]:
     lines = [line.strip() for line in wifi_status_lines(live, saved)]
     lines += _cmd_lines(["rfkill", "list"], empty="rfkill: no devices")
     return lines
+
+
+def lan_ip() -> str | None:
+    for row in inspect_ipv4():
+        if row.usable:
+            return row.address
+    return None
+
+
+def _services_lines() -> list[str]:
+    try:
+        live = read_services_live()
+    except Exception as exc:  # noqa: BLE001
+        return [f"could not read service state: {exc}"]
+    return [line.strip() for line in services_status_lines(live, lan_ip())]
 
 
 def _systemctl(action: str, unit: str) -> str:

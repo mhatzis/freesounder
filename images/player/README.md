@@ -135,9 +135,23 @@ the build machine; it is installed **inside** the image.
 ## Limitations
 
 - Not boot-tested on real Pi hardware in the first builder environment.
-- First host boot requires a registry pull of Music Assistant (network).
-- Music Assistant schema ≥ 28 needs a long-lived token; set it with
-  `sudo freesounder-setup set-ma-token` after creating one in the MA UI.
+- Music Assistant (pinned in `/etc/freesounder/music-assistant-image`, arm64)
+  is preloaded into the image by `stage-freesounder/04-music-assistant`
+  (`tools/fetch-docker-archive.py`, no Docker needed on the build host; cache
+  with `MA_IMAGE_CACHE`). On the first host start `run-music-assistant` runs
+  `docker load` once (then deletes the archive), waits for a LAN address, and
+  starts MA with host networking on port 8095. Progress is written to
+  `/run/freesounder/ma-status.json` and shown on tty1 and in the doctor file.
+  It only pulls from the registry if the bundled archive is missing.
+- Music Assistant schema ≥ 28 needs a token. On the household host the control
+  API onboards the bundled MA itself: it creates the first admin with a random
+  password (`/etc/freesounder/ma-admin.json`, root 0600, generated on the
+  player, never in the image) and stores a token in `/etc/freesounder/ma-token`
+  (0600). It also enables MA's Snapcast provider (built-in server). If MA was
+  already set up by hand, set a token with `sudo freesounder-setup set-ma-token`.
+- The control API never blocks on MA: `/health`, `/` and `/api/v1/system`
+  report `ma_state` (connected, starting, auth_required, unavailable) with a
+  reason, and MA-backed calls answer 503 with that state while it starts.
 - Automatic host failover is **not** in the first beta; back up
   `/var/lib/freesounder/ma-data`.
 - Unadopted boards share the hostname `fs-new` and can clash on mDNS if two
