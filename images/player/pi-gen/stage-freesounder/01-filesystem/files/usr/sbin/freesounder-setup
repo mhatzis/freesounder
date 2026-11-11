@@ -1,26 +1,19 @@
 #!/bin/bash
-# First-boot and household setup helper for a freesounder player.
+# Local helper for a FreeSounder v2 player (console / developer SSH).
 set -euo pipefail
 
 usage() {
 	cat << 'HELP'
-freesounder-setup — configure this player
+freesounder-setup - inspect or configure this player
 
 Usage:
-  freesounder-setup status
-  freesounder-setup doctor              # BLE / network diagnostics
-  freesounder-setup set-role host|room|auto
-  freesounder-setup set-host <hostname-or-ip>
-  freesounder-setup set-dac none|dacplus|digiampplus
-  freesounder-setup set-name <room-name>
-  freesounder-setup set-ma-token          # reads the token from stdin (not echoed if tty)
-  freesounder-setup apply                 # regenerate services and restart what we can
+  freesounder-setup status              # room, household, group, sources
+  freesounder-setup doctor              # BLE / network / services diagnostics
+  freesounder-setup set-name <room>     # rename the room (also fs-<room> hostname)
+  freesounder-setup set-dac auto|none|dacplus|digiampplus|hifiberry-dac|iqaudio-dacplus
+  freesounder-setup reset               # forget the household and room (factory reset)
 
-Role "auto" (the image default) elects host when RAM is at least 3.5 GiB,
-otherwise room. Music Assistant and the built-in snapserver run only on host.
-Every player runs snapclient and the control API.
-
-Do not put secrets on the command line. set-ma-token reads stdin.
+Every player is equal. Use the FreeSounder app for everything else.
 HELP
 }
 
@@ -31,118 +24,45 @@ need_root() {
 	fi
 }
 
-cmd=${1:-status}
+api() {
+	curl -fsS --max-time 15 -H 'Content-Type: application/json' "$@"
+}
+
+cmd=${1:-help}
 case "$cmd" in
-	-h|--help|help) usage; exit 0 ;;
+	status)
+		cat /run/freesounder/status.json 2>/dev/null || echo "freesounderd has not written a status yet"
+		cat /etc/freesounder/features.json 2>/dev/null || true
+		;;
 	doctor)
-		echo "FreeSounder doctor"
 		if [[ -x /opt/freesounder/venv/bin/freesounder-ble-provisioning ]]; then
 			/opt/freesounder/venv/bin/freesounder-ble-provisioning --doctor || true
-		else
-			echo "ble-provisioning is not installed in the shared venv."
 		fi
-		echo "== journalctl -u freesounder-ble-provisioning (last 50) =="
-		journalctl -u freesounder-ble-provisioning -n 50 --no-pager || true
-		;;
-	status)
-		echo "Hostname:    $(hostname)"
-		echo "Configured:  $(tr -d '[:space:]' < /etc/freesounder/role 2>/dev/null || echo missing)"
-		if [[ -x /usr/lib/freesounder/detect-role ]]; then
-			echo "Effective:   $(/usr/lib/freesounder/detect-role)"
-		fi
-		echo "MA/host:     $(tr -d '[:space:]' < /etc/freesounder/host 2>/dev/null || echo '(unset)')"
-		echo "Name:        $(tr -d '\n' < /etc/freesounder/name 2>/dev/null || echo '(unset)')"
-		echo "DAC:         $(tr -d '[:space:]' < /etc/freesounder/dac 2>/dev/null || echo none)"
-		if [[ -f /etc/freesounder/ma-token ]]; then
-			echo "MA token:    present"
-		else
-			echo "MA token:    none"
-		fi
-		echo "MemTotal:    $(awk '/MemTotal:/ {print $2}' /proc/meminfo) KiB"
-		;;
-	set-role)
-		need_root
-		val=${2:-}
-		case "$val" in
-			host|room|auto) printf '%s\n' "$val" > /etc/freesounder/role ;;
-			*) echo "Role must be host, room, or auto" >&2; exit 1 ;;
-		esac
-		"$0" apply
-		;;
-	set-host)
-		need_root
-		val=${2:-}
-		if [[ -z "$val" ]]; then
-			echo "Usage: freesounder-setup set-host <hostname-or-ip>" >&2
-			exit 1
-		fi
-		printf '%s\n' "$val" > /etc/freesounder/host
-		"$0" apply
-		;;
-	set-dac)
-		need_root
-		/usr/lib/freesounder/apply-dac-overlay "${2:-}"
+		api http://127.0.0.1:8080/api/v2/doctor || true
+		echo
 		;;
 	set-name)
 		need_root
-		val=${2:-}
-		if [[ -z "$val" ]]; then
-			echo "Usage: freesounder-setup set-name <room-name>" >&2
-			exit 1
-		fi
-		printf '%s\n' "$val" > /etc/freesounder/name
-		# Keep settings.json in sync if Python is available.
-		if [[ -x /opt/freesounder/venv/bin/python ]]; then
-			/opt/freesounder/venv/bin/python - << PY || true
-from pathlib import Path
-import json
-name = Path("/etc/freesounder/name").read_text().strip()
-path = Path("/var/lib/freesounder/settings.json")
-data = {}
-if path.is_file():
-    try:
-        data = json.loads(path.read_text())
-    except Exception:
-        data = {}
-data["name"] = name
-path.parent.mkdir(parents=True, exist_ok=True)
-path.write_text(json.dumps(data, indent=2) + "\n")
-PY
-		fi
-		/usr/lib/freesounder/apply-player-agent
+		[[ $# -ge 2 ]] || { usage; exit 1; }
+		id=$(cat /etc/freesounder/player-id)
+		name=$(python3 -c 'import json,sys; print(json.dumps({"name": sys.argv[1]}))' "$2")
+		api -X PATCH "http://127.0.0.1:8080/api/v2/rooms/${id}/settings" -d "$name"
+		echo
 		;;
-	set-ma-token)
+	set-dac)
 		need_root
-		if [[ -t 0 ]]; then
-			echo "Paste the Music Assistant long-lived token, then Enter:"
-			stty -echo
-			IFS= read -r token
-			stty echo
-			echo
-		else
-			IFS= read -r token
-		fi
-		if [[ -z "${token}" ]]; then
-			echo "Empty token; not written." >&2
-			exit 1
-		fi
-		umask 077
-		printf '%s\n' "$token" > /etc/freesounder/ma-token
-		chmod 0600 /etc/freesounder/ma-token
-		"$0" apply
+		[[ $# -ge 2 ]] || { usage; exit 1; }
+		id=$(cat /etc/freesounder/player-id)
+		api -X PATCH "http://127.0.0.1:8080/api/v2/rooms/${id}/settings" -d "{\"dac\": \"$2\"}"
+		echo
+		echo "Reboot to load a new DAC overlay."
 		;;
-	apply)
+	reset)
 		need_root
-		/usr/lib/freesounder/apply-runtime-config
-		systemctl daemon-reload || true
-		# Restart units that exist; ignore failures during first boot imaging.
-		systemctl try-restart snapclient.service 2>/dev/null || true
-		systemctl try-restart freesounder-control-api.service 2>/dev/null || true
-		systemctl try-restart freesounder-music-assistant.service 2>/dev/null || true
-		echo "Effective role: $(cat /run/freesounder/effective-role 2>/dev/null || echo unknown)"
+		api -X POST http://127.0.0.1:8080/api/v2/reset -d '{"confirm": true}'
+		rm -rf /var/lib/freesounder/spotify/* 2>/dev/null || true
+		echo
 		;;
-	*)
-		usage
-		exit 1
-		;;
+	help|-h|--help) usage ;;
+	*) usage; exit 1 ;;
 esac

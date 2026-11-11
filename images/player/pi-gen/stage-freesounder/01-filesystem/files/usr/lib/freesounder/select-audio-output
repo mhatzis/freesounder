@@ -1,6 +1,6 @@
 #!/bin/bash
 # Pick the ALSA device the `freesounder` chain plays to, so snapclient can
-# always open a device and register with Music Assistant:
+# always open a device:
 #   1. a DAC/HAT or USB card (anything that is not vc4-hdmi),
 #   2. the HDMI port with a display connected (Pi 5: vc4hdmi0 = HDMI0,
 #      vc4hdmi1 = HDMI1; there is no analog jack),

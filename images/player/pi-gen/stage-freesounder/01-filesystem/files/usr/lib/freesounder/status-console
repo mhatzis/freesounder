@@ -36,11 +36,19 @@ room_name() {
 }
 
 role() {
-	if [[ -x /usr/lib/freesounder/detect-role ]]; then
-		/usr/lib/freesounder/detect-role 2>/dev/null
-	else
-		echo "?"
-	fi
+	# leader / member of <room>, from freesounderd's status file.
+	python3 - <<'PY' 2>/dev/null || echo "?"
+import json
+try:
+    st = json.load(open("/run/freesounder/status.json"))
+except (OSError, ValueError):
+    print("starting")
+    raise SystemExit
+role = st.get("role", "?")
+if role == "member":
+    role += f" of {st.get('leader') or '?'}"
+print(f"{role} - {st.get('group', '?')}")
+PY
 }
 
 ble_block() {
@@ -179,7 +187,7 @@ FreeSounder
 -----------
 Hostname : ${host}
 Room     : ${pretty:-not set yet (use the app)}
-Role     : $(role)
+Group    : $(role)
 Address  : ${addr}
 mDNS     : ${host}.local
 SSH      : $(ssh_state)

@@ -307,9 +307,14 @@ def create_app(
             return await engine.forward(
                 rid, "PATCH", f"/api/v2/rooms/{rid}/settings", body.model_dump(exclude_none=True)
             )
+        before = store.load_settings()
         result, name_changed, dac_changed = store.patch_settings(body)
         if name_changed or dac_changed:
             background.add_task(asyncio.to_thread, store.run_hook, dac_changed=dac_changed)
+        dsp_fields = ("bass", "treble", "balance", "loudness")
+        if any(getattr(before, f) != getattr(result, f) for f in dsp_fields):
+            # The LADSPA chain is read when snapclient opens the PCM.
+            background.add_task(engine.system.systemctl, "restart", "snapclient.service")
         engine.kick()
         return result
 
