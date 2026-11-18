@@ -12,17 +12,32 @@ void main() {
     testWidgets('plays once over the app with the caption, then gets out of the way', (tester) async {
       await tester.pumpWidget(const MaterialApp(home: IntroSplash(child: Text('app'))));
       expect(find.byKey(const Key('intro-splash')), findsOneWidget);
-      await tester.pump(const Duration(milliseconds: 800));
+      await tester.pump(const Duration(milliseconds: 1200));
       expect(find.text(introCaption), findsOneWidget);
       expect(find.text(introSubline), findsOneWidget);
-      await tester.pump(const Duration(milliseconds: 700));
+      await tester.pump(const Duration(milliseconds: 1400));
       await tester.pump();
       expect(find.byKey(const Key('intro-splash')), findsNothing);
       expect(find.text('app'), findsOneWidget);
     });
 
-    testWidgets('total time stays under 1.5 s and a tap skips it', (tester) async {
-      expect(const IntroSplash(child: SizedBox()).duration, lessThan(const Duration(milliseconds: 1500)));
+    testWidgets('lasts 2.5 s with the caption fully readable for most of it', (tester) async {
+      const intro = IntroSplash(child: SizedBox());
+      expect(intro.duration, const Duration(milliseconds: 2500));
+      final readable = intro.duration * (fadeStart - captionIn.$2);
+      expect(readable, greaterThanOrEqualTo(const Duration(milliseconds: 1400)));
+      await tester.pumpWidget(const MaterialApp(home: IntroSplash(child: Text('app'))));
+      double captionOpacity() => tester
+          .widget<Opacity>(find.ancestor(of: find.text(introCaption), matching: find.byType(Opacity)).first)
+          .opacity;
+      await tester.pump(const Duration(milliseconds: 900));
+      expect(captionOpacity(), 1.0);
+      await tester.pump(const Duration(milliseconds: 1300)); // 2.2 s: still on screen
+      expect(find.byKey(const Key('intro-splash')), findsOneWidget);
+      expect(captionOpacity(), 1.0);
+    });
+
+    testWidgets('a tap skips it at any point', (tester) async {
       await tester.pumpWidget(const MaterialApp(home: IntroSplash(child: Text('app'))));
       await tester.pump(const Duration(milliseconds: 100));
       await tester.tap(find.byKey(const Key('intro-splash')));

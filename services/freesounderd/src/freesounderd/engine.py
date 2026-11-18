@@ -148,6 +148,9 @@ class Engine:
         self.id = store.player_id
         self.group: dict[str, Any] = store.load_group()
         self.peers: dict[str, dict[str, Any]] = {}
+        # Unverified addresses of household members (setup hints, gossip);
+        # used as poll candidates, trusted only once a signed fetch succeeds.
+        self.peer_hints: dict[str, tuple[str, int]] = {}
         self.source = "none"
         self.np: dict[str, Any] = {}
         self._prev_playing = {"spotify": False, "airplay": False, "radio": False}
@@ -224,6 +227,11 @@ class Engine:
             "volume": int(self.group.get("volume", 40)),
             "muted": bool(self.group.get("muted", False)),
             "available": True,
+            "known": {
+                pid: [r.get("ip"), int(r.get("port", 8080))]
+                for pid, r in self.peers.items()
+                if r.get("ip") and self.peer_alive(pid)
+            },
         }
         if self.is_leader:
             rec["source"] = self.source
@@ -501,6 +509,10 @@ class Engine:
     def _candidates(self) -> dict[str, tuple[str, int]]:
         hh = self.store.household()
         out: dict[str, tuple[str, int]] = {}
+        if hh is not None:
+            out.update(self.peer_hints)
+            out.update(self.store.known_peers())
+        out.pop(self.id, None)
         for pid, rec in self.peers.items():
             if rec.get("ip"):
                 out[pid] = (rec["ip"], int(rec.get("port", 8080)))
@@ -534,6 +546,20 @@ class Engine:
             rec["_seen"] = time.monotonic()
             rec["ip"] = rec.get("ip") or ip
             self.peers[pid] = rec
+            self.peer_hints.pop(pid, None)
+            try:
+                self.store.remember_peer(pid, ip, port)
+            except OSError:
+                pass
+            # Gossip: members it knows become candidates here too.
+            for other, addr in (rec.get("known") or {}).items():
+                if (
+                    other != self.id
+                    and other not in self.peers
+                    and isinstance(addr, list)
+                    and len(addr) == 2
+                ):
+                    self.peer_hints.setdefault(str(other), (str(addr[0]), int(addr[1])))
 
         await asyncio.gather(*(fetch(pid, ip, port) for pid, (ip, port) in candidates.items()))
         now = time.monotonic()

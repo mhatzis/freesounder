@@ -21,10 +21,25 @@ class FakeLan {
   int? controlAdoptStatus;
   final ready = <String>{};
 
+  /// Hosts that drop every request (powered off / unreachable).
+  final down = <String>{};
+
+  /// Household id per ready host (default 'home-1').
+  final households = <String, String>{};
+
+  /// Connected players that answer adopt with 502 (they can't reach the board).
+  final adoptUnreachableFrom = <String>{};
+
+  /// What /api/v2/rooms returns.
+  List<Map<String, dynamic>> rooms = const [];
+
   MockClient get client => MockClient((request) async {
         requests.add(request);
         final path = request.url.path;
         final host = request.url.host;
+        if (down.contains(host)) {
+          throw const SocketException('No route to host');
+        }
         if (request.url.port != 8080) {
           return http.Response('{"detail":"Not Found"}', 404);
         }
@@ -34,7 +49,12 @@ class FakeLan {
             throw const SocketException('Local network prohibited');
           }
           return http.Response(
-            jsonEncode({'id': 'pi-$host', 'state': ready.contains(host) ? 'ready' : 'unclaimed', 'version': '0.6.0'}),
+            jsonEncode({
+              'id': 'pi-$host',
+              'state': ready.contains(host) ? 'ready' : 'unclaimed',
+              'household': ready.contains(host) ? {'id': households[host] ?? 'home-1', 'name': 'Home'} : null,
+              'version': '0.6.0',
+            }),
             200,
           );
         }
@@ -50,9 +70,24 @@ class FakeLan {
           return http.Response(jsonEncode({'status': 'ok', 'version': '0.6.0'}), 200);
         }
         if (path == '/api/v2/rooms') {
-          return http.Response('[]', 200);
+          return http.Response(jsonEncode(rooms), 200);
+        }
+        if (path == '/api/v2/now-playing') {
+          return http.Response(jsonEncode({'player_id': request.url.queryParameters['player_id'], 'state': 'idle'}), 200);
+        }
+        if (path == '/api/v2/reset') {
+          ready.remove(host);
+          households.remove(host);
+          return http.Response('{"ok":true}', 200);
         }
         if (path == '/api/v2/players/adopt') {
+          if (adoptUnreachableFrom.contains(host)) {
+            return http.Response('{"detail":"New player did not answer this player"}', 502);
+          }
+          final target = (jsonDecode(request.body) as Map<String, dynamic>)['ip'] as String?;
+          if (target != null && ready.contains(target) && households[target] != (households[host] ?? 'home-1')) {
+            return http.Response('{"detail":"This player is already set up."}', 409);
+          }
           if (controlAdoptStatus != null) {
             return http.Response('{"detail":"New player did not answer: timed out"}', controlAdoptStatus!);
           }
@@ -172,7 +207,10 @@ void main() {
       await store.adoptProvisioned(name: 'Kitchen', id: 'pi-2', ip: '192.168.1.77', url: 'http://192.168.1.77:8090');
       final adopt = lan.to('/api/v2/players/adopt').single;
       expect(adopt.url.host, '192.168.1.10');
-      expect(jsonDecode(adopt.body), {'room': 'Kitchen', 'ip': '192.168.1.77'});
+      expect(jsonDecode(adopt.body), {'room': 'Kitchen', 'ip': '192.168.1.77', 'id': 'pi-192.168.1.77'},
+          reason: 'the real id from the board itself, so the player can also find it over mDNS');
+      expect(lan.to('/api/v2/info').map((r) => r.url.host), contains('192.168.1.77'),
+          reason: 'the phone checks the new board is up before asking');
       expect(lan.to('/api/v2/setup'), isEmpty, reason: 'the connected player sets the new one up');
     });
 
@@ -185,6 +223,74 @@ void main() {
       await store.adoptProvisioned(name: 'Lounge', id: 'pi-1', ip: '192.168.1.24');
       expect(lan.to('/api/v2/setup').single.url.host, '192.168.1.24');
       expect(lan.to('/api/v2/players/adopt'), isEmpty);
+    });
+
+    test('not connected but a home exists: reconnect, never quietly start a second home', () async {
+      final lan = FakeLan()..down.add('192.168.1.10');
+      final container = containerFor(lan);
+      await settle(container);
+      final store = container.read(playbackProvider.notifier);
+      expect(await store.connectTo('http://192.168.1.10:8080', persist: false), isFalse);
+      final failure = await store
+          .adoptProvisioned(name: 'Kitchen', id: 'pi-2', ip: '192.168.1.77')
+          .then<AdoptFailure?>((_) => null, onError: (Object e) => e as AdoptFailure);
+      expect(failure!.recovery, AdoptRecovery.startNewHome);
+      expect(failure.message, contains('separate home'));
+      expect(lan.to('/api/v2/setup'), isEmpty, reason: 'the new board was not made its own home');
+
+      // Back on the right Wi-Fi: the same call reconnects and joins the existing home.
+      lan.down.clear();
+      lan.ready.add('192.168.1.10');
+      await store.adoptProvisioned(name: 'Kitchen', id: 'pi-2', ip: '192.168.1.77');
+      expect(lan.to('/api/v2/players/adopt').single.url.host, '192.168.1.10');
+      expect(lan.to('/api/v2/setup'), isEmpty);
+    });
+
+    test('the user can still deliberately start a separate home', () async {
+      final lan = FakeLan()..down.add('192.168.1.10');
+      final container = containerFor(lan);
+      await settle(container);
+      final store = container.read(playbackProvider.notifier);
+      await store.connectTo('http://192.168.1.10:8080', persist: false);
+      await store.adoptProvisioned(name: 'Kitchen', id: 'pi-2', ip: '192.168.1.77', allowNewHome: true);
+      expect(lan.to('/api/v2/setup').single.url.host, '192.168.1.77');
+    });
+
+    test('if the connected player cannot reach the new board, another player adopts it', () async {
+      final lan = FakeLan()
+        ..ready.addAll(['192.168.1.10', '192.168.1.11'])
+        ..adoptUnreachableFrom.add('192.168.1.10')
+        ..rooms = [
+          {'id': 'pi-192.168.1.10', 'name': 'Lounge', 'url': 'http://192.168.1.10:8080'},
+          {'id': 'pi-192.168.1.11', 'name': 'Kitchen', 'url': 'http://192.168.1.11:8080'},
+        ];
+      final container = containerFor(lan);
+      await settle(container);
+      final store = container.read(playbackProvider.notifier)..probeWait = Duration.zero;
+      expect(await store.connectTo('http://192.168.1.10:8080', persist: false), isTrue);
+      await store.adoptProvisioned(name: 'Office', id: 'pi-3', ip: '192.168.1.77');
+      expect(lan.to('/api/v2/players/adopt').map((r) => r.url.host), ['192.168.1.10', '192.168.1.11']);
+    });
+
+    test('a board that belongs to another home is offered a reset, then joins', () async {
+      final lan = FakeLan()
+        ..ready.addAll(['192.168.1.10', '192.168.1.77'])
+        ..households['192.168.1.77'] = 'home-other';
+      final container = containerFor(lan);
+      await settle(container);
+      final store = container.read(playbackProvider.notifier)..probeWait = Duration.zero;
+      expect(await store.connectTo('http://192.168.1.10:8080', persist: false), isTrue);
+      await Future<void>.delayed(const Duration(milliseconds: 20)); // household id loads
+      expect(store.householdId, 'home-1');
+      final failure = await store
+          .adoptProvisioned(name: 'Office', ip: '192.168.1.77')
+          .then<AdoptFailure?>((_) => null, onError: (Object e) => e as AdoptFailure);
+      expect(failure!.recovery, AdoptRecovery.moveHere);
+      expect(lan.to('/api/v2/players/adopt'), isEmpty);
+
+      await store.adoptProvisioned(name: 'Office', ip: '192.168.1.77', resetFirst: true);
+      expect(lan.to('/api/v2/reset').single.url.host, '192.168.1.77');
+      expect(lan.to('/api/v2/players/adopt').single.url.host, '192.168.1.10');
     });
 
     test('join failure names the step and status', () async {

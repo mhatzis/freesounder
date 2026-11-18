@@ -42,6 +42,9 @@ class DaemonSettings(BaseSettings):
     ssh_command: str | None = "/usr/lib/freesounder/ssh-developer"
     poll_interval: float = 2.0
     leader_timeout: float = 6.0
+    # How long a player keeps trying to reach a board it is adopting (it may
+    # have only just joined Wi-Fi).
+    adopt_wait: float = 45.0
 
 
 def load_settings() -> DaemonSettings:

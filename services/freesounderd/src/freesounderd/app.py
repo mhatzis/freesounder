@@ -139,6 +139,9 @@ def create_app(
             raise HTTPException(status_code=409, detail="This player is already set up.")
         household = body.household or store.new_household()
         store.save_household(household)
+        for hint in body.peers:
+            if hint.id != engine.id:
+                engine.peer_hints[hint.id] = (hint.ip, hint.port)
         store.patch_settings(PlayerSettingsPatch(name=body.room.strip()))
         engine.kick()
         background.add_task(asyncio.to_thread, store.run_hook)
@@ -194,27 +197,67 @@ def create_app(
         hh = store.household()
         if hh is None:
             raise HTTPException(status_code=409, detail="Set this player up first.")
-        url = body.url or (f"http://{body.ip}:8080" if body.ip else None)
-        if not url:
+        # Every address we know for the new board: what the app sent, plus what
+        # mDNS saw for that player id (or that IP).
+        urls: list[str] = []
+        if body.url:
+            urls.append(body.url.rstrip("/"))
+        if body.ip:
+            urls.append(f"http://{body.ip}:8080")
+        if engine.discovery is not None:
+            for found in engine.discovery.found.values():
+                if (body.id and found.id == body.id) or (body.ip and found.ip == body.ip):
+                    urls.append(f"http://{found.ip}:{found.port}")
+        urls = list(dict.fromkeys(urls))
+        if not urls:
             raise HTTPException(status_code=400, detail="Give the new player's url or ip.")
-        try:
-            res = await engine.http.post(
-                url.rstrip("/") + "/api/v2/setup",
-                json={"room": body.room, "household": hh.model_dump()},
-                timeout=15,
-            )
-        except httpx.HTTPError as exc:
+        me = engine.self_record()
+        hints = [{"id": engine.id, "ip": me["ip"], "port": me["port"]}]
+        hints += [
+            {"id": pid, "ip": r["ip"], "port": int(r.get("port", 8080))}
+            for pid, r in engine.peers.items()
+            if r.get("ip") and engine.peer_alive(pid)
+        ]
+        payload = {"room": body.room, "household": hh.model_dump(), "peers": hints}
+        # A board that has only just joined Wi-Fi may need a few seconds before
+        # it answers: keep trying every known address until adopt_wait passes.
+        deadline = asyncio.get_running_loop().time() + max(settings.adopt_wait, 0.0)
+        last_error = ""
+        res: httpx.Response | None = None
+        used = urls[0]
+        while res is None:
+            for url in urls:
+                try:
+                    res = await engine.http.post(url + "/api/v2/setup", json=payload, timeout=6)
+                    used = url
+                    break
+                except httpx.HTTPError as exc:
+                    last_error = f"{url}: {exc or type(exc).__name__}"
+            if res is not None or asyncio.get_running_loop().time() >= deadline:
+                break
+            await asyncio.sleep(2)
+        if res is None:
             raise HTTPException(
-                status_code=502, detail=f"New player did not answer: {exc}"
-            ) from exc
+                status_code=502,
+                detail=(
+                    f"New player did not answer this player (tried {', '.join(urls)}): "
+                    f"{last_error}"
+                ),
+            )
         if res.status_code >= 400:
             try:
                 detail = res.json().get("detail")
             except ValueError:
                 detail = res.text[:200]
             raise HTTPException(status_code=res.status_code, detail=detail)
+        data = res.json()
+        new_id = data.get("id")
+        if isinstance(new_id, str) and new_id != engine.id:
+            host = httpx.URL(used).host
+            port = httpx.URL(used).port or 8080
+            engine.peer_hints[new_id] = (data.get("ip") or host, int(data.get("port") or port))
         engine.kick()
-        return res.json()
+        return data
 
     # -------------------------------------------------------------- rooms & groups
     @app.get("/api/v2/rooms")

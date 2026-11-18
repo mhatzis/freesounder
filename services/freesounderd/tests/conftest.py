@@ -132,6 +132,7 @@ class Player:
             ssh_command=None,
             airplay_version=2,
             poll_interval=0.05,
+            adopt_wait=0.3,
         )
         self.store = Store(self.settings)
         self.engine = Engine(

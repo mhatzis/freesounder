@@ -81,6 +81,8 @@ Future<DiscoveredHost?> _resolvePtr(MDnsClient client, PtrResourceRecord ptr) as
     url: 'http://$target:$port',
     name: (room != null && room.isNotEmpty) ? room : (fallback.isEmpty ? 'FreeSounder' : fallback),
     state: txt['state'],
+    id: txt['id'],
+    household: (txt['hh'] ?? '').isEmpty ? null : txt['hh'],
   );
 }
 

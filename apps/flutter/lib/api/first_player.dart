@@ -5,9 +5,22 @@ import 'package:http/http.dart' as http;
 
 import 'control_client.dart';
 
+/// What the add-player sheet can offer after a failure.
+enum AdoptRecovery {
+  /// The new board already belongs to another home: reset it and add it here.
+  moveHere,
+
+  /// The phone can't reach the existing home: try again, or deliberately
+  /// start a separate home with this board.
+  startNewHome,
+}
+
 /// Which part of adding a player failed, with the precise reason.
 class AdoptFailure implements Exception {
-  AdoptFailure(this.step, this.reason, {this.statusCode, this.url});
+  AdoptFailure(this.step, this.reason, {this.statusCode, this.url, this.recovery, this.customHint});
+
+  final AdoptRecovery? recovery;
+  final String? customHint;
 
   /// Human step name, e.g. "Creating your system".
   final String step;
@@ -24,6 +37,12 @@ class AdoptFailure implements Exception {
   }
 
   String get hint {
+    if (customHint != null) {
+      return customHint!;
+    }
+    if (recovery == AdoptRecovery.moveHere) {
+      return 'It is already set up in another home. You can reset it and add it here.';
+    }
     if (statusCode == 503) {
       return 'Your system is still starting. Wait a minute and try again.';
     }
@@ -146,6 +165,59 @@ class FirstPlayerSetup {
     throw AdoptFailure(step, reason, statusCode: response.statusCode, url: uri.toString());
   }
 
+  /// Ask the new board directly (phone → board) what it is. Retries for
+  /// [wait]; null when the phone cannot reach it.
+  Future<Map<String, dynamic>?> probe(String ip, {Duration wait = const Duration(seconds: 20)}) async {
+    final uri = Uri.parse('http://$ip:$apiPort/api/v2/info');
+    final deadline = DateTime.now().add(wait);
+    while (true) {
+      try {
+        final response = await _http.get(uri).timeout(requestTimeout);
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body);
+          if (data is Map<String, dynamic>) {
+            return data;
+          }
+        }
+      } on Object {
+        // not up yet
+      }
+      if (!DateTime.now().isBefore(deadline)) {
+        return null;
+      }
+      await Future<void>.delayed(retryDelay);
+    }
+  }
+
+  /// Reset a board that belongs to another home so it can join this one,
+  /// then wait until it answers as unclaimed.
+  Future<void> resetPlayer({required String ip, AdoptProgress? onProgress}) async {
+    final api = 'http://$ip:$apiPort';
+    onProgress?.call('Resetting the player at $ip…');
+    final resetUri = Uri.parse('$api/api/v2/reset');
+    try {
+      final response = await _http
+          .post(resetUri, headers: {'Content-Type': 'application/json'}, body: jsonEncode({'confirm': true}))
+          .timeout(adoptTimeout);
+      _check('Resetting the player', resetUri, response);
+    } on AdoptFailure {
+      rethrow;
+    } on Object catch (err) {
+      throw AdoptFailure('Resetting the player', _describe(err), url: resetUri.toString());
+    }
+    final deadline = DateTime.now().add(reachTimeout);
+    while (true) {
+      final info = await _retryJson('Resetting the player', Uri.parse('$api/api/v2/info'));
+      if (info['state'] == 'unclaimed') {
+        return;
+      }
+      if (DateTime.now().isAfter(deadline)) {
+        throw AdoptFailure('Resetting the player', 'It still reports state ${info['state']}', url: '$api/api/v2/info');
+      }
+      await Future<void>.delayed(retryDelay);
+    }
+  }
+
   void close() => _http.close();
 }
 
@@ -166,6 +238,10 @@ Future<void> joinExistingSystem(
       err.detail ?? err.message,
       statusCode: err.statusCode,
       url: err.url ?? '${client.baseUrl}/api/v2/players/adopt',
+      // The new player answered 409 "already set up": it belongs to another home.
+      recovery: err.statusCode == 409 && ip != null && (err.detail ?? '').contains('already set up')
+          ? AdoptRecovery.moveHere
+          : null,
     );
   } on Object catch (err) {
     throw AdoptFailure(

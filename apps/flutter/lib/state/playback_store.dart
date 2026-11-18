@@ -168,9 +168,14 @@ class PlaybackStore extends Notifier<PlaybackState> {
   Timer? _retryTimer;
   Duration? _retryDelay;
   bool _resyncing = false;
+  int _failedResyncs = 0;
   bool _foreground = true;
   bool _disposed = false;
+  String? _householdId;
   late MockHousehold _mock;
+
+  /// Household id of the connected system (from /api/v2/info), when known.
+  String? get householdId => _householdId;
 
   ControlApiClient? get client => _client;
   MockHousehold get mockHousehold => _mock;
@@ -320,6 +325,7 @@ class PlaybackStore extends Notifier<PlaybackState> {
       }
       _subscribeEvents(client);
       _startHeartbeat();
+      unawaited(_loadHouseholdId(client));
       await refreshHealth();
       _healthTimer?.cancel();
       _healthTimer = Timer.periodic(const Duration(seconds: 5), (_) {
@@ -400,6 +406,47 @@ class PlaybackStore extends Notifier<PlaybackState> {
     }
   }
 
+  Future<void> _loadHouseholdId(ControlApiClient client) async {
+    try {
+      final info = await client.info().timeout(const Duration(seconds: 4));
+      final hh = info['household'];
+      if (identical(client, _client) && hh is Map && hh['id'] is String) {
+        _householdId = hh['id'] as String;
+      }
+    } on Object {
+      // Optional: only used to spot players that belong to another home.
+    }
+  }
+
+  /// Players on this network that are set up in a *different* home (for
+  /// example a second board that was set up while the phone could not reach
+  /// the first one). The add-player sheet offers to move them here.
+  Future<List<UnclaimedPlayer>> listOtherHomePlayers() async {
+    if (state.mockMode || _client == null) {
+      return const [];
+    }
+    final ours = _householdId;
+    final roomIds = {for (final r in state.rooms) r.id};
+    final connectedHost = Uri.tryParse(_client!.baseUrl)?.host;
+    final hosts = await _safeDiscover(ref.read(appConfigProvider).discoveryTimeout);
+    return [
+      for (final h in hosts)
+        if (h.state == 'ready' &&
+            h.household != null &&
+            ours != null &&
+            h.household != ours &&
+            !roomIds.contains(h.id) &&
+            Uri.tryParse(h.url)?.host != connectedHost)
+          UnclaimedPlayer(
+            id: h.id ?? h.url,
+            name: h.name,
+            url: h.url,
+            address: Uri.tryParse(h.url)?.host,
+            state: 'other-home',
+          ),
+    ];
+  }
+
   // --- Staying live: event-stream reconnect, heartbeat, app resume ---------
 
   void _subscribeEvents(ControlApiClient client) {
@@ -471,6 +518,7 @@ class PlaybackStore extends Notifier<PlaybackState> {
         return false;
       }
       _subscribeEvents(client);
+      _failedResyncs = 0;
       _retryDelay = null;
       _retryTimer?.cancel();
       state = PlaybackState(
@@ -495,10 +543,46 @@ class PlaybackStore extends Notifier<PlaybackState> {
       return true;
     } on Object {
       _resyncing = false;
+      _failedResyncs++;
+      if (_failedResyncs >= 3 && await _failOverToAnotherPlayer(client)) {
+        return true;
+      }
       _linkLost(client);
       return false;
     } finally {
       _resyncing = false;
+    }
+  }
+
+  /// Every player can serve the whole home: if the one we talk to stays
+  /// unreachable, switch to another room's player.
+  Future<bool> _failOverToAnotherPlayer(ControlApiClient dead) async {
+    final deadHost = Uri.tryParse(dead.baseUrl)?.host;
+    final others = <String>{
+      for (final room in state.rooms)
+        if (room.url != null && Uri.tryParse(room.url!)?.host != deadHost) room.url!,
+    };
+    for (final url in others) {
+      if (!identical(dead, _client) || _disposed) {
+        return false;
+      }
+      if (await _canReach(url) && await connectTo(url, persist: true)) {
+        _failedResyncs = 0;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  Future<bool> _canReach(String url) async {
+    final probe = ref.read(controlClientFactoryProvider)(url);
+    try {
+      await probe.health().timeout(const Duration(seconds: 3));
+      return true;
+    } on Object {
+      return false;
+    } finally {
+      await probe.close();
     }
   }
 
@@ -535,6 +619,7 @@ class PlaybackStore extends Notifier<PlaybackState> {
   }
 
   Future<void> _teardownClient() async {
+    _householdId = null;
     _healthTimer?.cancel();
     _healthTimer = null;
     _heartbeat?.cancel();
@@ -870,25 +955,86 @@ class PlaybackStore extends Notifier<PlaybackState> {
     String? ip,
     String? url,
     AdoptProgress? onProgress,
+    bool allowNewHome = false,
+    bool resetFirst = false,
   }) async {
     if (state.mockMode) {
       await adoptPlayer(name: name, id: id, url: url);
       return;
     }
-    final client = _client;
     final address = provisionedIp(ip: ip, url: url);
+    if (_client == null && !allowNewHome) {
+      // A home already exists (saved or seen on the network) but the phone is
+      // not connected to it right now. Never quietly make the new board a
+      // second, separate home: reconnect first, or explain.
+      final known = state.hostUrl ?? ref.read(connectionPrefsProvider)?.savedHost;
+      final readyHosts = state.discoveredHosts.where((h) => !h.unclaimed && Uri.tryParse(h.url)?.host != address);
+      if (known != null || readyHosts.isNotEmpty) {
+        onProgress?.call('Reconnecting to your home…');
+        if (known != null) {
+          await connectTo(known, persist: false);
+        }
+        for (final host in readyHosts) {
+          if (_client != null) break;
+          await connectTo(host.url, persist: false);
+        }
+        if (_client == null) {
+          throw AdoptFailure(
+            'Reaching your home',
+            'Not connected to ${known ?? readyHosts.first.url}',
+            url: known ?? readyHosts.first.url,
+            recovery: AdoptRecovery.startNewHome,
+            customHint: 'Your phone can\'t reach your other players right now. Make sure it is on the same Wi-Fi '
+                'and try again. (Adding this one now would start a separate home.)',
+          );
+        }
+      }
+    }
+    final client = _client;
+    if (resetFirst && client != null && address != null) {
+      final setup = ref.read(firstPlayerSetupProvider)();
+      try {
+        await setup.resetPlayer(ip: address, onProgress: onProgress);
+      } finally {
+        setup.close();
+      }
+    }
     final connectedHost = client == null ? null : Uri.tryParse(client.baseUrl)?.host;
     final createSystem = client == null || (address != null && address == connectedHost);
     if (!createSystem) {
-      onProgress?.call('Adding $name to your system…');
-      await joinExistingSystem(client, name: name, id: id, url: url, ip: address);
-      try {
-        final rooms = await client.listRooms().timeout(const Duration(seconds: 5));
-        state = state.copyWith(rooms: rooms);
-      } on Object {
-        // The new room arrives over the event stream once the players see each other.
+      var playerId = id;
+      if (address != null && !resetFirst) {
+        // Phone → new board first: is it up yet, and is it really unclaimed?
+        onProgress?.call('Waiting for $name to come online…');
+        final setup = ref.read(firstPlayerSetupProvider)();
+        Map<String, dynamic>? info;
+        try {
+          info = await setup.probe(address, wait: probeWait);
+        } finally {
+          setup.close();
+        }
+        if (info != null) {
+          playerId = info['id'] as String? ?? playerId;
+          final theirs = (info['household'] as Map?)?['id'];
+          if (info['state'] == 'ready' && theirs != null && _householdId != null && theirs != _householdId) {
+            throw AdoptFailure(
+              'Adding it to your home',
+              'The player at $address is already set up in another home',
+              statusCode: 409,
+              url: 'http://$address:8080/api/v2/info',
+              recovery: AdoptRecovery.moveHere,
+            );
+          }
+          if (info['state'] == 'ready' && theirs != null && _householdId != null && theirs == _householdId) {
+            // Already one of ours (a retry after a lost reply): just refresh.
+            await _refreshRoomsAfterAdopt(client);
+            return;
+          }
+        }
       }
-      await refreshHealth();
+      onProgress?.call('Adding $name to your system…');
+      await _joinViaAnyPlayer(client, name: name, id: playerId, url: url, ip: address);
+      await _refreshRoomsAfterAdopt(client);
       return;
     }
     if (address == null) {
@@ -913,6 +1059,63 @@ class PlaybackStore extends Notifier<PlaybackState> {
       state.error ?? 'No answer from $base',
       url: '$base/api/v2/rooms',
     );
+  }
+
+  /// How long the phone waits for a just-provisioned board to answer.
+  Duration probeWait = const Duration(seconds: 20);
+
+  /// Ask the connected player to adopt; if *it* can't reach the new board,
+  /// ask the other players in the home in turn (any member can adopt).
+  Future<void> _joinViaAnyPlayer(
+    ControlApiClient client, {
+    required String name,
+    String? id,
+    String? url,
+    String? ip,
+  }) async {
+    try {
+      await joinExistingSystem(client, name: name, id: id, url: url, ip: ip);
+      return;
+    } on AdoptFailure catch (err) {
+      final unreachable = err.statusCode == 502 || err.statusCode == 504 || err.statusCode == null;
+      if (!unreachable) {
+        rethrow;
+      }
+      final connectedHost = Uri.tryParse(client.baseUrl)?.host;
+      final others = <String>{
+        for (final room in state.rooms)
+          if (room.url != null && room.available && Uri.tryParse(room.url!)?.host != connectedHost) room.url!,
+      };
+      for (final other in others) {
+        final via = ref.read(controlClientFactoryProvider)(other);
+        try {
+          await joinExistingSystem(via, name: name, id: id, url: url, ip: ip);
+          return;
+        } on AdoptFailure {
+          // try the next player
+        } finally {
+          await via.close();
+        }
+      }
+      throw AdoptFailure(
+        err.step,
+        err.reason,
+        statusCode: err.statusCode,
+        url: err.url,
+        customHint: 'Your players could not reach the new one${ip == null ? '' : ' at $ip'}. '
+            'Make sure it joined the same Wi-Fi as your other players (not a guest network), then try again.',
+      );
+    }
+  }
+
+  Future<void> _refreshRoomsAfterAdopt(ControlApiClient client) async {
+    try {
+      final rooms = await client.listRooms().timeout(const Duration(seconds: 5));
+      state = state.copyWith(rooms: rooms);
+    } on Object {
+      // The new room arrives over the event stream once the players see each other.
+    }
+    await refreshHealth();
   }
 
   /// Returns a one-line result for the room settings sheet.

@@ -11,19 +11,25 @@ const brandGradient = LinearGradient(
 );
 
 const introCaption = 'Free the music.';
+
+/// Fraction of the intro where the overlay starts fading out.
+const fadeStart = 0.90;
+
+/// Fractions over which the caption fades in.
+const captionIn = (0.18, 0.32);
 const introSubline = 'Multi-room audio, owned by you.';
 
 /// Cold-start intro drawn over [child]: picks up exactly where the native
 /// launch screen leaves off (gradient + the F at 256 pt, centred), then the
 /// sound-wave arcs draw outward, the caption fades in and the overlay fades
-/// away. ~1.4 s, tap to skip. Created once per process, so resuming the app
+/// away. ~2.5 s (caption readable for ~1.5 s), tap to skip. Created once per process, so resuming the app
 /// never shows it again; skipped when the OS asks for reduced motion.
 class IntroSplash extends StatefulWidget {
   const IntroSplash({
     super.key,
     required this.child,
     this.enabled = true,
-    this.duration = const Duration(milliseconds: 1400),
+    this.duration = const Duration(milliseconds: 2500),
   });
 
   final Widget child;
@@ -65,7 +71,7 @@ class _IntroSplashState extends State<IntroSplash> with SingleTickerProviderStat
   void _skip() {
     if (_done) return;
     // Jump to the fade-out and finish quickly.
-    final from = math.max(_c.value, 0.86);
+    final from = math.max(_c.value, fadeStart);
     _c.value = from;
     _c.animateTo(1, duration: const Duration(milliseconds: 180)).ignore();
   }
@@ -99,10 +105,12 @@ class _IntroSplashState extends State<IntroSplash> with SingleTickerProviderStat
       Curves.easeOutCubic.transform(((t - a) / (b - a)).clamp(0.0, 1.0));
 
   Widget _frame(BuildContext context, double t) {
-    final fadeOut = 1 - _seg(t, 0.86, 1.0);
-    final scale = 1 + 0.06 * _seg(t, 0.0, 0.5) - 0.02 * _seg(t, 0.5, 0.86);
-    final caption = _seg(t, 0.38, 0.66);
-    final subline = _seg(t, 0.52, 0.80);
+    // 2.5 s: arcs draw in the first ~0.7 s, the caption is fully readable
+    // from ~0.8 s to 2.25 s, then the overlay fades out over 0.25 s.
+    final fadeOut = 1 - _seg(t, fadeStart, 1.0);
+    final scale = 1 + 0.06 * _seg(t, 0.0, 0.3) - 0.02 * _seg(t, 0.3, fadeStart);
+    final caption = _seg(t, captionIn.$1, captionIn.$2);
+    final subline = _seg(t, 0.26, 0.40);
     final text = Theme.of(context).textTheme;
     return Opacity(
       opacity: fadeOut,
@@ -122,7 +130,7 @@ class _IntroSplashState extends State<IntroSplash> with SingleTickerProviderStat
                       Image.asset('assets/splash/mark_f.png', filterQuality: FilterQuality.medium),
                       CustomPaint(
                         painter: SoundWavesPainter([
-                          for (var i = 0; i < 3; i++) _seg(t, 0.06 + 0.12 * i, 0.40 + 0.12 * i),
+                          for (var i = 0; i < 3; i++) _seg(t, 0.03 + 0.07 * i, 0.22 + 0.07 * i),
                         ]),
                       ),
                     ],

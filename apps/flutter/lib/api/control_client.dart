@@ -182,7 +182,12 @@ class ControlApiClient {
     // Improv redirect named, so send its address rather than the URL.
     final host = ip ?? (url == null ? null : Uri.tryParse(url.contains('://') ? url : 'http://$url')?.host);
     final body = (host != null && host.isNotEmpty) ? {'room': name, 'ip': host} : {'room': name, 'url': ?url};
-    final data = await _send('POST', '/api/v2/players/adopt', body);
+    // The player id lets the adopting player find the board over mDNS if the
+    // IP is stale; the player keeps retrying for up to ~45 s, so wait longer.
+    if (id != null && id.isNotEmpty && !id.contains(':')) {
+      body['id'] = id;
+    }
+    final data = await _send('POST', '/api/v2/players/adopt', body, true);
     return data as Map<String, dynamic>;
   }
 

@@ -94,6 +94,12 @@ class HouseholdSecret(BaseModel):
     name: str = "Home"
 
 
+class PeerHint(BaseModel):
+    id: str = Field(min_length=1, max_length=64)
+    ip: str = Field(min_length=1, max_length=64)
+    port: int = Field(default=8080, ge=1, le=65535)
+
+
 class SetupBody(BaseModel):
     """First setup of an unclaimed player: the room name, optionally a household.
 
@@ -103,6 +109,9 @@ class SetupBody(BaseModel):
 
     room: str = Field(min_length=1, max_length=40)
     household: HouseholdSecret | None = None
+    # Addresses of existing household members, from the adopting player, so the
+    # new player can reach them without mDNS. Verified before use.
+    peers: list[PeerHint] = Field(default_factory=list)
 
 
 class AdoptBody(BaseModel):
@@ -110,6 +119,7 @@ class AdoptBody(BaseModel):
 
     url: str | None = None
     ip: str | None = None
+    id: str | None = Field(default=None, max_length=64)
     room: str = Field(min_length=1, max_length=40)
 
 

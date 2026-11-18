@@ -46,6 +46,8 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
   _WizardStep _step = _WizardStep.find;
   List<NearbyPlayer> _ble = const [];
   List<UnclaimedPlayer> _online = const [];
+  List<UnclaimedPlayer> _otherHome = const [];
+  AdoptRecovery? _recovery;
   NearbyPlayer? _selected;
   List<WifiCandidate> _networks = const [];
   WifiCandidate? _network;
@@ -197,6 +199,12 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
       bleError = friendlyError(err, fallback: 'Could not search over Bluetooth. Search again.');
       _debug = debugDetail(err);
     }
+    // Players set up in a different home (e.g. by mistake) can be moved here.
+    unawaited(ref.read(playbackProvider.notifier).listOtherHomePlayers().then((found) {
+      if (mounted) {
+        setState(() => _otherHome = found);
+      }
+    }, onError: (Object _) {}));
     // Players already on the network are listed even if Bluetooth failed.
     var online = const <UnclaimedPlayer>[];
     try {
@@ -325,7 +333,7 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
       // With no player connected yet there is nobody to list unclaimed players.
       final unclaimed = (store.client == null && !ref.read(playbackProvider).mockMode)
           ? null
-          : await _waitForUnclaimed(id);
+          : await _waitForUnclaimed(id, ip: _provisionedIp);
       if (!mounted) {
         return;
       }
@@ -333,7 +341,8 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
           UnclaimedPlayer(
             id: id,
             name: player.name,
-            url: result.redirect ?? 'http://${result.ip ?? 'freesounder.local'}:8080',
+            // A fresh board is fs-new until it is named.
+            url: result.redirect ?? 'http://${result.ip ?? 'fs-new.local'}:8080',
             address: result.ip,
             port: 8080,
           );
@@ -364,12 +373,18 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
     }
   }
 
-  Future<UnclaimedPlayer?> _waitForUnclaimed(String id) async {
+  Future<UnclaimedPlayer?> _waitForUnclaimed(String id, {String? ip}) async {
     const attempts = 15;
     for (var i = 0; i < attempts; i++) {
-      final list = await ref.read(playbackProvider.notifier).listUnclaimed();
+      List<UnclaimedPlayer> list;
+      try {
+        list = await ref.read(playbackProvider.notifier).listUnclaimed();
+      } on Object {
+        list = const []; // the board joined Wi-Fi; adopting by IP still works
+      }
       for (final player in list) {
-        if (player.id == id) {
+        final host = Uri.tryParse(player.url)?.host;
+        if (player.id == id || (ip != null && (player.address == ip || host == ip))) {
           return player;
         }
       }
@@ -378,16 +393,45 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
     return null;
   }
 
-  Future<void> _adopt() async {
+  Future<bool> _confirmMove() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialog) => AlertDialog(
+        title: const Text('Move this player here?'),
+        content: const Text(
+          'It is set up in another home. Moving it resets it (its room name and sound settings) '
+          'and adds it to this home.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(dialog).pop(false), child: const Text('Cancel')),
+          FilledButton(
+            key: const Key('confirm-move-player'),
+            onPressed: () => Navigator.of(dialog).pop(true),
+            child: const Text('Reset and add'),
+          ),
+        ],
+      ),
+    );
+    return ok ?? false;
+  }
+
+  Future<void> _adopt({bool resetFirst = false, bool allowNewHome = false}) async {
     final selected = _selected;
     final name = _name.text.trim();
     if (selected == null || name.isEmpty) {
       setState(() => _error = 'Give the room a name.');
       return;
     }
+    if (!resetFirst && selected.unclaimed?.state == 'other-home') {
+      if (!await _confirmMove()) {
+        return;
+      }
+      resetFirst = true;
+    }
     setState(() {
       _working = true;
       _error = null;
+      _recovery = null;
       _adoptProgress = null;
     });
     try {
@@ -395,8 +439,10 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
       await ref.read(playbackProvider.notifier).adoptProvisioned(
             name: name,
             id: unclaimed?.id ?? selected.id,
-            ip: _provisionedIp ?? unclaimed?.address,
+            ip: _provisionedIp ?? unclaimed?.address ?? provisionedIp(url: unclaimed?.url),
             url: unclaimed?.url,
+            resetFirst: resetFirst,
+            allowNewHome: allowNewHome,
             onProgress: (message) {
               if (mounted) {
                 setState(() => _adoptProgress = message);
@@ -415,6 +461,7 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
         _adoptProgress = null;
         _error = err.message;
         _debug = err.debugLine;
+        _recovery = err.recovery;
       });
     } on Object catch (err) {
       if (!mounted) {
@@ -516,6 +563,15 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
             name: player.name,
             needsWifi: false,
             subtitle: player.address ?? player.url,
+            unclaimed: player,
+          ),
+      for (final player in _otherHome)
+        if (!bleIds.contains(player.id) && !_online.any((o) => o.id == player.id))
+          NearbyPlayer(
+            id: player.id,
+            name: player.name,
+            needsWifi: false,
+            subtitle: 'In another home · ${player.address ?? player.url} — tap to move it here',
             unclaimed: player,
           ),
     ];
@@ -884,6 +940,27 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
               ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
               : const Text('Done'),
         ),
+        if (_recovery == AdoptRecovery.moveHere && !_working) ...[
+          const SizedBox(height: 8),
+          OutlinedButton.icon(
+            key: const Key('move-player-here'),
+            icon: const Icon(Icons.move_down),
+            label: const Text('Reset it and add it here'),
+            onPressed: () async {
+              if (await _confirmMove()) {
+                await _adopt(resetFirst: true);
+              }
+            },
+          ),
+        ],
+        if (_recovery == AdoptRecovery.startNewHome && !_working) ...[
+          const SizedBox(height: 8),
+          TextButton(
+            key: const Key('start-new-home'),
+            onPressed: () => _adopt(allowNewHome: true),
+            child: const Text('Start a separate home with this player instead'),
+          ),
+        ],
         if (_adoptProgress != null) ...[
           const SizedBox(height: 12),
           const LinearProgressIndicator(),

@@ -100,7 +100,11 @@ class UnclaimedPlayer {
 }
 
 class DiscoveredHost {
-  const DiscoveredHost({required this.url, this.name = 'FreeSounder', this.state});
+  const DiscoveredHost({required this.url, this.name = 'FreeSounder', this.state, this.id, this.household});
+
+  /// Player id and household id from mDNS TXT (`id`, `hh`), when advertised.
+  final String? id;
+  final String? household;
 
   final String url;
   final String name;

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:freesounder/app_version.dart';
 import 'package:freesounder/state/playback_store.dart';
 import 'package:freesounder/theme/tokens.dart';
 import 'package:freesounder/ui/app_shell.dart';
@@ -256,7 +257,7 @@ void main() {
     await tester.pumpAndSettle();
 
     await tester.ensureVisible(find.byKey(const Key('player-version-tap')));
-    expect(find.text('FreeSounder 0.6.2'), findsOneWidget);
+    expect(find.text('FreeSounder $appVersion'), findsOneWidget);
     expect(find.byKey(const Key('ssh-developer-switch')), findsNothing);
 
     for (var i = 0; i < 7; i++) {

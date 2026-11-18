@@ -81,9 +81,36 @@ class Store:
         return HouseholdSecret(id=str(uuid.uuid4()), key=secrets.token_hex(32), name=name)
 
     def clear_household(self) -> None:
+        self.known_peers_path.unlink(missing_ok=True)
         self.household_path.unlink(missing_ok=True)
         self.group_path.unlink(missing_ok=True)
         (self.settings.config_dir / "configured").unlink(missing_ok=True)
+
+    # known peers: household members' last verified addresses, so players find
+    # each other even where mDNS between them is unreliable (Wi-Fi multicast).
+    @property
+    def known_peers_path(self) -> Path:
+        return self.settings.state_dir / "known-peers.json"
+
+    def known_peers(self) -> dict[str, tuple[str, int]]:
+        try:
+            raw = json.loads(self.known_peers_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        out: dict[str, tuple[str, int]] = {}
+        if isinstance(raw, dict):
+            for pid, rec in raw.items():
+                if isinstance(rec, dict) and isinstance(rec.get("ip"), str):
+                    out[str(pid)] = (rec["ip"], int(rec.get("port", 8080)))
+        return out
+
+    def remember_peer(self, pid: str, ip: str, port: int = 8080) -> None:
+        current = self.known_peers()
+        if current.get(pid) == (ip, port):
+            return
+        current[pid] = (ip, port)
+        data = {k: {"ip": v[0], "port": v[1]} for k, v in current.items()}
+        _write_atomic(self.known_peers_path, json.dumps(data, indent=2) + "\n")
 
     def state(self) -> str:
         return "ready" if self.household() is not None else "unclaimed"
