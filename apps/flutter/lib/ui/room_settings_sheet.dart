@@ -432,7 +432,7 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
                       style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
                     ),
                   ),
-                  if (_developerUnlocked) ...[
+                  if (_developerUnlocked || ref.watch(developerModeProvider)) ...[
                     const SizedBox(height: 16),
                     Text('Developer', style: text.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
                     const SizedBox(height: 4),
