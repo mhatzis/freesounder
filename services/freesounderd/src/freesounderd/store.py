@@ -15,10 +15,12 @@ from typing import Any
 from freesounderd.config import DaemonSettings
 from freesounderd.dsp import write_dsp_configs
 from freesounderd.models import (
+    AMP_VOLUME_LIMIT,
     DAC_CHOICES,
     HouseholdSecret,
     PlayerSettings,
     PlayerSettingsPatch,
+    is_amp,
 )
 
 logger = logging.getLogger(__name__)
@@ -171,6 +173,7 @@ class Store:
         updated = current.model_copy(update=updates)
         if dac_changed:
             updated = updated.model_copy(update={"dac_reboot_required": True})
+            updated = apply_amp_default(updated, detected_hat())
         self.save_settings(updated)
         return updated, name_changed, dac_changed
 
@@ -191,6 +194,21 @@ class Store:
             return data if isinstance(data, dict) else {}
         except (OSError, ValueError):
             return {}
+
+
+def apply_amp_default(settings: PlayerSettings, hat: str | None) -> PlayerSettings:
+    """First time an amplifier board is in use, cap the room at a safe level.
+
+    Passive speakers on an amp HAT get loud fast; the room's volume limit goes
+    to AMP_VOLUME_LIMIT once (only if still at 100), the user can raise it.
+    """
+
+    if settings.amp_limit_applied or not is_amp(settings.dac, hat):
+        return settings
+    update: dict[str, Any] = {"amp_limit_applied": True}
+    if settings.volume_limit == 100:
+        update["volume_limit"] = AMP_VOLUME_LIMIT
+    return settings.model_copy(update=update)
 
 
 def hostname() -> str:

@@ -5,9 +5,25 @@
 #           the firmware, which loads their overlay itself; select-audio-output
 #           then prefers the HAT's sound card over HDMI.
 #   none  : onboard / USB audio only.
-#   dacplus, digiampplus : dtoverlay=hifiberry-dacplus (no EEPROM needed).
-#   hifiberry-dac        : dtoverlay=hifiberry-dac (PCM5102A boards, no EEPROM).
-#   iqaudio-dacplus      : dtoverlay=iqaudio-dacplus.
+#   Boards without an EEPROM (or to force one), choice -> dtoverlay:
+#     dacplus              rpi-dacplus                 Raspberry Pi DAC+
+#     digiampplus          rpi-digiampplus,unmute_amp  Raspberry Pi DigiAMP+
+#     iqaudio-dacplus      iqaudio-dacplus             IQaudio DAC+ / DAC Zero
+#     iqaudio-digiampplus  iqaudio-dacplus,unmute_amp  IQaudio DigiAMP+
+#     hifiberry-dacplus    hifiberry-dacplus           HiFiBerry DAC+ / DAC2 Pro
+#     hifiberry-amp2       hifiberry-dacplus           HiFiBerry Amp2
+#     hifiberry-amp3       hifiberry-amp3              HiFiBerry Amp3
+#     hifiberry-amp4       hifiberry-dacplus-std       HiFiBerry Amp4
+#     hifiberry-amp4pro    hifiberry-amp4pro           HiFiBerry Amp4 Pro
+#     hifiberry-amp100     hifiberry-amp100            HiFiBerry Amp100
+#     hifiberry-dac        hifiberry-dac               PCM5102A boards (HiFiBerry DAC,
+#                                                      Pimoroni pHAT DAC, generic)
+#     pcm5122-amp          hifiberry-dacplus           PCM5122 amp HATs (Innomaker
+#                                                      HiFi AMP, Waveshare, ...)
+#     max98357a            max98357a,no-sdmode         MAX98357A I2S amps (Adafruit,
+#                                                      Pimoroni Audio Amp SHIM, ...)
+#     justboom-dac         justboom-dac                JustBoom DAC / Amp
+#     wm8960               wm8960-soundcard            Waveshare WM8960 Audio HAT
 set -euo pipefail
 choice=${1:-$(tr -d '[:space:]' < /etc/freesounder/dac 2>/dev/null || echo auto)}
 cfg=""
@@ -48,11 +64,21 @@ case "$choice" in
 		echo "DAC overlay cleared (onboard / USB audio)."
 		exit 0
 		;;
-	dacplus|digiampplus|hifiberry-dacplus) overlay=hifiberry-dacplus ;;
-	hifiberry-dac) overlay=hifiberry-dac ;;
+	dacplus) overlay=rpi-dacplus ;;
+	digiampplus) overlay=rpi-digiampplus,unmute_amp ;;
 	iqaudio-dacplus) overlay=iqaudio-dacplus ;;
+	iqaudio-digiampplus) overlay=iqaudio-dacplus,unmute_amp ;;
+	hifiberry-dacplus|hifiberry-amp2|pcm5122-amp) overlay=hifiberry-dacplus ;;
+	hifiberry-amp3) overlay=hifiberry-amp3 ;;
+	hifiberry-amp4) overlay=hifiberry-dacplus-std ;;
+	hifiberry-amp4pro) overlay=hifiberry-amp4pro ;;
+	hifiberry-amp100) overlay=hifiberry-amp100 ;;
+	hifiberry-dac) overlay=hifiberry-dac ;;
+	max98357a) overlay=max98357a,no-sdmode ;;
+	justboom-dac) overlay=justboom-dac ;;
+	wm8960) overlay=wm8960-soundcard ;;
 	*)
-		echo "Unknown DAC '$choice' (auto, none, dacplus, digiampplus, hifiberry-dac, iqaudio-dacplus)" >&2
+		echo "Unknown DAC '$choice' (see the list at the top of $0)" >&2
 		exit 1
 		;;
 esac

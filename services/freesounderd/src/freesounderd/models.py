@@ -6,15 +6,56 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-DacChoice = Literal["auto", "none", "dacplus", "digiampplus", "hifiberry-dac", "iqaudio-dacplus"]
-DAC_CHOICES: tuple[str, ...] = (
+# Audio boards selectable in room settings. "auto" covers HATs with an ID
+# EEPROM (most HiFiBerry, Raspberry Pi / IQaudio boards): the firmware loads
+# their overlay itself. The rest need an overlay (see apply-dac-overlay).
+DacChoice = Literal[
     "auto",
     "none",
     "dacplus",
     "digiampplus",
-    "hifiberry-dac",
     "iqaudio-dacplus",
+    "iqaudio-digiampplus",
+    "hifiberry-dacplus",
+    "hifiberry-amp2",
+    "hifiberry-amp3",
+    "hifiberry-amp4",
+    "hifiberry-amp4pro",
+    "hifiberry-amp100",
+    "hifiberry-dac",
+    "pcm5122-amp",
+    "max98357a",
+    "justboom-dac",
+    "wm8960",
+]
+DAC_CHOICES: tuple[str, ...] = DacChoice.__args__  # type: ignore[attr-defined]
+# Boards that drive speakers directly (power amplifiers).
+AMP_CHOICES: frozenset[str] = frozenset(
+    {
+        "digiampplus",
+        "iqaudio-digiampplus",
+        "hifiberry-amp2",
+        "hifiberry-amp3",
+        "hifiberry-amp4",
+        "hifiberry-amp4pro",
+        "hifiberry-amp100",
+        "pcm5122-amp",
+        "max98357a",
+    }
 )
+# Default room volume limit with an amplifier board (passive speakers).
+AMP_VOLUME_LIMIT = 80
+
+
+def is_amp(dac: str | None, hat: str | None = None) -> bool:
+    """True for an amplifier board, chosen in settings or detected by its EEPROM."""
+
+    if dac in AMP_CHOICES:
+        return True
+    product = (hat or "").lower()
+    return dac in (None, "auto") and "amp" in product
+
+
 PlayerState = Literal["unclaimed", "ready"]
 SourceName = Literal["none", "radio", "spotify", "airplay"]
 
@@ -30,6 +71,9 @@ class PlayerSettings(BaseModel):
     loudness: bool = False
     dac: DacChoice = "auto"
     dac_reboot_required: bool = False
+    # Set once the amplifier default volume limit has been applied, so a
+    # limit the user chooses afterwards is never overwritten.
+    amp_limit_applied: bool = False
 
 
 class PlayerSettingsPatch(BaseModel):
@@ -107,6 +151,10 @@ class SpotifyPlayBody(BaseModel):
 
 class SpotifyContextBody(BaseModel):
     uri: str = Field(min_length=8, max_length=200)
+
+
+class AirplayVolumeBody(BaseModel):
+    airplay_db: float = Field(ge=-144, le=0)
 
 
 class SeekBody(BaseModel):

@@ -91,6 +91,12 @@ class LibrespotClient:
         except ValueError:
             return None
 
+    async def set_volume(self, percent: int, steps: int = 100) -> bool:
+        """Report our room volume to Spotify Connect (external_volume: no attenuation here)."""
+
+        value = max(0, min(steps, round(int(percent) * steps / 100)))
+        return await self.command("volume", {"volume": value})
+
     async def command(self, name: str, body: dict[str, Any] | None = None) -> bool:
         try:
             res = await self._client.post(f"{self.base}/player/{name}", json=body or {}, timeout=4)

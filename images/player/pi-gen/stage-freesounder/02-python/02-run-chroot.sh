@@ -9,6 +9,9 @@ install -d "$LIBDIR"
 gcc -O2 -Wall -Wextra -fPIC -DPIC -shared -o "$LIBDIR/libasound_module_pcm_fsdsp.so" \
 	/opt/freesounder/fsdsp/fsdsp.c -lasound -lm
 chmod 0644 "$LIBDIR/libasound_module_pcm_fsdsp.so"
+# Field diagnostic: `freesounder-setup dsp-bench` (chain cost while sweeping settings).
+gcc -O2 -Wall -Wextra -o /opt/freesounder/fsdsp/fsdsp_bench /opt/freesounder/fsdsp/fsdsp_bench.c \
+	-lasound -lm -lpthread
 dpkg-query -W -f='${Package}\n' | sort > /tmp/fsdsp-after
 NEW=$(comm -13 /tmp/fsdsp-before /tmp/fsdsp-after | tr '\n' ' ')
 if [ -n "$NEW" ]; then

@@ -22,3 +22,4 @@ fi
 rm -rf "${ROOTFS_DIR}/opt/freesounder/fsdsp"
 mkdir -p "${ROOTFS_DIR}/opt/freesounder/fsdsp"
 cp -a "${FREESOUNDER_ROOT}/services/fsdsp/fsdsp.c" "${ROOTFS_DIR}/opt/freesounder/fsdsp/"
+cp -a "${FREESOUNDER_ROOT}/services/fsdsp/bench/fsdsp_bench.c" "${ROOTFS_DIR}/opt/freesounder/fsdsp/"

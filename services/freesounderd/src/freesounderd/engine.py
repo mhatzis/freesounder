@@ -48,7 +48,7 @@ from freesounderd.spotify import (
     render_config,
     stored_username,
 )
-from freesounderd.store import Store, board_model, detected_hat, hostname
+from freesounderd.store import Store, apply_amp_default, board_model, detected_hat, hostname
 from freesounderd.system import System
 
 logger = logging.getLogger(__name__)
@@ -169,6 +169,12 @@ class Engine:
         self._task: asyncio.Task[None] | None = None
         self.notices: list[dict[str, Any]] = []
         self._tone_lock = asyncio.Lock()
+        # Spotify Connect volume <-> room/group volume (see _sync_spotify_volume).
+        self._spotify_vol_seen: int | None = None
+        self._spotify_vol_pushed: int | None = None
+        self._pending_group_volume: int | None = None
+        self._spotify_push_at = 0.0
+        self._airplay_vol_at = 0.0
         self._tone_active = False
         self.snap_local = SnapcastRpc(settings.snapserver_rpc, self.http)
         self.spotify = LibrespotClient(settings.librespot_api, self.http)
@@ -443,6 +449,12 @@ class Engine:
 
     # ------------------------------------------------------------------ lifecycle
     async def start(self) -> None:
+        # An amplifier HAT found by its EEPROM: apply the safe volume limit once.
+        with contextlib.suppress(OSError, ValueError):
+            current = self.store.load_settings()
+            capped = apply_amp_default(current, detected_hat())
+            if capped is not current:
+                self.store.save_settings(capped)
         self._task = asyncio.create_task(self._loop())
 
     async def stop(self) -> None:
@@ -476,6 +488,10 @@ class Engine:
             else:
                 await self._follow()
             await self._apply_volume()
+        pending, self._pending_group_volume = self._pending_group_volume, None
+        if pending is not None:
+            # Moved in the Spotify app: becomes this group's volume (outside the lock).
+            await self.set_group_volume(self.id, pending, None)
         self._write_status()
         if self.discovery is not None:
             await self.discovery.refresh()
@@ -627,8 +643,68 @@ class Engine:
                 await self.system.ensure_active(SPOTIFY_UNIT)
         await self._target_snapclient("127.0.0.1")
         await self._update_sources()
+        await self._sync_spotify_volume()
         await self._reconcile_snapcast()
         await self._relay_rules()
+
+    async def _sync_spotify_volume(self) -> None:
+        """One volume, two views: snapclient (group) volume is the only attenuation.
+
+        go-librespot runs with external_volume, so it never scales the audio; it
+        only reports the Connect slider. A change in the Spotify app becomes the
+        group volume; a change in FreeSounder is pushed to Spotify so its slider
+        follows. On a new session Spotify is told our level (never the reverse,
+        so connecting does not jump the volume).
+        """
+
+        status = self._spotify_status
+        if self.source != "spotify" or not status or status.get("volume") is None:
+            self._spotify_vol_seen = self._spotify_vol_pushed = None
+            return
+        steps = int(status.get("volume_steps") or 100) or 100
+        spotify = round(int(status["volume"]) * 100 / steps)
+        group = self.group_for_room(self.id)
+        ours = int(group["volume"]) if group else int(self.group.get("volume", 40))
+        if self._spotify_vol_seen is None:
+            if spotify != ours:
+                await self.spotify.set_volume(ours, steps)
+                self._spotify_push_at = time.monotonic()
+            self._spotify_vol_seen = self._spotify_vol_pushed = ours
+            return
+        settling = time.monotonic() - self._spotify_push_at < 3.0
+        if settling and spotify != self._spotify_vol_pushed:
+            return  # go-librespot has not reported our last push yet
+        if spotify != self._spotify_vol_seen and spotify != self._spotify_vol_pushed:
+            self._spotify_vol_seen = self._spotify_vol_pushed = spotify
+            if spotify != ours:
+                self._pending_group_volume = spotify
+            return
+        self._spotify_vol_seen = spotify
+        if ours != self._spotify_vol_pushed:
+            await self.spotify.set_volume(ours, steps)
+            self._spotify_push_at = time.monotonic()
+            self._spotify_vol_seen = self._spotify_vol_pushed = ours
+
+    async def airplay_volume(self, airplay_db: float) -> dict[str, Any]:
+        """The AirPlay sender moved its volume slider (shairport-sync hook).
+
+        AirPlay reports 0 .. -30 dB (-144 = mute). shairport-sync runs with
+        ignore_volume_control, so the group volume is the only attenuation.
+        The first report of a session is the sender's stored level and is not
+        applied (connecting must not jump the room); later moves are.
+        """
+
+        now = time.monotonic()
+        first = now - self._airplay_vol_at > 30 or self.source != "airplay"
+        self._airplay_vol_at = now
+        if not self.is_leader or self.source != "airplay" or first:
+            return {"applied": False}
+        if airplay_db <= -100:
+            await self.set_group_volume(self.id, None, True)
+            return {"applied": True, "muted": True}
+        percent = round((max(-30.0, min(0.0, airplay_db)) + 30.0) / 30.0 * 100)
+        await self.set_group_volume(self.id, percent, False)
+        return {"applied": True, "volume": percent}
 
     async def _update_sources(self) -> None:
         self._spotify_status = await self.spotify.status()

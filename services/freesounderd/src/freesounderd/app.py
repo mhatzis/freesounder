@@ -21,6 +21,7 @@ from freesounderd.discovery import Discovery, local_ip
 from freesounderd.engine import Engine, EngineError
 from freesounderd.models import (
     AdoptBody,
+    AirplayVolumeBody,
     GroupMembersBody,
     Health,
     JoinBody,
@@ -360,6 +361,11 @@ def create_app(
             background.add_task(engine.system.systemctl, "restart", "snapclient.service")
         engine.kick()
         return result
+
+    @app.post("/api/v2/airplay/volume")
+    async def airplay_volume(body: AirplayVolumeBody) -> dict[str, Any]:
+        """Local hook from shairport-sync (run_this_when_volume_is_set)."""
+        return await engine.airplay_volume(body.airplay_db)
 
     @app.post("/api/v2/rooms/{rid}/test-tone")
     async def test_tone(rid: str) -> Any:

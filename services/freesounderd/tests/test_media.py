@@ -144,3 +144,61 @@ async def test_airplay_cover_is_served_by_the_player(make_player) -> None:
     assert art.update({"artUrl": "http://host:1780/__image_cache?name=x.png"})
     assert art.source_path == "/__image_cache?name=x.png"
     assert art.update({"artUrl": "http://evil/elsewhere"}) is None
+
+
+async def test_spotify_connect_volume_two_way(lan: Lan, make_player) -> None:
+    """Spotify app slider -> group volume; FreeSounder volume -> Spotify slider."""
+
+    (a,) = await setup_household(make_player, ("10.0.0.1", "Pi 5"))
+    await settle(lan, [a])
+    await a.client.post(f"/api/v2/rooms/{a.id}/volume", json={"volume": 30})
+    lan.spotify[a.ip] = {
+        "username": "me",
+        "device_id": "dev1",
+        "stopped": False,
+        "paused": False,
+        "volume": 100,
+        "volume_steps": 100,
+        "track": {"name": "Song", "artist_names": ["Band"], "uri": "spotify:track:t1"},
+    }
+
+    def pushes():
+        return [c[2]["volume"] for c in lan.spotify_calls if c[1] == "/player/volume"]
+
+    await settle(lan, [a])
+    # New session: Spotify is told our level; our volume does not jump to 100.
+    assert pushes() and pushes()[-1] == 30
+    assert a.engine.group["volume"] == 30
+    lan.spotify[a.ip]["volume"] = 30
+    await settle(lan, [a])
+    # The Spotify app moves its slider.
+    a.engine._spotify_push_at = 0
+    lan.spotify[a.ip]["volume"] = 70
+    await settle(lan, [a])
+    await settle(lan, [a])
+    assert a.engine.group["volume"] == 70
+    # FreeSounder moves the room volume: Spotify follows.
+    n = len(pushes())
+    await a.client.post(f"/api/v2/rooms/{a.id}/volume", json={"volume": 20})
+    await settle(lan, [a])
+    assert pushes()[n:] and pushes()[-1] == 20
+    assert a.engine.group["volume"] == 20
+
+
+async def test_airplay_sender_volume_becomes_group_volume(lan: Lan, make_player) -> None:
+    (a,) = await setup_household(make_player, ("10.0.0.1", "Pi 5"))
+    await settle(lan, [a])
+    await a.client.post(f"/api/v2/rooms/{a.id}/volume", json={"volume": 35})
+    a.engine.source = "airplay"
+    # First report of a session (the sender's stored level) does not jump the room.
+    res = await a.client.post("/api/v2/airplay/volume", json={"airplay_db": 0})
+    assert res.json() == {"applied": False}
+    assert a.engine.group_for_room(a.id)["volume"] == 35
+    res = await a.client.post("/api/v2/airplay/volume", json={"airplay_db": -15})
+    assert res.json() == {"applied": True, "volume": 50}
+    assert a.engine.group_for_room(a.id)["volume"] == 50
+    res = await a.client.post("/api/v2/airplay/volume", json={"airplay_db": -144})
+    assert res.json()["muted"] is True
+    assert (
+        await a.client.post("/api/v2/airplay/volume", json={"airplay_db": 5})
+    ).status_code == 422

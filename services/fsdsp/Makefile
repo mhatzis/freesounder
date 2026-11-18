@@ -1,7 +1,7 @@
 # libasound_module_pcm_fsdsp.so: FreeSounder live tone/balance ALSA plugin.
 CC ?= cc
 CFLAGS ?= -O2 -Wall -Wextra
-CFLAGS += -fPIC -DPIC
+override CFLAGS += -fPIC -DPIC
 ALSA_CFLAGS ?= $(shell pkg-config --cflags alsa 2>/dev/null)
 ALSA_LIBS ?= $(shell pkg-config --libs alsa 2>/dev/null || echo -lasound)
 LIBDIR ?= $(shell pkg-config --variable=libdir alsa 2>/dev/null || echo /usr/lib)/alsa-lib

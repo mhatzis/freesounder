@@ -129,3 +129,24 @@ def test_apply_falls_back_when_the_live_chain_fails(tmp_path) -> None:
     assert status["dsp_error"] == "Unknown PCM type fsdsp"
     assert "type fsdsp" not in alsa.read_text()
     assert chain_is_live(status_path) is False
+
+
+def test_amp_boards_get_a_safe_volume_limit_once() -> None:
+    from freesounderd.models import AMP_VOLUME_LIMIT, DAC_CHOICES, is_amp
+    from freesounderd.store import apply_amp_default
+
+    assert {"hifiberry-amp2", "hifiberry-amp4", "digiampplus", "max98357a"} <= set(DAC_CHOICES)
+    assert is_amp("hifiberry-amp4")
+    assert not is_amp("hifiberry-dac")
+    assert is_amp("auto", "HiFiBerry Amp2")
+    assert is_amp("auto", "Raspberry Pi DigiAMP+")
+    assert not is_amp("auto", "HiFiBerry DAC+ Pro")
+    capped = apply_amp_default(PlayerSettings(dac="hifiberry-amp2"), None)
+    assert capped.volume_limit == AMP_VOLUME_LIMIT and capped.amp_limit_applied
+    # The user raises it again: never overwritten.
+    raised = capped.model_copy(update={"volume_limit": 100})
+    assert apply_amp_default(raised, None).volume_limit == 100
+    assert (
+        apply_amp_default(PlayerSettings(volume_limit=60, dac="max98357a"), None).volume_limit == 60
+    )
+    assert apply_amp_default(PlayerSettings(), None).volume_limit == 100

@@ -156,3 +156,92 @@ def test_loopback_realtime_no_underrun(tmp_path, fsdsp_so) -> None:
     err = proc.stderr.read().decode() if proc.stderr else ""
     assert proc.wait(timeout=30) == 0, err
     assert "underrun" not in err.lower(), err
+
+
+FSDSP_BENCH = FSDSP_C.parent / "bench" / "fsdsp_bench.c"
+
+
+@pytest.fixture(scope="module")
+def bench_bin(tmp_path_factory, fsdsp_so) -> Path:
+    out = tmp_path_factory.mktemp("bench") / "fsdsp_bench"
+    cflags = os.environ.get("ALSA_CFLAGS", "").split()
+    libs = os.environ.get("ALSA_LIBS", "-lasound").split()
+    cmd = ["gcc", "-O2", "-Wall", "-Wextra", "-Werror", *cflags, "-o", str(out), str(FSDSP_BENCH)]
+    subprocess.run([*cmd, *libs, "-lm", "-lpthread"], check=True)
+    return out
+
+
+def _chain_home(tmp_path: Path, fsdsp_so: Path, kind: str, sink: str) -> tuple[Path, dict]:
+    params = tmp_path / "dsp-params"
+    raw = tmp_path / "out.raw"
+    conf = render_alsa_conf(slave_pcm=sink, kind=kind, params_path=params)
+    conf += f"""
+pcm_type.fsdsp {{ lib "{fsdsp_so}" }}
+pcm.capture {{ type plug slave {{ pcm "capture_file" format S16_LE }} }}
+pcm.capture_file {{ type file slave.pcm "null" file "{raw}" format "raw" }}
+"""
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    (home / ".asoundrc").write_text(conf)
+    return params, {**os.environ, "HOME": str(home)}
+
+
+@pytest.mark.parametrize("kind", ["card", "hdmi"])
+def test_parameter_sweep_stays_far_inside_the_realtime_budget(tmp_path, fsdsp_so, bench_bin, kind):
+    """Rewrite the params every 5 ms for 20 s of audio: no xrun, tiny per-period cost."""
+
+    params, env = _chain_home(tmp_path, fsdsp_so, kind, "null")
+    write_params(PlayerSettings(), params)
+    proc = subprocess.run(
+        [str(bench_bin), "freesounder", str(params), "20", "5"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    stats = dict(item.split("=") for item in proc.stdout.split())
+    assert int(stats["xruns"]) == 0 and int(stats["errors"]) == 0
+    # A 1024-frame period has ~23 ms; the chain must use a small fraction of it.
+    assert float(stats["p99_ms"]) < 0.1 * float(stats["budget_ms"]), stats
+    print(kind, proc.stdout.strip())
+
+
+def test_sweep_has_no_clicks_and_limiter_prevents_clipping(tmp_path, fsdsp_so, bench_bin):
+    params, env = _chain_home(tmp_path, fsdsp_so, "card", "capture")
+    write_params(PlayerSettings(), params)
+    proc = subprocess.run(
+        [str(bench_bin), "freesounder", str(params), "10", "5"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    data = (tmp_path / "out.raw").read_bytes()
+    samples = struct.unpack(f"<{len(data) // 2}h", data[: len(data) // 2 * 2])
+    left = samples[0::2]
+    # Input: 12000 * sin(1 kHz) + 6000 * sin(60 Hz); its own largest step is ~1761.
+    worst = max(abs(left[i] - left[i - 1]) for i in range(1, len(left)))
+    assert worst < 1761 * 1.2, worst
+
+    # Full-scale input with every boost on: the limiter keeps it below 0 dBFS.
+    (tmp_path / "out.raw").unlink()
+    write_params(PlayerSettings(bass=10, treble=10, loudness=True), params)
+    loud = b"".join(
+        struct.pack("<hh", *(int(32000 * math.sin(2 * math.pi * 80 * i / 44100)),) * 2)
+        for i in range(44100 * 2)
+    )
+    play = subprocess.run(
+        ["aplay", "-q", "-D", "freesounder", "-t", "raw", "-f", "S16_LE", "-r", "44100", "-c", "2"],
+        input=loud,
+        env=env,
+        capture_output=True,
+        check=False,
+    )
+    assert play.returncode == 0, play.stderr.decode()
+    data = (tmp_path / "out.raw").read_bytes()
+    out = struct.unpack(f"<{len(data) // 2}h", data[: len(data) // 2 * 2])
+    assert max(abs(v) for v in out) <= int(32767 * 0.95)

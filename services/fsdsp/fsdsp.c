@@ -4,8 +4,13 @@
  * Bass and treble shelves, loudness and balance on float stereo. The settings
  * come from a small text file (default /run/freesounder/dsp-params) that is
  * re-read whenever it changes, so tone changes apply while audio plays: no
- * ALSA re-open, no snapclient restart. Gains ramp over ~20 ms to avoid
- * clicks. With every setting flat the samples pass through unchanged.
+ * ALSA re-open, no snapclient restart. Each change crossfades over ~46 ms
+ * (2048 frames); a change that arrives mid-fade waits for that fade to end
+ * (latest value wins), so rapid slider moves never jump. Half of the
+ * largest boost is taken back by a pre-gain and a stereo-linked peak limiter
+ * (ceiling -0.5 dBFS, instant attack, ~80 ms release) catches the rest, so
+ * the output never clips (safe for amplifier HATs). With every setting flat
+ * the samples pass through unchanged.
  *
  * Params file (one line, whitespace separated, missing fields = 0):
  *   fsdsp1 <bass dB> <treble dB> <balance -10..10> <loudness 0|1>
@@ -23,7 +28,7 @@
 #include <time.h>
 
 #define NBQ 4         /* low shelf, high shelf, loudness low, loudness air */
-#define RAMP 1024     /* frames to ramp gains / crossfade filters */
+#define RAMP 2048     /* frames to crossfade filters and gains */
 #define CHECK_EVERY 2048 /* frames between params file checks */
 
 typedef struct { double b0, b1, b2, a1, a2; } coef_t;
@@ -44,6 +49,10 @@ typedef struct {
 	double gl, gr, pre;        /* target gains */
 	double gl0, gr0, pre0;     /* gains at ramp start */
 	unsigned int ramp;         /* frames left in ramp */
+	params_t pending;          /* arrived mid-ramp; applied when it ends */
+	int has_pending;
+	double lim;                /* limiter gain, 1.0 = idle */
+	double lim_release;        /* per-frame recovery factor */
 	unsigned long since_check;
 	struct timespec mtime;
 	off_t size;
@@ -101,7 +110,8 @@ static void design(fsdsp_t *d)
 	shelf(&d->cur[1], 1, 4000.0, treble, fs);
 	shelf(&d->cur[2], 0, 60.0, d->p.loudness ? 6.0 : 0.0, fs);
 	shelf(&d->cur[3], 1, 12000.0, d->p.loudness ? 1.5 : 0.0, fs);
-	/* Headroom: take back half of the largest boost so bass boost does not clip. */
+	/* Headroom: take back half of the largest boost; the limiter in
+	 * transfer() keeps whatever is left below full scale. */
 	double boost = 0.0;
 	double lows = (bass > 0 ? bass : 0) + (d->p.loudness ? 6.0 : 0.0);
 	double highs = (treble > 0 ? treble : 0) + (d->p.loudness ? 1.5 : 0.0);
@@ -172,8 +182,23 @@ static void check_params(fsdsp_t *d, int force)
 	d->have_file = 1;
 	d->mtime = sb.st_mtim;
 	d->size = sb.st_size;
+	if (!force && d->ramp) {
+		d->pending = p;
+		d->has_pending = 1;
+		return;
+	}
 	if (force || !params_equal(&p, &d->p))
 		apply_params(d, &p);
+}
+
+/* Called between transfers: start a waiting change once the fade is done. */
+static void apply_pending(fsdsp_t *d)
+{
+	if (d->has_pending && d->ramp == 0) {
+		d->has_pending = 0;
+		if (!params_equal(&d->pending, &d->p))
+			apply_params(d, &d->pending);
+	}
 }
 
 static inline double run_bq(const coef_t *c, state_t *s, double x)
@@ -181,6 +206,26 @@ static inline double run_bq(const coef_t *c, state_t *s, double x)
 	double y = c->b0 * x + c->b1 * s->x1 + c->b2 * s->x2 - c->a1 * s->y1 - c->a2 * s->y2;
 	s->x2 = s->x1; s->x1 = x;
 	s->y2 = s->y1; s->y1 = y;
+	return y;
+}
+
+#define CEILING 0.944 /* -0.5 dBFS */
+
+static inline double process(fsdsp_t *d, int ch, double x, unsigned int ramp)
+{
+	double y = x * d->pre;
+	int k;
+	for (k = 0; k < NBQ; k++)
+		y = run_bq(&d->cur[k], &d->st[ch][k], y);
+	y *= ch ? d->gr : d->gl;
+	if (ramp) {
+		double yo = x * d->pre0;
+		for (k = 0; k < NBQ; k++)
+			yo = run_bq(&d->old[k], &d->st_old[ch][k], yo);
+		yo *= ch ? d->gr0 : d->gl0;
+		double t = (double)(RAMP - ramp) / RAMP;
+		y = yo + (y - yo) * t;
+	}
 	return y;
 }
 
@@ -195,43 +240,45 @@ static snd_pcm_sframes_t fsdsp_transfer(snd_pcm_extplug_t *ext,
 		d->since_check = 0;
 		check_params(d, 0);
 	}
-	unsigned int ch;
-	int flat = is_flat(d) && d->ramp == 0;
+	apply_pending(d);
+	const char *sp[2];
+	char *dp[2];
+	unsigned int sstep[2], dstep[2], ch;
 	for (ch = 0; ch < 2; ch++) {
-		const char *sp = (const char *)src[ch].addr + (src[ch].first + soff * src[ch].step) / 8;
-		char *dp = (char *)dst[ch].addr + (dst[ch].first + doff * dst[ch].step) / 8;
-		unsigned int sstep = src[ch].step / 8, dstep = dst[ch].step / 8;
-		double g = ch ? d->gr : d->gl, g0 = ch ? d->gr0 : d->gl0;
-		unsigned int ramp = d->ramp;
-		snd_pcm_uframes_t i;
-		for (i = 0; i < size; i++) {
-			float x = *(const float *)sp;
-			float out;
-			if (flat) {
-				out = x;
-			} else {
-				double y = x * d->pre;
-				int k;
-				for (k = 0; k < NBQ; k++)
-					y = run_bq(&d->cur[k], &d->st[ch][k], y);
-				y *= g;
-				if (ramp) {
-					double yo = x * d->pre0;
-					for (k = 0; k < NBQ; k++)
-						yo = run_bq(&d->old[k], &d->st_old[ch][k], yo);
-					yo *= g0;
-					double t = (double)(RAMP - ramp) / RAMP;
-					y = yo + (y - yo) * t;
-					ramp--;
-				}
-				out = (float)y;
-			}
-			*(float *)dp = out;
-			sp += sstep;
-			dp += dstep;
+		sp[ch] = (const char *)src[ch].addr + (src[ch].first + soff * src[ch].step) / 8;
+		dp[ch] = (char *)dst[ch].addr + (dst[ch].first + doff * dst[ch].step) / 8;
+		sstep[ch] = src[ch].step / 8;
+		dstep[ch] = dst[ch].step / 8;
+	}
+	int flat = is_flat(d) && d->ramp == 0 && d->lim >= 1.0;
+	snd_pcm_uframes_t i;
+	for (i = 0; i < size; i++) {
+		float xl = *(const float *)sp[0], xr = *(const float *)sp[1];
+		if (flat) {
+			*(float *)dp[0] = xl;
+			*(float *)dp[1] = xr;
+		} else {
+			double yl = process(d, 0, xl, d->ramp);
+			double yr = process(d, 1, xr, d->ramp);
+			if (d->ramp)
+				d->ramp--;
+			double peak = fabs(yl) > fabs(yr) ? fabs(yl) : fabs(yr);
+			double want = peak * d->lim > CEILING ? CEILING / peak : 1.0;
+			if (want < d->lim)
+				d->lim = want; /* instant attack */
+			else
+				d->lim = d->lim + (1.0 - d->lim) * d->lim_release;
+			if (d->lim > 1.0)
+				d->lim = 1.0;
+			if (peak * d->lim > CEILING) /* never above the ceiling */
+				d->lim = CEILING / peak;
+			*(float *)dp[0] = (float)(yl * d->lim);
+			*(float *)dp[1] = (float)(yr * d->lim);
 		}
-		if (ch == 1)
-			d->ramp = ramp;
+		sp[0] += sstep[0];
+		sp[1] += sstep[1];
+		dp[0] += dstep[0];
+		dp[1] += dstep[1];
 	}
 	return size;
 }
@@ -240,6 +287,9 @@ static int fsdsp_init(snd_pcm_extplug_t *ext)
 {
 	fsdsp_t *d = ext->private_data;
 	d->rate = ext->rate;
+	d->lim = 1.0;
+	/* ~80 ms time constant back to unity. */
+	d->lim_release = 1.0 - exp(-1.0 / (0.080 * (d->rate ? d->rate : 44100)));
 	memset(d->st, 0, sizeof d->st);
 	memset(d->st_old, 0, sizeof d->st_old);
 	design(d);

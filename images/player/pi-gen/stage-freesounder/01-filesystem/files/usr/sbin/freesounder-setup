@@ -11,6 +11,7 @@ Usage:
   freesounder-setup doctor              # BLE / network / services diagnostics
   freesounder-setup audio               # output device, EQ chain, snapclient and stream state
   freesounder-setup test-tone           # play left / right / both tones on this speaker
+  freesounder-setup dsp-bench           # time the DSP chain while sweeping settings (silent)
   freesounder-setup set-name <room>     # rename the room (also fs-<room> hostname)
   freesounder-setup set-dac auto|none|dacplus|digiampplus|hifiberry-dac|iqaudio-dacplus
   freesounder-setup reset               # forget the household and room (factory reset)
@@ -69,6 +70,18 @@ case "$cmd" in
 			speaker-test -D freesounder -c 2 -t sine -f 440 -l 1 -p 1000000 || echo "speaker-test failed (see the error above)"
 			systemctl start snapclient.service || true
 		fi
+		;;
+	dsp-bench)
+		d=$(mktemp -d)
+		printf 'fsdsp1 0 0 0 0\n' > "$d/params"
+		cat > "$d/.asoundrc" <<CONF
+pcm.bench { type plug slave.pcm "bench_dsp" }
+pcm.bench_dsp { type fsdsp params "$d/params" slave.pcm "bench_hw" }
+pcm.bench_hw { type plug slave.pcm "null" }
+CONF
+		HOME=$d /opt/freesounder/fsdsp/fsdsp_bench bench "$d/params" "${2:-20}" 5 || true
+		echo "max_ms / p99_ms must stay far below budget_ms (one 1024-frame period)."
+		rm -rf "$d"
 		;;
 	set-name)
 		need_root
