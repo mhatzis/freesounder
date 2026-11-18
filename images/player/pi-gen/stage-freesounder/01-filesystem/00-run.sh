@@ -57,6 +57,13 @@ for unit in freesounder-buttons.service freesounder-boot-count.service \
 	freesounder-heartbeat.service; do
 	install -m 0644 "files/etc/systemd/system/${unit}" "${ROOTFS_DIR}/etc/systemd/system/${unit}"
 done
+# Files from 0.6.5 that 0.6.6 replaced (pi-gen may reuse an older rootfs).
+rm -f "${ROOTFS_DIR}/etc/systemd/journald.conf.d/10-freesounder.conf" \
+	"${ROOTFS_DIR}"/etc/systemd/system/freesounder-power.service \
+	"${ROOTFS_DIR}"/etc/systemd/system/freesounder-power-boot.service \
+	"${ROOTFS_DIR}"/etc/systemd/system/freesounder-power.timer \
+	"${ROOTFS_DIR}"/etc/systemd/system/*.wants/freesounder-power.timer \
+	"${ROOTFS_DIR}"/etc/systemd/system/*.wants/freesounder-power-boot.service
 install -d "${ROOTFS_DIR}/etc/systemd/logind.conf.d" "${ROOTFS_DIR}/etc/systemd/journald.conf.d"
 install -m 0644 files/etc/systemd/logind.conf.d/10-freesounder.conf \
 	"${ROOTFS_DIR}/etc/systemd/logind.conf.d/10-freesounder.conf"
