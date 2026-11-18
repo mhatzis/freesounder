@@ -147,7 +147,11 @@ class LinkTimings {
     this.heartbeat = const Duration(seconds: 12),
     this.firstRetry = const Duration(seconds: 1),
     this.maxRetry = const Duration(seconds: 15),
+    this.nowPlayingRefresh = const Duration(seconds: 12),
   });
+
+  /// Fallback re-read of the active room's now playing (foreground only).
+  final Duration nowPlayingRefresh;
 
   /// How often a connected app checks /health while in the foreground.
   final Duration heartbeat;
@@ -202,6 +206,7 @@ class PlaybackStore extends Notifier<PlaybackState> {
       _retryTimer?.cancel();
       _events?.cancel();
       _npCheck?.cancel();
+      _npRefresh?.cancel();
       _client?.close();
     });
     if (config.forceDemo) {
@@ -485,11 +490,24 @@ class PlaybackStore extends Notifier<PlaybackState> {
 
   void _startHeartbeat() {
     _heartbeat?.cancel();
+    _npRefresh?.cancel();
     if (!_foreground) {
       return;
     }
     _heartbeat = Timer.periodic(ref.read(linkTimingsProvider).heartbeat, (_) => unawaited(_beat()));
+    // Safety net under the event stream: re-read the active room's now
+    // playing every so often while the app is on screen, so a missed event
+    // can never leave an old song and cover showing.
+    _npRefresh?.cancel();
+    _npRefresh = Timer.periodic(ref.read(linkTimingsProvider).nowPlayingRefresh, (_) {
+      final active = state.activeRoomId;
+      if (active != null && !state.reconnecting && !state.mockMode) {
+        unawaited(_refreshNowPlaying(active));
+      }
+    });
   }
+
+  Timer? _npRefresh;
 
   Future<void> _beat() async {
     final client = _client;
@@ -625,6 +643,7 @@ class PlaybackStore extends Notifier<PlaybackState> {
   void appPaused() {
     _foreground = false;
     _heartbeat?.cancel();
+    _npRefresh?.cancel();
     _retryTimer?.cancel();
   }
 
@@ -649,6 +668,8 @@ class PlaybackStore extends Notifier<PlaybackState> {
     _healthTimer = null;
     _heartbeat?.cancel();
     _heartbeat = null;
+    _npRefresh?.cancel();
+    _npRefresh = null;
     _retryTimer?.cancel();
     _retryTimer = null;
     _retryDelay = null;

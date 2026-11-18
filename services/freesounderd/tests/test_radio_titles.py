@@ -92,3 +92,69 @@ async def test_player_keeps_the_song_title_current() -> None:
     n = len(calls)
     await asyncio.sleep(0.05)
     assert len(calls) == n, "polling stops with the station"
+
+
+async def test_listener_cap_is_a_retry_not_no_icy() -> None:
+    from freesounderd.radio import IcyUnavailable
+
+    async def full(reader, writer):
+        await reader.read(1024)
+        writer.write(b"ICY 401 Service Unavailable\r\n\r\n")
+        await writer.drain()
+        writer.close()
+
+    server, url = await serve(full)
+    async with server:
+        with pytest.raises(IcyUnavailable):
+            await fetch_icy_title(url)
+
+
+async def test_title_poll_survives_errors_and_no_icy_spells() -> None:
+    """0.6.5 gave up for good after one 'no ICY' answer or 20 errors: the song froze."""
+
+    answers = iter(
+        [ConnectionResetError("reset"), RuntimeError("weird"), "A - One"]
+        + [TimeoutError()] * 25
+        + ["B - Two"]
+    )
+
+    async def fetcher(url: str, ua: str) -> str | None:
+        item = next(answers, "B - Two")
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+    radio = RadioPlayer("ffmpeg", "/tmp/fifo", managed=False)
+    radio.poll_titles = True
+    radio.title_poll = 0.001
+    radio.title_fetcher = fetcher
+    radio.title_backoff_max = 0.005
+    await radio.play({"url": "http://radio.example/s", "name": "R"})
+    for _ in range(400):
+        if radio.stream_title == "B - Two":
+            break
+        await asyncio.sleep(0.01)
+    assert radio.stream_title == "B - Two"
+    assert radio.title_checked_at is not None and radio.title_error is None
+    await radio.stop()
+
+
+async def test_dead_title_poll_is_restarted_by_the_watchdog() -> None:
+    async def fetcher(url: str, ua: str) -> str | None:
+        return "C - Three"
+
+    radio = RadioPlayer("ffmpeg", "/tmp/fifo", managed=False)
+    radio.poll_titles = True
+    radio.title_poll = 0.001
+    radio.title_fetcher = fetcher
+    await radio.play({"url": "http://radio.example/s", "name": "R"})
+    assert radio._titles is not None
+    radio._titles.cancel()
+    await asyncio.sleep(0.01)
+    await radio.watchdog()
+    for _ in range(100):
+        if radio.stream_title == "C - Three":
+            break
+        await asyncio.sleep(0.01)
+    assert radio.stream_title == "C - Three"
+    await radio.stop()

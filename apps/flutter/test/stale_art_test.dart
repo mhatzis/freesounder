@@ -125,6 +125,52 @@ void main() {
     });
   });
 
+  group('periodic refresh', () {
+    test('a silent song change is picked up within the refresh interval', () async {
+      final player = SongPlayer();
+      final container = ProviderContainer(
+        overrides: [
+          appConfigProvider.overrideWithValue(const AppConfig(discoveryTimeout: Duration.zero)),
+          controlClientFactoryProvider.overrideWithValue((url) => SongClient(player, url)),
+          linkTimingsProvider.overrideWithValue(
+            const LinkTimings(heartbeat: Duration(seconds: 30), nowPlayingRefresh: Duration(milliseconds: 30)),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      container.read(playbackProvider);
+      final store = container.read(playbackProvider.notifier);
+      expect(await store.connectTo('http://192.168.1.10:8080', persist: false), isTrue);
+      store.selectRoom('patio');
+      await waitFor(() => container.read(playbackProvider).nowPlaying?.title == 'Song A');
+      // No event at all (socket silently stale): the timer still catches it.
+      player.songs['patio'] = {'title': 'Song C', 'artist': 'Air', 'image_url': 'https://art/c.jpg'};
+      await waitFor(() => container.read(playbackProvider).nowPlaying?.title == 'Song C');
+      expect(container.read(playbackProvider).nowPlaying!.imageUrl, 'https://art/c.jpg');
+      // Not while in the background.
+      store.appPaused();
+      final calls = player.npCalls;
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      expect(player.npCalls, calls);
+    });
+  });
+
+  test('developer metadata line', () {
+    final now = DateTime.utc(2026, 11, 19, 1, 0, 30);
+    final np = NowPlaying.fromJson({
+      'player_id': 'p',
+      'title': 'x',
+      'meta_updated_at': DateTime.utc(2026, 11, 19, 1, 0, 0).millisecondsSinceEpoch / 1000,
+      'title_checked_at': DateTime.utc(2026, 11, 19, 1, 0, 20).millisecondsSinceEpoch / 1000,
+      'meta_from': 'Patio',
+    }, receivedAt: DateTime.utc(2026, 11, 19, 1, 0, 25));
+    final line = metadataDebugLine(np, now);
+    expect(line, contains('title read 10s ago'));
+    expect(line, contains('by Patio'));
+    expect(line, contains('app got it 5s ago'));
+    expect(line, startsWith('song changed '));
+  });
+
   testWidgets('same art URL, new song: the image is rebuilt', (tester) async {
     const a = NowPlaying(playerId: 'p', title: 'One', imageUrl: 'https://art/station.png', source: 'radio');
     const b = NowPlaying(playerId: 'p', title: 'Two', imageUrl: 'https://art/station.png', source: 'radio');

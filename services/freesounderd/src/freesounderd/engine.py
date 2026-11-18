@@ -195,6 +195,8 @@ class Engine:
         # push it to the app and the group straight away.
         self.radio.on_title = self.kick
         self.airplay_art = AirplayArt()
+        self._np_song: tuple[Any, ...] | None = None
+        self._np_changed_at: float | None = None
         self._spotify_login_active = False
         self._spotify_login_lock = asyncio.Lock()
         features = store.features()
@@ -419,6 +421,10 @@ class Engine:
             "station_name": np.get("station_name"),
             "station_image_url": np.get("station_image_url"),
             "stream_title": np.get("stream_title"),
+            "meta_updated_at": np.get("meta_updated_at"),
+            "meta_from": np.get("meta_from"),
+            "title_checked_at": np.get("title_checked_at"),
+            "title_error": np.get("title_error"),
             "uri": np.get("uri"),
             "context_uri": np.get("context_uri"),
             "context_name": np.get("context_name"),
@@ -832,7 +838,15 @@ class Engine:
             others = [s for s, on in playing.items() if on]
             if others:
                 await self._switch_source(others[0])
-        self.np = self._now_playing(airplay)
+        np = self._now_playing(airplay)
+        if np:
+            song = tuple(np.get(k) for k in ("title", "artist", "album", "image_url"))
+            if song != self._np_song:
+                self._np_song = song
+                self._np_changed_at = time.time()
+            np["meta_updated_at"] = self._np_changed_at
+            np["meta_from"] = self.room_name()
+        self.np = np
 
     async def _switch_source(self, new: str) -> None:
         if new == self.source:
@@ -864,6 +878,10 @@ class Engine:
                 "station_name": st.get("name"),
                 "station_image_url": logo,
                 "stream_title": self.radio.stream_title,
+                # When the leader last read the stream's song title (ICY), for
+                # the app's developer line and diagnostics.
+                "title_checked_at": self.radio.title_checked_at,
+                "title_error": self.radio.title_error,
             }
         if self.source == "airplay":
             props = airplay.get("properties") or {}

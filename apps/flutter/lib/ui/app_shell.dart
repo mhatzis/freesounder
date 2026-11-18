@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../api/connection_prefs.dart';
+import '../models/now_playing.dart';
+
 import '../state/playback_store.dart';
 import '../theme/tokens.dart';
 import 'add_player_sheet.dart';
@@ -193,6 +196,19 @@ class _NowPlayingCanvas extends ConsumerWidget {
                                 style: text.bodyLarge?.copyWith(color: scheme.onSurfaceVariant),
                               ),
                             ],
+                            if (ref.watch(developerModeProvider) && np != null)
+                              Ticking(
+                                active: true,
+                                builder: (context) => Padding(
+                                  padding: const EdgeInsets.only(top: 6),
+                                  child: Text(
+                                    metadataDebugLine(np),
+                                    key: const Key('home-meta-debug'),
+                                    textAlign: TextAlign.center,
+                                    style: text.labelSmall?.copyWith(color: scheme.onSurfaceVariant),
+                                  ),
+                                ),
+                              ),
                             if (state.activeRoom != null) ...[
                               const SizedBox(height: 4),
                               TextButton.icon(

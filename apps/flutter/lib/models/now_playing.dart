@@ -16,6 +16,10 @@ class NowPlaying {
     this.contextName,
     this.uri,
     this.receivedAt,
+    this.metaUpdatedAt,
+    this.metaFrom,
+    this.titleCheckedAt,
+    this.titleError,
   });
 
   final String playerId;
@@ -38,6 +42,16 @@ class NowPlaying {
   final String? contextName;
   final String? uri;
   final DateTime? receivedAt;
+
+  /// When the leader last saw the song change (developer line).
+  final DateTime? metaUpdatedAt;
+
+  /// Room whose player produced this metadata (the group leader).
+  final String? metaFrom;
+
+  /// Radio: when the leader last read the stream's song title, and why not.
+  final DateTime? titleCheckedAt;
+  final String? titleError;
 
   bool get isPlaying => state == 'playing';
   bool get isPaused => state == 'paused';
@@ -89,6 +103,10 @@ class NowPlaying {
       contextName: json['context_name'] as String?,
       uri: json['uri'] as String?,
       receivedAt: receivedAt ?? DateTime.now(),
+      metaUpdatedAt: _epoch(json['meta_updated_at']),
+      metaFrom: json['meta_from'] as String?,
+      titleCheckedAt: _epoch(json['title_checked_at']),
+      titleError: json['title_error'] as String?,
     );
   }
 
@@ -110,6 +128,39 @@ class NowPlaying {
       contextName: contextName,
       uri: uri,
       receivedAt: receivedAt ?? this.receivedAt,
+      metaUpdatedAt: metaUpdatedAt,
+      metaFrom: metaFrom,
+      titleCheckedAt: titleCheckedAt,
+      titleError: titleError,
     );
   }
+}
+
+DateTime? _epoch(Object? v) =>
+    v is num ? DateTime.fromMillisecondsSinceEpoch((v * 1000).round()) : null;
+
+String _ago(DateTime t, DateTime now) {
+  final s = now.difference(t).inSeconds;
+  if (s < 0) return 'just now';
+  if (s < 90) return '${s}s ago';
+  if (s < 5400) return '${(s / 60).round()} min ago';
+  return '${(s / 3600).toStringAsFixed(1)} h ago';
+}
+
+String _clock(DateTime t) {
+  final l = t.toLocal();
+  String two(int n) => n.toString().padLeft(2, '0');
+  return '${two(l.hour)}:${two(l.minute)}:${two(l.second)}';
+}
+
+/// Developer-mode line: how fresh this now-playing information is.
+String metadataDebugLine(NowPlaying np, [DateTime? now]) {
+  final at = now ?? DateTime.now();
+  return [
+    if (np.metaUpdatedAt != null) 'song changed ${_clock(np.metaUpdatedAt!)}',
+    if (np.titleCheckedAt != null) 'title read ${_ago(np.titleCheckedAt!, at)}',
+    if (np.titleError != null) 'title poll: ${np.titleError}',
+    if (np.metaFrom != null) 'by ${np.metaFrom}',
+    if (np.receivedAt != null) 'app got it ${_ago(np.receivedAt!, at)}',
+  ].join(' · ');
 }

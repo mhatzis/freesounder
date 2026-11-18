@@ -229,6 +229,8 @@ async def test_grouped_radio_song_changes_reach_every_member(lan: Lan, make_play
     np = (await b.client.get("/api/v2/now-playing", params={"player_id": b.id})).json()
     assert np["title"] == "One More Time"
     assert np["image_url"] == "https://is1.example/dp/600x600bb.jpg"
+    first_update = np["meta_updated_at"]
+    assert first_update and np["title_checked_at"] and np["meta_from"]
 
     titles[0] = "Air - Sexy Boy"
     lan.itunes = [{"artistName": "Air", "artworkUrl100": "https://is1.example/air/100x100bb.jpg"}]
@@ -238,6 +240,7 @@ async def test_grouped_radio_song_changes_reach_every_member(lan: Lan, make_play
     np = (await b.client.get("/api/v2/now-playing", params={"player_id": b.id})).json()
     assert (np["artist"], np["title"]) == ("Air", "Sexy Boy")
     assert np["image_url"] == "https://is1.example/air/600x600bb.jpg"
+    assert np["meta_updated_at"] > first_update
     rooms = (await b.client.get("/api/v2/rooms")).json()
     assert {r["now_playing"]["title"] for r in rooms} == {"Sexy Boy"}
     await radio.stop()

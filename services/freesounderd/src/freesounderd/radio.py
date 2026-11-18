@@ -113,6 +113,10 @@ class NoIcy(Exception):
     """The stream has no ICY metadata (HLS, plain HTTP audio, ...)."""
 
 
+class IcyUnavailable(Exception):
+    """The server refused the side connection for now (listener limit, 5xx, ...)."""
+
+
 async def fetch_icy_title(
     url: str, user_agent: str = "FreeSounder", wait: float = 8.0
 ) -> str | None:
@@ -157,8 +161,11 @@ async def fetch_icy_title(
             code = status.split(" ")[1] if " " in status else ""
             if code in ("301", "302", "303", "307", "308") and headers.get("location"):
                 return None, urljoin(target, headers["location"])
-            if code != "200":
+            if code in ("404", "410"):
                 raise NoIcy(status)
+            if code != "200":
+                # Shoutcast/Icecast listener caps, 401/403/429/5xx: try again later.
+                raise IcyUnavailable(status)
             metaint = int(headers.get("icy-metaint", "0") or 0)
             if metaint <= 0:
                 raise NoIcy("no icy-metaint")
@@ -209,8 +216,14 @@ class RadioPlayer:
         self.title_fetcher = fetch_icy_title
         self.poll_titles = managed
         self.title_poll = TITLE_POLL
+        self.title_backoff_max = 120.0
+        self.no_icy_recheck = 300.0
         self.on_title: Callable[[], None] | None = None
         self._titles: asyncio.Task[None] | None = None
+        # For diagnostics / the app's developer line (wall-clock seconds).
+        self.title_changed_at: float | None = None
+        self.title_checked_at: float | None = None
+        self.title_error: str | None = None
 
     @property
     def running(self) -> bool:
@@ -294,6 +307,7 @@ class RadioPlayer:
     def _set_title(self, title: str | None) -> None:
         if title != self.stream_title:
             self.stream_title = title
+            self.title_changed_at = time.time()
             if self.on_title is not None:
                 self.on_title()
 
@@ -301,27 +315,51 @@ class RadioPlayer:
         if self._titles is not None:
             self._titles.cancel()
             self._titles = None
+        self.title_error = None
         if self.poll_titles:
             self._titles = asyncio.create_task(self._poll_titles(url))
 
+    def ensure_title_poll(self) -> None:
+        """Restart the title poll if it ever ended while the station plays."""
+
+        url = (self.station or {}).get("url")
+        if not (self.poll_titles and url and not self.paused):
+            return
+        if self._titles is None or self._titles.done():
+            logger.warning("Song-title poll was not running for %s; restarting it", url)
+            self._titles = asyncio.create_task(self._poll_titles(url))
+
     async def _poll_titles(self, url: str) -> None:
-        """Keep stream_title current for as long as this station plays."""
-        misses = 0
+        """Keep stream_title current for as long as this station plays.
+
+        Never gives up while the station plays: errors back off (up to 2 min),
+        and a stream without ICY metadata is re-checked every 5 minutes (some
+        servers redirect to a different mount now and then).
+        """
+
+        delay = self.title_poll
         while self.station is not None and self.station.get("url") == url:
-            await asyncio.sleep(self.title_poll)
+            await asyncio.sleep(delay)
             if self.paused or self.station is None or self.station.get("url") != url:
                 return
             try:
                 title = await self.title_fetcher(url, USER_AGENT)
-            except NoIcy:
-                logger.info("No ICY metadata on %s; song titles stay as ffmpeg reported", url)
-                return
-            except (OSError, TimeoutError, asyncio.IncompleteReadError, ValueError, ssl.SSLError):
-                misses += 1
-                if misses >= 20:
-                    return
+            except asyncio.CancelledError:
+                raise
+            except NoIcy as exc:
+                if self.title_error != f"no ICY metadata ({exc})":
+                    logger.info("No ICY metadata on %s (%s); re-checking every 5 min", url, exc)
+                self.title_error = f"no ICY metadata ({exc})"
+                delay = self.no_icy_recheck
                 continue
-            misses = 0
+            except Exception as exc:  # noqa: BLE001 - the poll must survive anything
+                self.title_error = f"{type(exc).__name__}: {exc}"[:120]
+                delay = min(self.title_backoff_max, max(self.title_poll, delay * 2))
+                logger.info("Song-title poll failed for %s: %s", url, self.title_error)
+                continue
+            delay = self.title_poll
+            self.title_error = None
+            self.title_checked_at = time.time()
             if title is not None:
                 self._set_title(title)
 
@@ -353,6 +391,7 @@ class RadioPlayer:
     async def watchdog(self) -> None:
         """Restart ffmpeg if it exited while it should be playing."""
 
+        self.ensure_title_poll()
         if not (self.station and not self.paused and not self.running and self.managed):
             return
         now = time.monotonic()

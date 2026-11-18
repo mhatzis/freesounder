@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../api/connection_prefs.dart';
 import '../api/errors.dart';
 import '../models/now_playing.dart';
 import '../spotify/ui/spotify_brand.dart';
@@ -117,6 +118,19 @@ class _NowPlayingScreenState extends ConsumerState<NowPlayingScreen> {
                   const SizedBox(height: 4),
                   Text(station, textAlign: TextAlign.center, style: text.bodyMedium),
                 ],
+                if (ref.watch(developerModeProvider) && np != null)
+                  Ticking(
+                    active: true,
+                    builder: (context) => Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: Text(
+                        metadataDebugLine(np),
+                        key: const Key('np-meta-debug'),
+                        textAlign: TextAlign.center,
+                        style: text.labelSmall?.copyWith(color: scheme.onSurfaceVariant),
+                      ),
+                    ),
+                  ),
                 if (sourceName(np?.source) != null) ...[
                   const SizedBox(height: 10),
                   Center(
