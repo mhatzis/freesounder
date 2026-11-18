@@ -129,15 +129,38 @@ sudo freesounder-setup factory-reset
 
 ## Diagnostics
 
-The journal is persistent: `Storage=persistent`, capped at 50 MB, kept for
-1 month. Under-voltage and throttling flags are logged at boot and whenever
-they change (checked every 2 minutes, as `freesounder-power`).
+**Persistent journal.** `/etc/systemd/journald.conf.d/90-freesounder.conf` sets
+`Storage=persistent` (50 MB cap, 1 month) and `SyncIntervalSec=15s`, so a hard
+power loss loses at most ~15 s of log. Raspberry Pi OS ships
+`/usr/lib/systemd/journald.conf.d/40-rpi-volatile-storage.conf`
+(`Storage=volatile`); in 0.6.5 it overrode ours, so no log survived a reboot.
+The image masks it (a `/dev/null` symlink of the same name in /etc). The
+previous boot is looked up with `journalctl --merge --list-boots`, so a
+machine-id change (first boot, reflash) does not hide it. 0.6.6's first boot is
+the first one with a persistent log.
+
+**Heartbeat** (`freesounder-heartbeat.service`, log tag `freesounder-power`).
+Every 15 s it rewrites `/var/lib/freesounder/heartbeat.json` (atomic, fsync,
+~250 bytes) with the time, uptime, Pi 5 input voltage (`EXT5V_V`) and its
+minimum this boot, CPU temperature and `get_throttled` flags. Flag changes are
+appended to `power-history.json` (last 100). It logs warnings for
+`UNDER-VOLTAGE`, `THROTTLING`, `LOW INPUT VOLTAGE` (< 4.75 V) and `HOT`
+(>= 80 C). On a clean shutdown it logs `CLEAN SHUTDOWN started: poweroff|reboot|halt`
+and marks the heartbeat clean. At the next boot the old heartbeat becomes
+`last-boot.json`; if it was not clean it logs `PREVIOUS BOOT DID NOT SHUT DOWN CLEANLY`
+with the last-seen time and uptime.
+
+**Buttons.** Each press logs `POWER BUTTON pressed (n/5 to reset)` (or
+`WIRED BUTTON pressed`); a single press logs
+`POWER BUTTON: clean shutdown requested by the power button`.
+
+**Pi 5 firmware.** `/proc/device-tree/chosen/power/power_reset` is the PMIC
+reset reason (bit 0 over-voltage, 1 under-voltage, 2 over-temperature,
+3 enable signal, 4 watchdog), `max_current` the current the PSU offered
+(5000 mA for the official 27 W supply), and `usb_over_current_detected`.
+`chosen/bootloader/rsts` is shown raw.
 
 To see why a player stopped last time:
 
 - in the app with developer mode on: room settings, then **Diagnostics**,
 - or `sudo freesounder-setup diagnostics` on the console.
-
-Both show how the previous boot ended, the power and throttle flags, the
-input voltage (Pi 5), the temperature, and the previous boot's errors and
-last log lines.

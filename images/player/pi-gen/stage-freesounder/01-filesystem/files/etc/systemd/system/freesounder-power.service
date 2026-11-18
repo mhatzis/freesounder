@@ -1,7 +1,0 @@
-[Unit]
-Description=FreeSounder: log under-voltage / throttling flags (vcgencmd get_throttled)
-
-[Service]
-Type=oneshot
-ExecStart=/opt/freesounder/venv/bin/freesounder-reset-triggers power-log
-SyslogIdentifier=freesounder-power

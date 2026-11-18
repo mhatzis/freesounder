@@ -46,8 +46,7 @@ systemctl enable freesounder-buttons.service
 systemctl enable freesounder-boot-count.service
 systemctl enable freesounder-boot-count-clear.service
 systemctl enable freesounder-factory-reset.service
-systemctl enable freesounder-power-boot.service
-systemctl enable freesounder-power.timer
+systemctl enable freesounder-heartbeat.service
 # Persistent journal directory owned as journald expects.
 systemd-tmpfiles --create --prefix /var/log/journal 2>/dev/null || true
 

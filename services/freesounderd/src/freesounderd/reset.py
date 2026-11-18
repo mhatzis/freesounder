@@ -336,6 +336,7 @@ def run_buttons(argv: list[str]) -> int:
                     open_fds.pop("gpio", None)
                     continue
                 for _ in range(chunk.count(b"\n")):
+                    _log("WIRED BUTTON pressed")
                     if counter.press(time.monotonic()) == "reset":
                         _log("5 presses on the wired button: factory reset")
                         subprocess.run([RESET_SCRIPT, "--reason", "button"], check=False)
@@ -354,13 +355,14 @@ def run_buttons(argv: list[str]) -> int:
                 _s, _us, etype, code, value = _EVENT.unpack_from(data, off)
                 if etype == EV_KEY and code == KEY_POWER and value == 1:
                     action = counter.press(time.monotonic())
-                    _log(f"power key pressed ({len(counter.presses) or TAPS_FOR_RESET})")
+                    count = len(counter.presses) or TAPS_FOR_RESET
+                    _log(f"POWER BUTTON pressed ({count}/5 to reset)")
                     if action == "reset":
                         _log("5 presses: factory reset")
                         subprocess.run([RESET_SCRIPT, "--reason", "button"], check=False)
         action = counter.poll(time.monotonic())
         if action == "shutdown":
-            _log("power key: clean shutdown")
+            _log("POWER BUTTON: clean shutdown requested by the power button (1 press)")
             subprocess.run(["systemctl", "poweroff"], check=False)
         elif action == "ignored":
             _log("power key: 2-4 presses, ignored (press 5 times quickly to reset)")
@@ -433,15 +435,24 @@ def run_power_log(argv: list[str]) -> int:
     return 0
 
 
+def _heartbeat(argv: list[str]) -> int:
+    from freesounderd.power import run_heartbeat
+
+    return run_heartbeat(argv)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="freesounder-reset-triggers")
-    parser.add_argument("command", choices=["buttons", "boot-count", "boot-clear", "power-log"])
+    parser.add_argument(
+        "command", choices=["buttons", "boot-count", "boot-clear", "power-log", "heartbeat"]
+    )
     args, rest = parser.parse_known_args(argv)
     return {
         "buttons": run_buttons,
         "boot-count": run_boot_count,
         "boot-clear": run_boot_clear,
         "power-log": run_power_log,
+        "heartbeat": _heartbeat,
     }[args.command](rest)
 
 

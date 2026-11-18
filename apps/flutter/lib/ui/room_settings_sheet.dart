@@ -565,18 +565,47 @@ String _balance(double value) {
 
 /// Diagnostics from the player as plain text (developer mode).
 String formatDiagnostics(Map<String, dynamic> d) {
-  List<String> lines(Object? v) => [for (final x in (v as List? ?? const [])) '$x'];
+  List<String> lines(Object? v) => v is List ? [for (final x in v) '$x'] : (v == null ? const [] : ['$v']);
   final flags = lines(d['throttled_flags']);
+  final prev = d['previous_boot'] is Map ? Map<String, dynamic>.from(d['previous_boot'] as Map) : null;
+  final reset = lines(d['pmic_reset_reason']);
+  final history = d['power_history'] is List ? d['power_history'] as List : const [];
+  String hist(Object? e) {
+    if (e is! Map) return '$e';
+    final t = e['time'] is num
+        ? DateTime.fromMillisecondsSinceEpoch(((e['time'] as num) * 1000).round()).toLocal().toString().substring(0, 19)
+        : '?';
+    final up = e['uptime'] is num ? ' up ${((e['uptime'] as num) / 60).toStringAsFixed(1)} min' : '';
+    return '$t$up  ${e['throttled']}  ${e['ext5v'] ?? '?'} V  ${e['temp'] ?? '?'}°C';
+  }
+
   return [
     'Previous boot ended: ${d['previous_boot_ended'] ?? 'unknown'}',
-    'Power: ${d['throttled'] ?? '?'} ${flags.isEmpty ? '(ok)' : '(${flags.join(', ')})'}',
-    if (d['input_voltage'] != null) 'Input voltage: ${d['input_voltage']}',
+    if (prev != null) ...[
+      'Last heartbeat: ${prev['last_heartbeat'] ?? '?'} (up ${prev['uptime_at_end_min'] ?? '?'} min)',
+      'Clean shutdown: ${prev['clean_shutdown'] == true ? 'yes (${prev['shutdown'] ?? 'shutdown'})' : 'no'}',
+      'Input voltage then: ${prev['ext5v_last'] ?? '?'} V, lowest ${prev['ext5v_min'] ?? '?'} V',
+      'Power flags then: ${prev['throttled'] ?? '?'}'
+          '${lines(prev['throttled_flags']).isEmpty ? '' : ' (${lines(prev['throttled_flags']).join(', ')})'}',
+    ],
+    if (d['pmic_reset'] != null)
+      'Pi 5 PMIC reset reason: ${d['pmic_reset']} (${reset.isEmpty ? 'none' : reset.join(', ')})',
+    if (d['psu_max_current_ma'] != null)
+      'Power supply: ${d['psu_max_current_ma']} mA${(d['psu_max_current_ma'] as num) < 5000 ? ' (not a 5 A supply)' : ''}',
+    if (d['usb_over_current_at_boot'] == true) 'USB over-current at boot: yes',
+    if (d['bootloader_rsts'] != null) 'Bootloader RSTS: ${d['bootloader_rsts']}',
+    '',
+    'Now: ${d['throttled'] ?? '?'} ${flags.isEmpty ? '(ok)' : '(${flags.join(', ')})'}',
+    if (d['input_voltage'] != null)
+      'Input voltage: ${d['input_voltage']}'
+          '${d['input_voltage_min_this_boot'] != null ? ', lowest this boot ${d['input_voltage_min_this_boot']} V' : ''}',
     if (d['temperature'] != null) 'Temperature: ${d['temperature']}',
-    if (d['pmic_reset_reason'] != null) 'Pi 5 reset reason: ${d['pmic_reset_reason']}',
-    if (lines(d['power_log']).isNotEmpty) ...['', 'Power log:', ...lines(d['power_log'])],
+    if (d['boots_in_journal'] != null) 'Boots in journal: ${d['boots_in_journal']}',
+    if (history.isNotEmpty) ...['', 'Power flag history:', ...history.map(hist)],
+    if (lines(d['power_log']).isNotEmpty) ...['', 'Power & button log:', ...lines(d['power_log'])],
     if (lines(d['previous_boot_errors']).isNotEmpty) ...[
       '',
-      'Previous boot errors:',
+      'Previous boot warnings/errors:',
       ...lines(d['previous_boot_errors']),
     ],
     if (lines(d['previous_boot_tail']).isNotEmpty) ...[

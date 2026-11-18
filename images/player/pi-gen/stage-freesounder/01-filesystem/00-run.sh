@@ -54,14 +54,18 @@ install -m 0755 files/usr/lib/freesounder/factory-reset "${ROOTFS_DIR}/usr/lib/f
 install -m 0644 files/etc/freesounder/button "${ROOTFS_DIR}/etc/freesounder/button"
 for unit in freesounder-buttons.service freesounder-boot-count.service \
 	freesounder-boot-count-clear.service freesounder-factory-reset.service \
-	freesounder-power.service freesounder-power-boot.service freesounder-power.timer; do
+	freesounder-heartbeat.service; do
 	install -m 0644 "files/etc/systemd/system/${unit}" "${ROOTFS_DIR}/etc/systemd/system/${unit}"
 done
 install -d "${ROOTFS_DIR}/etc/systemd/logind.conf.d" "${ROOTFS_DIR}/etc/systemd/journald.conf.d"
 install -m 0644 files/etc/systemd/logind.conf.d/10-freesounder.conf \
 	"${ROOTFS_DIR}/etc/systemd/logind.conf.d/10-freesounder.conf"
-install -m 0644 files/etc/systemd/journald.conf.d/10-freesounder.conf \
-	"${ROOTFS_DIR}/etc/systemd/journald.conf.d/10-freesounder.conf"
+install -m 0644 files/etc/systemd/journald.conf.d/90-freesounder.conf \
+	"${ROOTFS_DIR}/etc/systemd/journald.conf.d/90-freesounder.conf"
+# Raspberry Pi OS ships /usr/lib/systemd/journald.conf.d/40-rpi-volatile-storage.conf
+# (Storage=volatile), which silently overrode our persistent journal in 0.6.5.
+# A same-named /dev/null link in /etc masks it.
+ln -sfn /dev/null "${ROOTFS_DIR}/etc/systemd/journald.conf.d/40-rpi-volatile-storage.conf"
 install -d -m 2755 "${ROOTFS_DIR}/var/log/journal"
 install -m 0644 files/etc/default/snapclient "${ROOTFS_DIR}/etc/default/snapclient"
 install -m 0644 files/etc/alsa/conf.d/99-freesounder.conf "${ROOTFS_DIR}/etc/alsa/conf.d/99-freesounder.conf"

@@ -147,4 +147,4 @@ def test_previous_boot_ending_is_classified() -> None:
     assert classify_ending("snapclient[9]: playing\nkernel: wlan0: ...") == (
         "power lost or hard reset (no clean shutdown was logged)"
     )
-    assert classify_ending("") == "unknown (no log of the previous boot)"
+    assert classify_ending("") == "unknown (no earlier boot in the journal yet)"

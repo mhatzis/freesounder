@@ -1,0 +1,16 @@
+[Unit]
+Description=FreeSounder: power watch and heartbeat (last-seen time, input voltage, throttling)
+After=local-fs.target systemd-journal-flush.service
+RequiresMountsFor=/var/lib/freesounder
+
+[Service]
+Type=simple
+ExecStart=/opt/freesounder/venv/bin/freesounder-reset-triggers heartbeat
+SyslogIdentifier=freesounder-power
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+Nice=5
+
+[Install]
+WantedBy=multi-user.target
