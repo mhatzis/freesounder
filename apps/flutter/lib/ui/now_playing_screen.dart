@@ -197,12 +197,13 @@ class _NowPlayingScreenState extends ConsumerState<NowPlayingScreen> {
                           key: const Key('np-screen-volume'),
                           value: volume.clamp(0, 100),
                           max: 100,
-                          onChanged: (v) => setState(() => _volume = v),
+                          onChanged: (v) {
+                            setState(() => _volume = v);
+                            store.dragVolume(room.id, v, group: room.isGrouped);
+                          },
                           onChangeEnd: (v) {
                             setState(() => _volume = null);
-                            _run(() => room.isGrouped
-                                ? store.setGroupVolume(room.id, v.round())
-                                : store.setVolume(room.id, v.round()));
+                            _run(() => store.commitVolume(room.id, v, group: room.isGrouped));
                           },
                         ),
                       ),

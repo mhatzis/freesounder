@@ -175,6 +175,87 @@ final firstPlayerSetupProvider = Provider<FirstPlayerSetup Function()>((ref) => 
 /// Single rooms-and-playback store. Every screen reads this; it is the source
 /// of truth for the active room, groups, volumes, now-playing and sync health.
 class PlaybackStore extends Notifier<PlaybackState> {
+  // ---- optimistic controls -------------------------------------------------
+  // What the user just did wins over older data from the players for a short
+  // while, so a poll or event that left before the change can't snap a
+  // slider back or flip play/pause back.
+  static const holdAfterChange = Duration(milliseconds: 1500);
+  static const volumeSendInterval = Duration(milliseconds: 100);
+  final _volumeHolds = <String, ({int value, DateTime until})>{};
+  final _playHolds = <String, ({String state, DateTime until})>{};
+  final _volumeLastSent = <String, DateTime>{};
+  final _volumeTrailing = <String, Timer>{};
+
+  @override
+  set state(PlaybackState value) => super.state = _applyHolds(value);
+
+  PlaybackState _applyHolds(PlaybackState s) {
+    if (_volumeHolds.isEmpty && _playHolds.isEmpty) {
+      return s;
+    }
+    final now = DateTime.now();
+    _volumeHolds.removeWhere((_, h) => h.until.isBefore(now));
+    _playHolds.removeWhere((_, h) => h.until.isBefore(now));
+    var rooms = s.rooms;
+    if (_volumeHolds.isNotEmpty && rooms.any((r) => (_volumeHolds[r.id]?.value ?? r.volume) != r.volume)) {
+      rooms = [
+        for (final r in rooms)
+          if (_volumeHolds[r.id] case final h? when h.value != r.volume) r.copyWith(volume: h.value) else r,
+      ];
+    }
+    NowPlaying? held(NowPlaying? np) {
+      final h = np == null ? null : _playHolds[np.playerId];
+      return (np != null && h != null && np.state != h.state && np.source != null && np.source != 'none')
+          ? np.copyWith(state: h.state)
+          : np;
+    }
+
+    final np = held(s.nowPlaying);
+    if (identical(rooms, s.rooms) && identical(np, s.nowPlaying)) {
+      return s;
+    }
+    return s.copyWith(rooms: rooms, nowPlaying: np);
+  }
+
+  /// Slider moving: show [value] at once and send it at most every 100 ms.
+  void dragVolume(String roomId, double value, {bool group = false}) {
+    final level = value.round();
+    _holdVolume(roomId, level);
+    final last = _volumeLastSent[roomId];
+    final now = DateTime.now();
+    if (last == null || now.difference(last) >= volumeSendInterval) {
+      _volumeTrailing.remove(roomId)?.cancel();
+      _volumeLastSent[roomId] = now;
+      unawaited(_sendVolume(roomId, level, group: group).catchError((_) {}));
+    } else {
+      _volumeTrailing.remove(roomId)?.cancel();
+      _volumeTrailing[roomId] = Timer(volumeSendInterval - now.difference(last), () {
+        _volumeTrailing.remove(roomId);
+        _volumeLastSent[roomId] = DateTime.now();
+        final latest = _volumeHolds[roomId]?.value ?? level;
+        unawaited(_sendVolume(roomId, latest, group: group).catchError((_) {}));
+      });
+    }
+  }
+
+  /// Slider released: send the final value now (and keep showing it).
+  Future<void> commitVolume(String roomId, double value, {bool group = false}) async {
+    final level = value.round();
+    _volumeTrailing.remove(roomId)?.cancel();
+    _holdVolume(roomId, level);
+    _volumeLastSent[roomId] = DateTime.now();
+    await _sendVolume(roomId, level, group: group);
+    _holdVolume(roomId, level); // hold a little longer after the player confirms
+  }
+
+  void _holdVolume(String roomId, int level) {
+    _volumeHolds[roomId] = (value: level, until: DateTime.now().add(holdAfterChange));
+    state = state; // re-apply holds to the rooms on screen
+  }
+
+  Future<void> _sendVolume(String roomId, int level, {required bool group}) =>
+      group ? setGroupVolume(roomId, level) : setVolume(roomId, level);
+
   ControlApiClient? _client;
   StreamSubscription<Map<String, dynamic>>? _events;
   Timer? _healthTimer;
@@ -207,6 +288,9 @@ class PlaybackStore extends Notifier<PlaybackState> {
       _events?.cancel();
       _npCheck?.cancel();
       _npRefresh?.cancel();
+      for (final t in _volumeTrailing.values) {
+        t.cancel();
+      }
       _client?.close();
     });
     if (config.forceDemo) {
@@ -782,7 +866,30 @@ class PlaybackStore extends Notifier<PlaybackState> {
       state = state.copyWith(nowPlaying: next);
       return;
     }
-    await _transport(room.id, shouldPause ? 'pause' : 'play');
+    final wanted = shouldPause ? 'paused' : 'playing';
+    _playHolds[room.id] = (state: wanted, until: DateTime.now().add(const Duration(seconds: 3)));
+    state = state; // shows the new play/pause state at once
+    try {
+      await _transport(room.id, shouldPause ? 'pause' : 'play');
+    } on Object {
+      _playHolds.remove(room.id);
+      state = state;
+      rethrow;
+    } finally {
+      _refreshSoon(room.id);
+    }
+  }
+
+  /// After a control, read now playing back quickly instead of waiting for
+  /// the next event or poll.
+  void _refreshSoon(String roomId) {
+    for (final ms in const [350, 1500]) {
+      Timer(Duration(milliseconds: ms), () {
+        if (!_disposed && state.activeRoomId == roomId) {
+          unawaited(_refreshNowPlaying(roomId));
+        }
+      });
+    }
   }
 
   Future<void> skipNext() async {
@@ -800,6 +907,7 @@ class PlaybackStore extends Notifier<PlaybackState> {
       return;
     }
     await _transport(room.id, 'next');
+    _refreshSoon(room.id);
   }
 
   /// Remove an offline room from the home (it reappears if it comes back).
@@ -837,6 +945,7 @@ class PlaybackStore extends Notifier<PlaybackState> {
       return;
     }
     await _transport(room.id, 'previous');
+    _refreshSoon(room.id);
   }
 
   /// Volume for the whole group the room is in (every room moves together).

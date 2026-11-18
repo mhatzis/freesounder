@@ -144,7 +144,9 @@ async def test_leader_leaving_idle_group_hands_over(lan: Lan, make_player) -> No
     assert a.engine.group["follow"] is None
 
 
-async def test_leader_leaving_playing_group_relays(lan: Lan, make_player) -> None:
+async def test_leader_leaving_playing_group_hands_radio_over(lan: Lan, make_player) -> None:
+    """Ungrouped means independent: no more relaying for the old group."""
+
     a, b = await setup_household(make_player, ("10.0.0.1", "Pi 5"), ("10.0.0.2", "Pi 4"))
     players = [a, b]
     await settle(lan, players)
@@ -158,17 +160,101 @@ async def test_leader_leaving_playing_group_relays(lan: Lan, make_player) -> Non
     assert a.engine.source == "radio"
     await a.client.post(f"/api/v2/rooms/{a.id}/leave")
     await settle(lan, players)
-    assert a.engine.group["relay"] is True
-    assert b.engine.group["follow"] == a.id
+    assert not a.engine.group.get("relay")
+    assert b.engine.group["follow"] is None, "B leads itself now"
+    assert b.engine.source == "radio" and b.engine.radio.station["name"] == "R1"
+    assert a.engine.source == "none" and a.engine.radio.station is None
     rooms = {r["id"]: r for r in (await b.client.get("/api/v2/rooms")).json()}
-    assert rooms[a.id]["group_id"] == a.id + ":solo"
-    assert rooms[a.id]["relaying_for"] == "Living"
-    assert rooms[b.id]["group_name"] == "Living"
-    # The relaying leader's own speaker is muted.
-    server = lan.snapservers[a.ip]
-    assert server.clients[a.id]["config"]["volume"]["muted"] is True
+    assert rooms[a.id]["group_id"] == a.id and rooms[a.id]["relaying_for"] is None
+    assert rooms[b.id]["group_id"] == b.id
     np = (await b.client.get("/api/v2/now-playing", params={"player_id": b.id})).json()
     assert np["source"] == "radio" and np["title"] == "R1"
+    assert np["meta_from"] == rooms[b.id]["name"]
+
+
+async def test_ungrouped_rooms_are_independent(lan: Lan, make_player) -> None:
+    """Group, ungroup, then two stations: each room reports its own song and leader."""
+
+    a, b = await setup_household(make_player, ("10.0.0.1", "Pi 4"), ("10.0.0.2", "Pi 5"))
+    players = [a, b]
+    await settle(lan, players)
+    await a.client.put(f"/api/v2/groups/{a.id}/members", json={"members": [a.id, b.id]})
+    await a.client.post(
+        f"/api/v2/groups/{a.id}/radio", json={"url": "http://radio.example/g", "name": "Group FM"}
+    )
+    await settle(lan, players)
+    assert b.engine.group["follow"] == a.id
+    # Ungroup from the app: the group keeps only A.
+    res = await a.client.put(f"/api/v2/groups/{a.id}/members", json={"members": [a.id]})
+    assert res.status_code == 200, res.text
+    await settle(lan, players)
+    assert b.engine.group["follow"] is None and a.engine.group["follow"] is None
+    assert b.engine._snap_target == "127.0.0.1", "B plays from its own snapserver"
+    # Each room gets its own station, asked through either player.
+    for via in (a, b):
+        r1 = await via.client.post(
+            f"/api/v2/groups/{a.id}/radio", json={"url": "http://radio.example/a", "name": "A FM"}
+        )
+        r2 = await via.client.post(
+            f"/api/v2/groups/{b.id}/radio", json={"url": "http://radio.example/b", "name": "B FM"}
+        )
+        assert r1.status_code == 200 and r2.status_code == 200
+        await settle(lan, players)
+        assert a.engine.radio.station["name"] == "A FM"
+        assert b.engine.radio.station["name"] == "B FM"
+        for p in players:
+            np_a = (await p.client.get("/api/v2/now-playing", params={"player_id": a.id})).json()
+            np_b = (await p.client.get("/api/v2/now-playing", params={"player_id": b.id})).json()
+            assert (np_a["title"], np_a["group_id"]) == ("A FM", a.id)
+            assert (np_b["title"], np_b["group_id"]) == ("B FM", b.id)
+            assert np_a["meta_from"] != np_b["meta_from"]
+    # Controls reach only their own room.
+    await b.client.post(f"/api/v2/groups/{b.id}/pause")
+    await settle(lan, players)
+    assert b.engine.radio.paused and not a.engine.radio.paused
+
+
+async def test_leader_ungrouping_itself_leaves_others_independent(lan: Lan, make_player) -> None:
+    """The leader is unticked: the others take the radio; the leader is on its own."""
+
+    a, b, c = await setup_household(
+        make_player, ("10.0.0.1", "Pi 4"), ("10.0.0.2", "Pi 5"), ("10.0.0.3", "Pi 3")
+    )
+    players = [a, b, c]
+    await settle(lan, players)
+    await a.client.put(f"/api/v2/groups/{a.id}/members", json={"members": [a.id, b.id, c.id]})
+    await a.client.post(
+        f"/api/v2/groups/{a.id}/radio", json={"url": "http://radio.example/g", "name": "Group FM"}
+    )
+    await settle(lan, players)
+    res = await b.client.put(f"/api/v2/groups/{a.id}/members", json={"members": [b.id, c.id]})
+    assert res.status_code == 200, res.text
+    await settle(lan, players)
+    assert a.engine.group["follow"] is None
+    assert b.engine.group["follow"] is None and c.engine.group["follow"] == b.id
+    assert b.engine.radio.station["name"] == "Group FM"
+    await a.client.post(
+        f"/api/v2/groups/{a.id}/radio", json={"url": "http://radio.example/a", "name": "A FM"}
+    )
+    await settle(lan, players)
+    assert b.engine.radio.station["name"] == "Group FM", "A's new station stays in A"
+    np_c = (await c.client.get("/api/v2/now-playing", params={"player_id": c.id})).json()
+    assert np_c["title"] == "Group FM" and np_c["group_id"] == b.id
+
+
+async def test_relay_from_older_version_is_ended(lan: Lan, make_player) -> None:
+    a, b = await setup_household(make_player, ("10.0.0.1", "Pi 4"), ("10.0.0.2", "Pi 5"))
+    players = [a, b]
+    await settle(lan, players)
+    await a.client.put(f"/api/v2/groups/{a.id}/members", json={"members": [a.id, b.id]})
+    await a.client.post(
+        f"/api/v2/groups/{a.id}/radio", json={"url": "http://radio.example/g", "name": "G"}
+    )
+    await settle(lan, players)
+    a.engine._set_group(relay=True)  # state saved by 0.6.6
+    await settle(lan, players)
+    assert not a.engine.group.get("relay")
+    assert b.engine.group["follow"] is None and b.engine.radio.station["name"] == "G"
 
 
 async def test_failover_elects_best_member_and_resumes_radio(lan: Lan, make_player) -> None:

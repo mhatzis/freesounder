@@ -163,9 +163,10 @@ void main() {
       'meta_updated_at': DateTime.utc(2026, 11, 19, 1, 0, 0).millisecondsSinceEpoch / 1000,
       'title_checked_at': DateTime.utc(2026, 11, 19, 1, 0, 20).millisecondsSinceEpoch / 1000,
       'meta_from': 'Patio',
+      'title_source': 'stream',
     }, receivedAt: DateTime.utc(2026, 11, 19, 1, 0, 25));
     final line = metadataDebugLine(np, now);
-    expect(line, contains('title read 10s ago'));
+    expect(line, contains('stream title 10s ago'));
     expect(line, contains('by Patio'));
     expect(line, contains('app got it 5s ago'));
     expect(line, startsWith('song changed '));

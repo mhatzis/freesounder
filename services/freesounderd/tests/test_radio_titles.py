@@ -158,3 +158,76 @@ async def test_dead_title_poll_is_restarted_by_the_watchdog() -> None:
         await asyncio.sleep(0.01)
     assert radio.stream_title == "C - Three"
     await radio.stop()
+
+
+def test_demuxer_splits_audio_and_titles_across_chunk_boundaries() -> None:
+    from freesounderd.radio import IcyDemuxer
+
+    def block(title: str | None) -> bytes:
+        if title is None:
+            return b"\x00"
+        meta = f"StreamTitle='{title}';".encode()
+        n = (len(meta) + 15) // 16
+        return bytes([n]) + meta.ljust(n * 16, b"\0")
+
+    body = b"a" * 8 + block("A - One") + b"b" * 8 + block(None) + b"c" * 8 + block("B - Two")
+    for size in (1, 3, 7, 64):
+        demux = IcyDemuxer(8)
+        audio, titles = b"", []
+        for i in range(0, len(body), size):
+            got, t = demux.feed(body[i : i + size])
+            audio += got
+            titles += t
+        assert audio == b"a" * 8 + b"b" * 8 + b"c" * 8
+        assert titles == ["A - One", None, "B - Two"]
+
+
+def test_error_text_is_never_empty() -> None:
+    from freesounderd.radio import describe_error
+
+    assert describe_error(TimeoutError()) == "TimeoutError: no answer in time"
+    assert describe_error(OSError()) == "OSError: no detail"
+    assert describe_error(ValueError("bad")) == "ValueError: bad"
+
+
+async def test_titles_come_from_the_playing_stream(tmp_path) -> None:
+    """The player reads the station once and takes the titles out of it."""
+
+    import os
+
+    titles = ["A - One", "B - Two"]
+    connections = []
+
+    async def station(reader, writer):
+        connections.append(1)
+        await reader.read(1024)
+        writer.write(b"ICY 200 OK\r\nicy-metaint: 32\r\ncontent-type: audio/mpeg\r\n\r\n")
+        for i in range(40):
+            title = titles[0] if i < 20 else titles[1]
+            meta = f"StreamTitle='{title}';".encode()
+            n = (len(meta) + 15) // 16
+            writer.write(b"\xaa" * 32 + bytes([n]) + meta.ljust(n * 16, b"\0"))
+            await writer.drain()
+            await asyncio.sleep(0.005)
+        writer.close()
+
+    fake = tmp_path / "ffmpeg"
+    fake.write_text('#!/bin/sh\nfor last; do :; done\nexec cat > "$last"\n')
+    os.chmod(fake, 0o755)
+    out = tmp_path / "radio.fifo"
+    server, url = await serve(station)
+    async with server:
+        radio = RadioPlayer(str(fake), str(out), managed=True)
+        changes = []
+        radio.on_title = lambda: changes.append(radio.stream_title)
+        await radio.play({"url": url, "name": "R"})
+        assert radio.title_source == "stream"
+        for _ in range(300):
+            if radio.stream_title == "B - Two":
+                break
+            await asyncio.sleep(0.01)
+        assert changes[:2] == ["A - One", "B - Two"]
+        assert radio.title_checked_at is not None
+        await radio.stop()
+    data = out.read_bytes()
+    assert data and set(data) == {0xAA}, "only audio reaches ffmpeg"

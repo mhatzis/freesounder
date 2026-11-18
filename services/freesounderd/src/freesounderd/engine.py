@@ -196,6 +196,9 @@ class Engine:
         self.radio.on_title = self.kick
         self.airplay_art = AirplayArt()
         self._np_song: tuple[Any, ...] | None = None
+        self._group_save: asyncio.Future[None] | None = None
+        self._volume_task: asyncio.Future[None] | None = None
+        self._volume_dirty = False
         self._np_changed_at: float | None = None
         self._spotify_login_active = False
         self._spotify_login_lock = asyncio.Lock()
@@ -425,6 +428,7 @@ class Engine:
             "meta_from": np.get("meta_from"),
             "title_checked_at": np.get("title_checked_at"),
             "title_error": np.get("title_error"),
+            "title_source": np.get("title_source"),
             "uri": np.get("uri"),
             "context_uri": np.get("context_uri"),
             "context_name": np.get("context_name"),
@@ -882,6 +886,7 @@ class Engine:
                 # the app's developer line and diagnostics.
                 "title_checked_at": self.radio.title_checked_at,
                 "title_error": self.radio.title_error,
+                "title_source": self.radio.title_source,
             }
         if self.source == "airplay":
             props = airplay.get("properties") or {}
@@ -953,24 +958,58 @@ class Engine:
             logger.info("snapserver not ready", exc_info=True)
 
     async def _relay_rules(self) -> None:
-        if not self.group.get("relay"):
-            self._idle_since = None
-            return
-        if self.play_state() == "playing":
-            self._idle_since = None
-            return
-        now = time.monotonic()
-        self._idle_since = self._idle_since or now
-        if now - self._idle_since >= RELAY_IDLE_END:
-            await self._handover()
+        # 0.6.6 and older let a leader that left a playing group keep feeding
+        # it ("relay"), so an ungrouped room was still driven by its old
+        # leader. Ungrouped now means independent: finish any such relay.
+        self._idle_since = None
+        if self.group.get("relay"):
+            logger.info("Ending relay from an older version: handing the group over")
+            await self._leave_as_leader()
 
-    async def _handover(self) -> None:
-        """Hand my members to the best of them and go solo."""
+    async def _leave_as_leader(self) -> None:
+        """I lead a group and leave it: the others carry on without me.
+
+        Radio moves to the best remaining member (it starts the same station)
+        and stops here. Spotify and AirPlay belong to this player's device,
+        so they stay here and the others become independent, idle rooms.
+        Afterwards nobody follows me, so my room is fully on its own.
+        """
 
         recs = self.records()
         members = [
-            r for r in recs.values() if r.get("follow") == self.id and r.get("available", True)
+            r
+            for r in recs.values()
+            if r.get("follow") == self.id and r["id"] != self.id and r.get("available", True)
         ]
+        playing = self.play_state() == "playing"
+        if self.group.get("relay"):
+            self._set_group(relay=False)
+        if not members:
+            return
+        if playing and self.source in ("spotify", "airplay"):
+            for member in members:
+                await self._peer_command(member["id"], {"op": "solo"})
+            self.kick()
+            return
+        station = self.radio.station if playing and self.source == "radio" else None
+        await self._handover(members, station)
+        if station:
+            await self.radio.stop()
+            self.source = "none"
+            self.np = {}
+
+    async def _handover(
+        self, members: list[dict[str, Any]] | None = None, station: dict[str, Any] | None = None
+    ) -> None:
+        """Hand my members to the best of them (with my radio station, if any)."""
+
+        if members is None:
+            recs = self.records()
+            members = [
+                r
+                for r in recs.values()
+                if r.get("follow") == self.id and r["id"] != self.id and r.get("available", True)
+            ]
         self.group["relay"] = False
         self._idle_since = None
         if not members:
@@ -978,7 +1017,10 @@ class Engine:
             return
         best = min(members, key=score)
         term = int(self.group.get("term", 0)) + 1
-        await self._peer_command(best["id"], {"op": "lead", "term": term})
+        command: dict[str, Any] = {"op": "lead", "term": term}
+        if station:
+            command["station"] = station
+        await self._peer_command(best["id"], command)
         for member in members:
             if member["id"] != best["id"]:
                 await self._peer_command(member["id"], {"op": "follow", "leader": best["id"]})
@@ -1154,6 +1196,13 @@ class Engine:
                     term=max(int(body.get("term", 0)), self.group.get("term", 0)),
                     relay=False,
                 )
+                station = body.get("station")
+                if isinstance(station, dict) and station.get("url"):
+                    await self._start_radio(station)
+            elif op == "solo":
+                # My leader left the group: I become an independent room.
+                if self.group.get("follow"):
+                    self._set_group(follow=None, relay=False)
             elif op == "follow" and body.get("leader"):
                 await self._local_join(str(body["leader"]))
             else:
@@ -1200,13 +1249,7 @@ class Engine:
             if self.group.get("follow"):
                 self._set_group(follow=None, relay=False)
                 return
-            members = [p for p in self.peers.values() if p.get("follow") == self.id]
-            if not members:
-                return
-            if self.play_state() == "playing":
-                self._set_group(relay=True)
-            else:
-                await self._handover()
+            await self._leave_as_leader()
         self.kick()
 
     async def set_members(self, gid: str, members: list[str]) -> None:
@@ -1226,17 +1269,71 @@ class Engine:
                 "POST",
                 f"/api/v2/rooms/{room_id}/volume",
                 {"volume": volume, "muted": muted},
+                wait=4,
             )
+            # Show it right away instead of after the next peer poll (which
+            # made sliders in the app jump back for a moment).
+            rec = self.peers.get(room_id)
+            if rec is not None:
+                if volume is not None:
+                    rec["volume"] = max(0, min(100, int(volume)))
+                if muted is not None:
+                    rec["muted"] = bool(muted)
+                self.broadcast_if_changed()
             return
         updates: dict[str, Any] = {}
         if volume is not None:
             updates["volume"] = max(0, min(100, int(volume)))
         if muted is not None:
             updates["muted"] = bool(muted)
-        async with self._lock:
-            self._set_group(**updates)
-            await self._apply_volume()
+        if not updates or all(self.group.get(k) == v for k, v in updates.items()):
+            return
+        # Fast path: no engine lock (a tick may hold it for a while), no
+        # snapserver status round trip, and the file is saved a moment later
+        # rather than on every step of a slider drag.
+        self.group.update(updates)
+        self._save_group_soon()
+        await self._push_volume()
         self.broadcast_if_changed()
+
+    def _save_group_soon(self, delay: float = 2.0) -> None:
+        if self._group_save is not None and not self._group_save.done():
+            return
+
+        async def later() -> None:
+            await asyncio.sleep(delay)
+            with contextlib.suppress(OSError):
+                self.store.save_group(self.group)
+
+        self._group_save = asyncio.ensure_future(later())
+
+    async def _push_volume(self) -> None:
+        """Send my volume to the snapserver I play from; drags coalesce.
+
+        While one Client.SetVolume is on its way, newer values just replace
+        the pending one, so a fast slider never builds a queue.
+        """
+
+        if self._volume_task is not None and not self._volume_task.done():
+            self._volume_dirty = True
+            return
+
+        async def run() -> None:
+            while True:
+                self._volume_dirty = False
+                limit = self.store.load_settings().volume_limit
+                percent = round(int(self.group.get("volume", 40)) * limit / 100)
+                muted = bool(self.group.get("muted", False))
+                try:
+                    await self._server_rpc().set_client_volume(self.id, percent, muted)
+                    self._applied_volume = (percent, muted)
+                except Exception:  # noqa: BLE001 - the next tick's _apply_volume reconciles
+                    logger.debug("volume push failed", exc_info=True)
+                if not self._volume_dirty:
+                    return
+
+        self._volume_task = asyncio.ensure_future(run())
+        await asyncio.shield(self._volume_task)
 
     async def set_group_volume(self, gid: str, volume: int | None, muted: bool | None) -> None:
         leader = self.resolve_leader(gid)
@@ -1245,12 +1342,18 @@ class Engine:
             raise EngineError(404, "Unknown group")
         recs = self.records()
         delta = 0 if volume is None else int(volume) - int(group["volume"])
+        jobs = []
         for rid in group["member_ids"]:
             current = int(recs.get(rid, {}).get("volume", 0))
             new = None if volume is None else max(0, min(100, current + delta))
             if volume is not None and group["volume"] == 0:
                 new = int(volume)
-            await self.set_room_volume(rid, new, muted)
+            jobs.append(self.set_room_volume(rid, new, muted))
+        # All rooms at once, not one after another.
+        results = await asyncio.gather(*jobs, return_exceptions=True)
+        errors = [r for r in results if isinstance(r, BaseException)]
+        if errors and len(errors) == len(results):
+            raise errors[0]
 
     async def control(self, gid: str, action: str) -> None:
         leader = self.resolve_leader(gid)

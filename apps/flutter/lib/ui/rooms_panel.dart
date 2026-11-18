@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -243,9 +245,10 @@ class _RoomTile extends ConsumerWidget {
                 value: (room.volume ?? 0).clamp(0, 100).toDouble(),
                 max: 100,
                 label: '${room.volume ?? 0}',
-                onChanged: offline
+                onChanged: offline ? null : (value) => ref.read(playbackProvider.notifier).dragVolume(room.id, value),
+                onChangeEnd: offline
                     ? null
-                    : (value) => ref.read(playbackProvider.notifier).setVolume(room.id, value.round()),
+                    : (value) => unawaited(ref.read(playbackProvider.notifier).commitVolume(room.id, value).catchError((_) {})),
               ),
             ],
           ),

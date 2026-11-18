@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -21,9 +22,16 @@ class System:
         self.managed = managed
         self.calls: list[tuple[str, ...]] = []
         self.active: dict[str, bool] = {}
+        # is-active answers, briefly cached: every tick asked systemctl several
+        # times (~50 ms each on a Pi), holding the engine lock that room
+        # controls wait for. start/stop/restart invalidate it.
+        self._active_cache: dict[str, tuple[float, bool]] = {}
+        self.active_ttl = 10.0
 
     async def systemctl(self, *args: str) -> int:
         self.calls.append(("systemctl", *args))
+        for unit in args[1:]:
+            self._active_cache.pop(unit, None)
         if args and args[0] in {"start", "restart"}:
             for unit in args[1:]:
                 self.active[unit] = True
@@ -50,6 +58,15 @@ class System:
     async def is_active(self, unit: str) -> bool:
         if not self.managed:
             return self.active.get(unit, False)
+        cached = self._active_cache.get(unit)
+        now = time.monotonic()
+        if cached is not None and now - cached[0] < self.active_ttl:
+            return cached[1]
+        result = await self._is_active(unit)
+        self._active_cache[unit] = (now, result)
+        return result
+
+    async def _is_active(self, unit: str) -> bool:
         try:
             proc = await asyncio.create_subprocess_exec(
                 "systemctl",

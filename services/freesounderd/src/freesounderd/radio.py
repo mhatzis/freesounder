@@ -117,19 +117,51 @@ class IcyUnavailable(Exception):
     """The server refused the side connection for now (listener limit, 5xx, ...)."""
 
 
-async def fetch_icy_title(
-    url: str, user_agent: str = "FreeSounder", wait: float = 8.0
-) -> str | None:
-    """Current ICY StreamTitle of a Shoutcast/Icecast stream.
+def describe_error(exc: BaseException) -> str:
+    """Never an empty message: "TimeoutError: no answer in 20 s" style."""
 
-    ffmpeg only prints the title once, when it opens the stream, so a long
-    session kept showing the first song. This opens a short side
-    connection with ``Icy-MetaData: 1``, reads up to the first metadata block
-    and closes. Handles "ICY 200 OK" status lines (Shoutcast v1), which HTTP
-    libraries reject, and up to three redirects.
+    text = str(exc).strip()
+    if not text and isinstance(exc, TimeoutError):
+        text = "no answer in time"
+    return f"{type(exc).__name__}: {text or 'no detail'}"[:160]
+
+
+class IcyStream:
+    """An open HTTP/ICY connection positioned at the start of the body."""
+
+    def __init__(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        status: str,
+        headers: dict[str, str],
+        url: str,
+    ) -> None:
+        self.reader = reader
+        self.writer = writer
+        self.status = status
+        self.headers = headers
+        self.url = url
+        try:
+            self.metaint = int(headers.get("icy-metaint", "0") or 0)
+        except ValueError:
+            self.metaint = 0
+
+    async def close(self) -> None:
+        self.writer.close()
+        with contextlib.suppress(Exception):
+            await self.writer.wait_closed()
+
+
+async def open_icy(url: str, user_agent: str = "FreeSounder", wait: float = 10.0) -> IcyStream:
+    """GET ``url`` with ``Icy-MetaData: 1``; follows up to three redirects.
+
+    Handles "ICY 200 OK" status lines (Shoutcast v1), which HTTP libraries
+    reject. Raises NoIcy for unusable URLs/404, IcyUnavailable for other
+    refusals (listener caps, 5xx).
     """
 
-    async def once(target: str) -> tuple[str | None, str | None]:
+    async def once(target: str) -> IcyStream | str:
         parts = urlsplit(target)
         if parts.scheme not in ("http", "https") or not parts.hostname:
             raise NoIcy(target)
@@ -158,43 +190,116 @@ async def fetch_icy_title(
                     break
                 key, _, value = line.partition(":")
                 headers[key.strip().lower()] = value.strip()
-            code = status.split(" ")[1] if " " in status else ""
-            if code in ("301", "302", "303", "307", "308") and headers.get("location"):
-                return None, urljoin(target, headers["location"])
+        except BaseException:
+            writer.close()
+            raise
+        code = status.split(" ")[1] if " " in status else ""
+        if code in ("301", "302", "303", "307", "308") and headers.get("location"):
+            writer.close()
+            return urljoin(target, headers["location"])
+        if code != "200":
+            writer.close()
             if code in ("404", "410"):
                 raise NoIcy(status)
-            if code != "200":
-                # Shoutcast/Icecast listener caps, 401/403/429/5xx: try again later.
-                raise IcyUnavailable(status)
-            metaint = int(headers.get("icy-metaint", "0") or 0)
-            if metaint <= 0:
-                raise NoIcy("no icy-metaint")
-            await reader.readexactly(metaint)
-            length = (await reader.readexactly(1))[0] * 16
-            if length == 0:
-                return "", None
-            raw = await reader.readexactly(length)
-            text = raw.rstrip(b"\0").decode("utf-8", errors="replace")
-            match = re.search(r"StreamTitle='(.*?)';", text, re.S)
-            return (match.group(1).strip() if match else ""), None
-        finally:
-            writer.close()
-            with contextlib.suppress(Exception):
-                await writer.wait_closed()
+            # Shoutcast/Icecast listener caps, 401/403/429/5xx: try again later.
+            raise IcyUnavailable(status or "empty answer")
+        return IcyStream(reader, writer, status, headers, target)
 
-    async def run() -> str | None:
+    async def run() -> IcyStream:
         target = url
         for _ in range(4):
-            title, redirect = await once(target)
-            if redirect is None:
-                return title or None
-            target = redirect
+            got = await once(target)
+            if isinstance(got, IcyStream):
+                return got
+            target = got
         raise NoIcy("too many redirects")
 
     return await asyncio.wait_for(run(), timeout=wait)
 
 
-TITLE_POLL = 15.0
+def parse_stream_title(raw: bytes) -> str | None:
+    """StreamTitle from an ICY metadata block (UTF-8, else Latin-1)."""
+
+    data = raw.rstrip(b"\0")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        text = data.decode("latin-1")
+    match = re.search(r"StreamTitle='(.*?)';", text, re.S)
+    if match is None:
+        return None
+    return match.group(1).strip()
+
+
+class IcyDemuxer:
+    """Splits an ICY body into audio bytes and metadata blocks.
+
+    Every ``metaint`` audio bytes the server inserts one length byte (x16)
+    and that many bytes of ``StreamTitle='...';`` metadata.
+    """
+
+    def __init__(self, metaint: int) -> None:
+        self.metaint = metaint
+        self._left = metaint  # audio bytes until the next length byte
+        self._meta_len: int | None = None
+        self._meta = bytearray()
+
+    def feed(self, chunk: bytes) -> tuple[bytes, list[str | None]]:
+        audio = bytearray()
+        titles: list[str | None] = []
+        i = 0
+        n = len(chunk)
+        while i < n:
+            if self._meta_len is None and self._left > 0:
+                take = min(self._left, n - i)
+                audio += chunk[i : i + take]
+                i += take
+                self._left -= take
+            elif self._meta_len is None:
+                self._meta_len = chunk[i] * 16
+                i += 1
+                self._meta.clear()
+                if self._meta_len == 0:
+                    self._meta_len = None
+                    self._left = self.metaint
+                    titles.append(None)  # a block with no change: still a heartbeat
+            else:
+                take = min(self._meta_len - len(self._meta), n - i)
+                self._meta += chunk[i : i + take]
+                i += take
+                if len(self._meta) == self._meta_len:
+                    titles.append(parse_stream_title(bytes(self._meta)) or "")
+                    self._meta_len = None
+                    self._left = self.metaint
+        return bytes(audio), titles
+
+
+async def fetch_icy_title(
+    url: str, user_agent: str = "FreeSounder", wait: float = 20.0
+) -> str | None:
+    """Current ICY StreamTitle via a short side connection (fallback only).
+
+    The player reads titles from the stream it is already playing (see
+    RadioPlayer._pump); this is only used when that is not possible.
+    """
+
+    async def run() -> str | None:
+        stream = await open_icy(url, user_agent, wait)
+        try:
+            if stream.metaint <= 0:
+                raise NoIcy("no icy-metaint")
+            await stream.reader.readexactly(stream.metaint)
+            length = (await stream.reader.readexactly(1))[0] * 16
+            if length == 0:
+                return None
+            return parse_stream_title(await stream.reader.readexactly(length)) or None
+        finally:
+            await stream.close()
+
+    return await asyncio.wait_for(run(), timeout=wait)
+
+
+TITLE_POLL = 30.0  # fallback side-connection poll (stream metadata is live)
 
 
 class RadioPlayer:
@@ -224,6 +329,9 @@ class RadioPlayer:
         self.title_changed_at: float | None = None
         self.title_checked_at: float | None = None
         self.title_error: str | None = None
+        self.title_source: str | None = None  # "stream" (live ICY) or "poll"
+        self.opener = open_icy  # overridable in tests
+        self._pump: asyncio.Task[None] | None = None
 
     @property
     def running(self) -> bool:
@@ -232,6 +340,8 @@ class RadioPlayer:
         return self._proc is not None and self._proc.returncode is None
 
     def command(self, url: str) -> list[str]:
+        """ffmpeg reading the station itself (streams without ICY metadata)."""
+
         return [
             self.ffmpeg,
             "-nostdin",
@@ -248,16 +358,24 @@ class RadioPlayer:
             USER_AGENT,
             "-i",
             url,
-            "-vn",
-            "-f",
-            "s16le",
-            "-ar",
-            "44100",
-            "-ac",
-            "2",
-            "-y",
-            self.fifo,
+            *self._output(),
         ]
+
+    def pipe_command(self) -> list[str]:
+        """ffmpeg decoding audio we feed it (we read the ICY stream ourselves)."""
+
+        return [
+            self.ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "info",
+            "-i",
+            "pipe:0",
+            *self._output(),
+        ]
+
+    def _output(self) -> list[str]:
+        return ["-vn", "-f", "s16le", "-ar", "44100", "-ac", "2", "-y", self.fifo]
 
     async def play(self, station: dict[str, Any]) -> None:
         await self.stop(keep_station=False)
@@ -276,22 +394,111 @@ class RadioPlayer:
         if not url:
             return
         self.stream_title = None
-        self._start_titles(url)
+        self.title_error = None
+        if self._pump is not None:
+            self._pump.cancel()
+            self._pump = None
         if not self.managed:
             self._fake_running = True
+            self.title_source = "poll"
+            self._start_titles(url)
             return
+        # Read the stream ourselves when it carries ICY metadata: the song
+        # title then comes with the audio, every few seconds, on the one
+        # connection that is already playing (no second connection to time out).
+        stream: IcyStream | None = None
+        try:
+            stream = await self.opener(url, USER_AGENT, 10.0)
+            if stream.metaint <= 0:
+                await stream.close()
+                stream = None
+        except Exception as exc:  # noqa: BLE001 - fall back to ffmpeg's own HTTP
+            logger.info(
+                "Reading %s directly failed (%s); ffmpeg opens it", url, describe_error(exc)
+            )
+            stream = None
+        cmd = self.pipe_command() if stream is not None else self.command(url)
         try:
             self._proc = await asyncio.create_subprocess_exec(
-                *self.command(url),
-                stdin=asyncio.subprocess.DEVNULL,
+                *cmd,
+                stdin=asyncio.subprocess.PIPE if stream is not None else asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.PIPE,
             )
         except OSError:
             logger.warning("Could not start ffmpeg", exc_info=True)
             self._proc = None
+            if stream is not None:
+                await stream.close()
             return
         self._reader = asyncio.create_task(self._read_stderr(self._proc))
+        if stream is not None:
+            self.title_source = "stream"
+            self._pump = asyncio.create_task(self._pump_stream(self._proc, stream, url))
+        else:
+            self.title_source = "poll"
+            self._start_titles(url)
+
+    async def _pump_stream(
+        self, proc: asyncio.subprocess.Process, stream: IcyStream | None, url: str
+    ) -> None:
+        """Stream -> ffmpeg stdin, taking the ICY metadata out on the way.
+
+        Reconnects (1 s .. 15 s) if the station drops us, as ffmpeg's own
+        -reconnect would.
+        """
+
+        delay = 1.0
+        try:
+            while self.station is not None and self.station.get("url") == url:
+                if proc.returncode is not None or proc.stdin is None:
+                    return
+                if stream is None:
+                    try:
+                        stream = await self.opener(url, USER_AGENT, 10.0)
+                    except Exception as exc:  # noqa: BLE001
+                        self.title_error = f"stream: {describe_error(exc)}"
+                        await asyncio.sleep(delay)
+                        delay = min(15.0, delay * 2)
+                        continue
+                    if stream.metaint <= 0:
+                        # The server stopped sending metadata: ffmpeg still plays
+                        # it; titles come from the fallback poll.
+                        self.title_error = "stream: no ICY metadata after reconnect"
+                demux = IcyDemuxer(stream.metaint) if stream.metaint > 0 else None
+                try:
+                    while True:
+                        chunk = await asyncio.wait_for(stream.reader.read(16384), timeout=30)
+                        if not chunk:
+                            raise ConnectionResetError("station closed the stream")
+                        if demux is not None:
+                            audio, titles = demux.feed(chunk)
+                            for title in titles:
+                                self.title_checked_at = time.time()
+                                self.title_error = None
+                                if title:
+                                    self._set_title(title)
+                        else:
+                            audio = chunk
+                        if audio:
+                            proc.stdin.write(audio)
+                            await proc.stdin.drain()
+                        delay = 1.0
+                except (BrokenPipeError, ConnectionResetError) as exc:
+                    if proc.returncode is not None:
+                        return
+                    self.title_error = f"stream: {describe_error(exc)}"
+                except Exception as exc:  # noqa: BLE001 - reconnect on anything else
+                    self.title_error = f"stream: {describe_error(exc)}"
+                finally:
+                    await stream.close()
+                    stream = None
+                logger.info("Radio stream %s dropped (%s); reconnecting", url, self.title_error)
+                await asyncio.sleep(delay)
+                delay = min(15.0, delay * 2)
+        finally:
+            if stream is not None:
+                await stream.close()
 
     async def _read_stderr(self, proc: asyncio.subprocess.Process) -> None:
         assert proc.stderr is not None
@@ -323,7 +530,7 @@ class RadioPlayer:
         """Restart the title poll if it ever ended while the station plays."""
 
         url = (self.station or {}).get("url")
-        if not (self.poll_titles and url and not self.paused):
+        if not (self.poll_titles and url and not self.paused and self.title_source == "poll"):
             return
         if self._titles is None or self._titles.done():
             logger.warning("Song-title poll was not running for %s; restarting it", url)
@@ -347,13 +554,13 @@ class RadioPlayer:
             except asyncio.CancelledError:
                 raise
             except NoIcy as exc:
-                if self.title_error != f"no ICY metadata ({exc})":
+                if self.title_error != f"poll: no ICY metadata ({exc})":
                     logger.info("No ICY metadata on %s (%s); re-checking every 5 min", url, exc)
-                self.title_error = f"no ICY metadata ({exc})"
+                self.title_error = f"poll: no ICY metadata ({exc})"
                 delay = self.no_icy_recheck
                 continue
             except Exception as exc:  # noqa: BLE001 - the poll must survive anything
-                self.title_error = f"{type(exc).__name__}: {exc}"[:120]
+                self.title_error = f"poll: {describe_error(exc)}"
                 delay = min(self.title_backoff_max, max(self.title_poll, delay * 2))
                 logger.info("Song-title poll failed for %s: %s", url, self.title_error)
                 continue
@@ -375,6 +582,11 @@ class RadioPlayer:
         if self._titles is not None:
             self._titles.cancel()
             self._titles = None
+        if self._pump is not None:
+            self._pump.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._pump
+            self._pump = None
         proc, self._proc = self._proc, None
         if proc is not None and proc.returncode is None:
             proc.terminate()

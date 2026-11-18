@@ -20,6 +20,7 @@ class NowPlaying {
     this.metaFrom,
     this.titleCheckedAt,
     this.titleError,
+    this.titleSource,
   });
 
   final String playerId;
@@ -52,6 +53,10 @@ class NowPlaying {
   /// Radio: when the leader last read the stream's song title, and why not.
   final DateTime? titleCheckedAt;
   final String? titleError;
+
+  /// "stream": titles read from the playing stream's ICY metadata; "poll":
+  /// from a separate connection (fallback).
+  final String? titleSource;
 
   bool get isPlaying => state == 'playing';
   bool get isPaused => state == 'paused';
@@ -107,6 +112,7 @@ class NowPlaying {
       metaFrom: json['meta_from'] as String?,
       titleCheckedAt: _epoch(json['title_checked_at']),
       titleError: json['title_error'] as String?,
+      titleSource: json['title_source'] as String?,
     );
   }
 
@@ -132,6 +138,7 @@ class NowPlaying {
       metaFrom: metaFrom,
       titleCheckedAt: titleCheckedAt,
       titleError: titleError,
+      titleSource: titleSource,
     );
   }
 }
@@ -158,8 +165,11 @@ String metadataDebugLine(NowPlaying np, [DateTime? now]) {
   final at = now ?? DateTime.now();
   return [
     if (np.metaUpdatedAt != null) 'song changed ${_clock(np.metaUpdatedAt!)}',
-    if (np.titleCheckedAt != null) 'title read ${_ago(np.titleCheckedAt!, at)}',
-    if (np.titleError != null) 'title poll: ${np.titleError}',
+    if (np.titleCheckedAt != null)
+      '${np.titleSource == 'poll' ? 'title poll' : 'stream title'} ${_ago(np.titleCheckedAt!, at)}'
+    else if (np.titleSource != null)
+      '${np.titleSource == 'poll' ? 'title poll' : 'stream title'}: none yet',
+    if (np.titleError != null && np.titleError!.trim().isNotEmpty) 'error ${np.titleError}',
     if (np.metaFrom != null) 'by ${np.metaFrom}',
     if (np.receivedAt != null) 'app got it ${_ago(np.receivedAt!, at)}',
   ].join(' · ');
