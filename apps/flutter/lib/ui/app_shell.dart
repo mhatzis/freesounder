@@ -171,6 +171,7 @@ class _NowPlayingCanvas extends ConsumerWidget {
                                       onTap: state.rooms.isEmpty ? null : () => showNowPlayingScreen(context),
                                       child: Artwork(
                                         urls: np?.artworkCandidates ?? const [],
+                                        trackKey: np?.trackKey,
                                         icon: np?.source == 'radio' ? Icons.radio : null,
                                       ),
                                     ),

@@ -12,6 +12,7 @@ import '../spotify/spotify_store.dart';
 import '../models/player_settings.dart';
 import '../models/radio_station.dart';
 import '../models/room.dart';
+import '../ui/artwork.dart' show artworkGeneration;
 
 class AppConfig {
   const AppConfig({
@@ -89,6 +90,7 @@ class PlaybackState {
     List<Room>? rooms,
     String? activeRoomId,
     NowPlaying? nowPlaying,
+    bool clearNowPlaying = false,
     Map<String, NowPlaying>? nowPlayingByRoom,
     bool? mockMode,
     bool? connected,
@@ -107,7 +109,7 @@ class PlaybackState {
     return PlaybackState(
       rooms: rooms ?? this.rooms,
       activeRoomId: activeRoomId ?? this.activeRoomId,
-      nowPlaying: nowPlaying ?? this.nowPlaying,
+      nowPlaying: clearNowPlaying ? null : (nowPlaying ?? this.nowPlaying),
       nowPlayingByRoom: nowPlayingByRoom ?? this.nowPlayingByRoom,
       mockMode: mockMode ?? this.mockMode,
       connected: connected ?? this.connected,
@@ -199,6 +201,7 @@ class PlaybackStore extends Notifier<PlaybackState> {
       _heartbeat?.cancel();
       _retryTimer?.cancel();
       _events?.cancel();
+      _npCheck?.cancel();
       _client?.close();
     });
     if (config.forceDemo) {
@@ -629,6 +632,7 @@ class PlaybackStore extends Notifier<PlaybackState> {
   /// reopen the event stream so the screen is never stale after a wake.
   Future<void> appResumed() async {
     _foreground = true;
+    artworkGeneration.value++; // reload art that failed while suspended
     final client = _client;
     if (client == null || state.mockMode) {
       return;
@@ -661,7 +665,22 @@ class PlaybackStore extends Notifier<PlaybackState> {
       final rooms = [
         for (final item in data) Room.fromJson(item as Map<String, dynamic>),
       ];
-      state = state.copyWith(rooms: rooms, connected: true, clearError: true);
+      // The rooms list carries each room's song and art too. If a room's
+      // now playing disagrees (a missed event), drop it so the row shows the
+      // fresh values, and re-fetch the active room's.
+      final byRoom = Map<String, NowPlaying>.of(state.nowPlayingByRoom);
+      var activeStale = false;
+      for (final room in rooms) {
+        final np = byRoom[room.id];
+        if (np != null && (np.title != room.nowTitle || np.imageUrl != room.nowImageUrl)) {
+          byRoom.remove(room.id);
+          activeStale = activeStale || room.id == state.activeRoomId;
+        }
+      }
+      state = state.copyWith(rooms: rooms, nowPlayingByRoom: byRoom, connected: true, clearError: true);
+      if (activeStale) {
+        _scheduleNowPlayingCheck();
+      }
     } else if (event == 'now_playing' && data is Map<String, dynamic>) {
       final np = NowPlaying.fromJson(data);
       final byRoom = Map<String, NowPlaying>.of(state.nowPlayingByRoom)..[np.playerId] = np;
@@ -684,12 +703,48 @@ class PlaybackStore extends Notifier<PlaybackState> {
       );
       return;
     }
-    state = state.copyWith(activeRoomId: roomId);
+    // Show what we already know for this room right away (never the previous
+    // room's song and cover), then confirm with the player.
+    final known = state.nowPlayingByRoom[roomId];
+    state = state.copyWith(activeRoomId: roomId, nowPlaying: known, clearNowPlaying: known == null);
+    unawaited(_refreshNowPlaying(roomId));
+  }
+
+  Timer? _npCheck;
+
+  /// The rooms list says the active room's song changed but no now-playing
+  /// event followed: fetch it (once, shortly after, in case the event is
+  /// just behind).
+  void _scheduleNowPlayingCheck() {
+    if (_npCheck?.isActive ?? false) {
+      return;
+    }
+    _npCheck = Timer(const Duration(milliseconds: 800), () {
+      final active = state.activeRoomId;
+      if (active == null || _disposed) {
+        return;
+      }
+      final room = state.rooms.where((r) => r.id == active).firstOrNull;
+      final np = state.nowPlayingByRoom[active];
+      if (room != null && (np == null || np.title != room.nowTitle || np.imageUrl != room.nowImageUrl)) {
+        unawaited(_refreshNowPlaying(active));
+      }
+    });
+  }
+
+  Future<void> _refreshNowPlaying(String roomId) async {
     final client = _client;
-    if (client != null) {
-      client.nowPlaying(roomId).then((np) {
-        state = state.copyWith(nowPlaying: np);
-      });
+    if (client == null) {
+      return;
+    }
+    try {
+      final np = await client.nowPlaying(roomId).timeout(const Duration(seconds: 4));
+      if (_disposed || !identical(client, _client) || state.activeRoomId != roomId) {
+        return; // user moved on: don't paint an old room's song
+      }
+      state = state.copyWith(nowPlaying: np, nowPlayingByRoom: {...state.nowPlayingByRoom, roomId: np});
+    } on Object {
+      // The event stream or the next heartbeat will catch up.
     }
   }
 

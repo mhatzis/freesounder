@@ -96,6 +96,7 @@ class _NowPlayingScreenState extends ConsumerState<NowPlayingScreen> {
                       child: Artwork(
                         key: const Key('np-screen-art'),
                         urls: np?.artworkCandidates ?? const [],
+                        trackKey: np?.trackKey,
                         icon: np?.source == 'radio' ? Icons.radio : null,
                       ),
                     ),

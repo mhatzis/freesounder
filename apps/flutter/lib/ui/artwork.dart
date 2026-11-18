@@ -2,18 +2,29 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+/// Bumped when the app comes back to the foreground, so artwork that failed
+/// to load while suspended (and fell back to the logo) is fetched again.
+final artworkGeneration = ValueNotifier<int>(0);
+
 /// Cover art with fallbacks: each URL in turn, then the FreeSounder logo.
 class Artwork extends StatelessWidget {
-  const Artwork({super.key, this.urls = const [], this.icon});
+  const Artwork({super.key, this.urls = const [], this.icon, this.trackKey});
 
   final List<String> urls;
+
+  /// The song this art belongs to ([NowPlaying.trackKey]). A new song always
+  /// rebuilds the image, so the previous cover can't stay on screen.
+  final String? trackKey;
 
   /// Shown on the logo fallback, e.g. a radio icon.
   final IconData? icon;
 
   @override
   Widget build(BuildContext context) {
-    return _build(context, 0);
+    return ValueListenableBuilder<int>(
+      valueListenable: artworkGeneration,
+      builder: (context, _, _) => _build(context, 0),
+    );
   }
 
   Widget _build(BuildContext context, int index) {
@@ -38,8 +49,9 @@ class Artwork extends StatelessWidget {
     }
     return Image.network(
       urls[index],
-      key: ValueKey(urls[index]),
+      key: ValueKey('${artworkGeneration.value}|${trackKey ?? ''}|${urls[index]}'),
       fit: BoxFit.cover,
+      // Only smooths reloads of the same song's image; a new song has a new key.
       gaplessPlayback: true,
       errorBuilder: (context, _, _) => _build(context, index + 1),
     );

@@ -7,6 +7,7 @@ import base64
 import hashlib
 import logging
 import re
+import time
 from collections import OrderedDict
 from typing import Any
 
@@ -41,12 +42,14 @@ class ArtLookup:
     """
 
     MISSING = object()
+    RETRY_AFTER = 60.0  # seconds before a failed (network) lookup is tried again
 
     def __init__(self, client: httpx.AsyncClient, *, enabled: bool = True, size: int = 300) -> None:
         self._client = client
         self.enabled = enabled
         self._cache: OrderedDict[str, str | None] = OrderedDict()
         self._inflight: set[str] = set()
+        self._failed: dict[str, float] = {}  # key -> monotonic time of a network error
         self._size = size
         self.on_found: Any = None  # callback(), e.g. engine.kick
 
@@ -61,6 +64,9 @@ class ArtLookup:
         if key in self._cache:
             self._cache.move_to_end(key)
             return self._cache[key]
+        failed = self._failed.get(key)
+        if failed is not None and time.monotonic() - failed < self.RETRY_AFTER:
+            return None
         if key not in self._inflight:
             self._inflight.add(key)
             with _suppress_no_loop():
@@ -70,8 +76,15 @@ class ArtLookup:
     async def _fill(self, key: str, artist: str, song: str) -> None:
         try:
             url = await self.lookup(artist, song)
+        except _LookupError:
+            # Network trouble: no art for now, try again later (not cached).
+            self._failed[key] = time.monotonic()
+            if len(self._failed) > self._size:
+                self._failed.clear()
+            return
         finally:
             self._inflight.discard(key)
+        self._failed.pop(key, None)
         self._cache[key] = url
         while len(self._cache) > self._size:
             self._cache.popitem(last=False)
@@ -85,9 +98,11 @@ class ArtLookup:
                 params={"term": f"{artist} {song}", "media": "music", "entity": "song", "limit": 5},
                 timeout=6,
             )
-            data = res.json() if res.status_code == 200 else {}
-        except (httpx.HTTPError, ValueError):
-            return None
+            if res.status_code != 200:
+                raise _LookupError(res.status_code)
+            data = res.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise _LookupError(str(exc)) from exc
         results = data.get("results") or []
         wanted = artist.lower()
         best = next(
@@ -98,6 +113,10 @@ class ArtLookup:
         if not art:
             return None
         return re.sub(r"/\d+x\d+bb\.", "/600x600bb.", art)
+
+
+class _LookupError(Exception):
+    """iTunes did not answer (network, rate limit): retry later."""
 
 
 class _suppress_no_loop:
@@ -115,32 +134,55 @@ class AirplayArt:
         self.data: bytes | None = None
         self.mime = "image/jpeg"
         self.tag: str | None = None
+        self.track: str | None = None  # the song the current picture belongs to
+        self.album = ""
         self.source_path: str | None = None
 
     def update(self, meta: dict[str, Any]) -> str | None:
-        """Remember the cover in ``meta``; returns a short tag for the URL."""
+        """Remember the cover in ``meta``; returns a short tag for the URL.
 
+        Never hands the previous song's cover to a new song: AirPlay senders
+        send the title first and the picture a moment later, and snapserver
+        keeps the old picture until then. A new track with no picture yet, or
+        with the very same picture but a different album, gets no art (the
+        app shows the fallback) until its own cover arrives.
+        """
+
+        track = _track_key(meta)
+        album = str(meta.get("album") or "").strip().lower()
+        tag: str | None = None
         art = meta.get("artData")
+        url = meta.get("artUrl")
         if isinstance(art, dict) and art.get("data"):
             raw = str(art["data"])
             tag = hashlib.sha1(raw.encode()).hexdigest()[:12]
             if tag != self.tag:
                 try:
-                    self.data = base64.b64decode(raw)
+                    data = base64.b64decode(raw)
                 except ValueError:
                     return None
                 ext = str(art.get("extension") or "jpg").lower().lstrip(".")
+                self.data, self.source_path = data, None
                 self.mime = "image/png" if ext == "png" else "image/jpeg"
-                self.tag = tag
-                self.source_path = None
-            return self.tag
-        url = meta.get("artUrl")
-        if isinstance(url, str) and url:
+        elif isinstance(url, str) and url:
             path = httpx.URL(url).raw_path.decode() if "://" in url else url
             if not path.startswith("/__image_cache"):
                 return None
             tag = hashlib.sha1(path.encode()).hexdigest()[:12]
             if tag != self.tag:
-                self.tag, self.source_path, self.data = tag, path, None
-            return self.tag
-        return None
+                self.source_path, self.data = path, None
+        if tag is None:
+            return self.tag if track == self.track else None
+        if tag == self.tag and track != self.track and album != self.album:
+            return None  # same picture as the last song, different album: stale
+        self.tag, self.track, self.album = tag, track, album
+        return self.tag
+
+
+def _track_key(meta: dict[str, Any]) -> str:
+    artist = meta.get("artist")
+    if isinstance(artist, list):
+        artist = ", ".join(str(a) for a in artist)
+    return "\x00".join(str(meta.get(k) or "").strip().lower() for k in ("title", "album")) + (
+        "\x00" + str(artist or "").strip().lower()
+    )

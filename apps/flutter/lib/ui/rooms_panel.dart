@@ -173,7 +173,7 @@ class _RoomTile extends ConsumerWidget {
                     ClipRRect(
                       key: Key('room-art-${room.id}'),
                       borderRadius: BorderRadius.circular(6),
-                      child: SizedBox(width: 36, height: 36, child: Artwork(urls: art)),
+                      child: SizedBox(width: 36, height: 36, child: Artwork(urls: art, trackKey: np?.trackKey ?? '${room.nowTitle}|${room.nowImageUrl}')),
                     )
                   else
                     Icon(

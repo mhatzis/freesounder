@@ -42,7 +42,7 @@ class MiniPlayer extends ConsumerWidget {
                   children: [
                     ClipRRect(
                       borderRadius: BorderRadius.circular(8),
-                      child: SizedBox(width: 40, height: 40, child: Artwork(urls: np?.artworkCandidates ?? const [])),
+                      child: SizedBox(width: 40, height: 40, child: Artwork(urls: np?.artworkCandidates ?? const [], trackKey: np?.trackKey)),
                     ),
                     const SizedBox(width: 12),
                     Expanded(

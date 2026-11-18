@@ -475,6 +475,12 @@ class Engine:
             return
         self._last_broadcast = blob
         for queue in list(self._listeners):
+            if queue.maxsize and queue.qsize() + len(events) > queue.maxsize:
+                # A slow client fell behind. Each broadcast is a full snapshot,
+                # so drop the stale backlog rather than the newest state (which
+                # left the app showing the previous song and cover).
+                while not queue.empty():
+                    queue.get_nowait()
             for event in events:
                 with contextlib.suppress(asyncio.QueueFull):
                     queue.put_nowait(event)

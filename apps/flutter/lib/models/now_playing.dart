@@ -43,6 +43,10 @@ class NowPlaying {
   bool get isPaused => state == 'paused';
   bool get hasTrack => title != null && title!.isNotEmpty;
 
+  /// Identity of the song on screen. Art widgets are keyed by it, so a new
+  /// song always gets a fresh image even when the art URL did not change.
+  String get trackKey => [source, uri, title, artist, album, imageUrl].map((v) => v ?? '').join('\u0000');
+
   /// Position now, moving on while playing (clamped to the duration).
   double? livePosition([DateTime? now]) {
     final base = position;
