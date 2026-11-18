@@ -91,9 +91,19 @@ def create_app(
         hh = store.household()
         body = await request.body()
         if hh is None or not peers.verify(
-            hh.key, hh.id, request.method, request.url.path, body, dict(request.headers)
+            hh.key,
+            hh.id,
+            request.method,
+            request.url.path,
+            body,
+            dict(request.headers),
+            now=engine.clock(),
         ):
-            raise HTTPException(status_code=403, detail="Not a member of this household")
+            raise HTTPException(
+                status_code=403,
+                detail="Not a member of this household",
+                headers={peers.HDR_NOW: str(int(engine.clock()))},
+            )
 
     def info() -> dict[str, Any]:
         hh = store.household()
@@ -240,8 +250,7 @@ def create_app(
             raise HTTPException(
                 status_code=502,
                 detail=(
-                    f"New player did not answer this player (tried {', '.join(urls)}): "
-                    f"{last_error}"
+                    f"New player did not answer this player (tried {', '.join(urls)}): {last_error}"
                 ),
             )
         if res.status_code >= 400:

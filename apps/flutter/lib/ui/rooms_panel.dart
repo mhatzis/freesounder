@@ -357,25 +357,48 @@ class _GroupSheetState extends ConsumerState<_GroupSheet> {
                 padding: EdgeInsets.symmetric(vertical: 16),
                 child: Text('Add a second player to group rooms.'),
               ),
-            for (final other in others)
-              CheckboxListTile(
-                key: Key('group-member-${other.id}'),
-                contentPadding: EdgeInsets.zero,
-                value: _selected.contains(other.id),
-                title: Text(other.name),
-                subtitle: other.isGrouped && !widget.room.memberIds.contains(other.id)
-                    ? Text('Now in ${other.groupName ?? 'another group'}')
-                    : null,
-                onChanged: _busy
-                    ? null
-                    : (v) => setState(() {
-                        if (v == true) {
-                          _selected.add(other.id);
-                        } else {
-                          _selected.remove(other.id);
-                        }
-                      }),
+            if (others.length > 2)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton(
+                  key: const Key('group-all'),
+                  onPressed: _busy
+                      ? null
+                      : () => setState(() {
+                          final all = others.every((o) => _selected.contains(o.id));
+                          _selected = all ? {widget.room.id} : {widget.room.id, ...others.map((o) => o.id)};
+                        }),
+                  child: Text(others.every((o) => _selected.contains(o.id)) ? 'Select none' : 'Select all rooms'),
+                ),
               ),
+            // Up to 10 rooms in a home: the list scrolls, Done stays on screen.
+            Flexible(
+              child: ListView(
+                key: const Key('group-member-list'),
+                shrinkWrap: true,
+                children: [
+                  for (final other in others)
+                    CheckboxListTile(
+                      key: Key('group-member-${other.id}'),
+                      contentPadding: EdgeInsets.zero,
+                      value: _selected.contains(other.id),
+                      title: Text(other.name),
+                      subtitle: other.isGrouped && !widget.room.memberIds.contains(other.id)
+                          ? Text('Now in ${other.groupName ?? 'another group'}')
+                          : null,
+                      onChanged: _busy
+                          ? null
+                          : (v) => setState(() {
+                              if (v == true) {
+                                _selected.add(other.id);
+                              } else {
+                                _selected.remove(other.id);
+                              }
+                            }),
+                    ),
+                ],
+              ),
+            ),
             if (widget.room.isGrouped)
               TextButton(
                 key: const Key('group-leave'),

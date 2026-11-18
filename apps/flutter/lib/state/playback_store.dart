@@ -155,6 +155,9 @@ class LinkTimings {
 
 final linkTimingsProvider = Provider<LinkTimings>((ref) => const LinkTimings());
 
+/// The demo household (overridable in tests, e.g. a 10-room home).
+final mockHouseholdProvider = Provider<MockHousehold Function()>((ref) => MockHousehold.new);
+
 /// mDNS discovery of players (overridable in tests).
 final discoveryProvider = Provider<Future<List<DiscoveredHost>> Function(Duration timeout)>(
   (ref) => (timeout) => discoverControlApis(timeout: timeout),
@@ -188,7 +191,7 @@ class PlaybackStore extends Notifier<PlaybackState> {
 
   @override
   PlaybackState build() {
-    _mock = MockHousehold();
+    _mock = ref.read(mockHouseholdProvider)();
     final config = ref.watch(appConfigProvider);
     ref.onDispose(() {
       _disposed = true;

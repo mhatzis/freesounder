@@ -151,6 +151,10 @@ class Engine:
         # Unverified addresses of household members (setup hints, gossip);
         # used as poll candidates, trusted only once a signed fetch succeeds.
         self.peer_hints: dict[str, tuple[str, int]] = {}
+        # Wall clock used for peer signatures (overridable in tests), and the
+        # learned offset of each peer's clock from ours.
+        self.clock = time.time
+        self.clock_offset: dict[str, float] = {}
         self.source = "none"
         self.np: dict[str, Any] = {}
         self._prev_playing = {"spotify": False, "airplay": False, "radio": False}
@@ -224,6 +228,7 @@ class Engine:
             "follow": self.group.get("follow"),
             "term": self.group.get("term", 0),
             "relay": bool(self.group.get("relay")),
+            "took_over": self.group.get("took_over"),
             "volume": int(self.group.get("volume", 40)),
             "muted": bool(self.group.get("muted", False)),
             "available": True,
@@ -531,11 +536,7 @@ class Engine:
         async def fetch(pid: str, ip: str, port: int) -> None:
             path = "/api/v2/peer/state"
             try:
-                res = await self.http.get(
-                    f"http://{ip}:{port}{path}",
-                    headers=peers.sign(hh.key, hh.id, "GET", path),
-                    timeout=2.5,
-                )
+                res = await self._signed(pid, "GET", f"http://{ip}:{port}{path}", path, b"", 2.5)
                 if res.status_code != 200:
                     return
                 rec = res.json()
@@ -574,6 +575,22 @@ class Engine:
         follow = self.group.get("follow")
         if not follow:
             self._lost_since = None
+            # Two members took over from the same lost leader at once: the
+            # worse one (and so its followers) folds into the better one.
+            old = self.group.get("took_over")
+            if old and not self.peer_alive(old):
+                rivals = [
+                    p
+                    for p in self.peers.values()
+                    if p.get("took_over") == old
+                    and p.get("follow") is None
+                    and self.peer_alive(p["id"])
+                ]
+                if rivals:
+                    best = min([self.self_record(), *rivals], key=score)
+                    if best["id"] != self.id:
+                        self._set_group(follow=best["id"], took_over=None)
+                        return
             members = [p for p in self.peers.values() if p.get("follow") == self.id]
             if self.group.get("relay") and not any(self.peer_alive(m["id"]) for m in members):
                 self._set_group(relay=False)
@@ -599,6 +616,22 @@ class Engine:
         await self._failover(follow)
 
     async def _failover(self, old_leader: str) -> None:
+        # Someone in the group may already have taken over (players fail over
+        # one after another; in a big group the first ones to notice have
+        # already moved). Follow that successor rather than electing again.
+        successors = [
+            p
+            for p in self.peers.values()
+            if p.get("took_over") == old_leader
+            and p.get("follow") is None
+            and self.peer_alive(p["id"])
+        ]
+        if successors:
+            best = min(successors, key=score)
+            self._lost_since = None
+            if best["id"] != self.id:
+                self._set_group(follow=best["id"])
+            return
         mates = [
             p
             for p in self.peers.values()
@@ -612,7 +645,7 @@ class Engine:
         self._lost_since = None
         if best["id"] == self.id:
             term = max([int(c.get("term", 0)) for c in candidates] + [0]) + 1
-            self._set_group(follow=None, term=term, relay=False)
+            self._set_group(follow=None, term=term, relay=False, took_over=old_leader)
             station = old.get("station")
             if station and old.get("source") == "radio" and old.get("state") == "playing":
                 await self._start_radio(station)
@@ -1021,12 +1054,9 @@ class Engine:
         if rec is None or not rec.get("ip") or hh is None:
             raise EngineError(404, f"Unknown player {pid}")
         raw = json.dumps(body).encode() if body is not None else b""
-        headers = peers.sign(hh.key, hh.id, method, path, raw)
-        headers["Content-Type"] = "application/json"
-        headers["X-FS-Forwarded"] = "1"
         url = f"http://{rec['ip']}:{rec.get('port', 8080)}{path}"
         try:
-            res = await self.http.request(method, url, content=raw, headers=headers, timeout=wait)
+            res = await self._signed(pid, method, url, path, raw, wait)
         except httpx.HTTPError as exc:
             raise EngineError(502, f"{rec.get('room', pid)} did not answer: {exc}") from exc
         try:
@@ -1037,6 +1067,37 @@ class Engine:
             detail = data.get("detail") if isinstance(data, dict) else res.text[:200]
             raise EngineError(res.status_code, str(detail))
         return data
+
+    async def _signed(
+        self, pid: str, method: str, url: str, path: str, raw: bytes, wait: float
+    ) -> httpx.Response:
+        """A household-signed request to a peer, tolerant of clock skew.
+
+        If the peer rejects the signature and reports its own time, sign
+        again on the peer's clock (remembered per peer).
+        """
+        hh = self.store.household()
+        assert hh is not None
+
+        async def send() -> httpx.Response:
+            now = self.clock() + self.clock_offset.get(pid, 0.0)
+            headers = peers.sign(hh.key, hh.id, method, path, raw, now=now)
+            headers["Content-Type"] = "application/json"
+            headers["X-FS-Forwarded"] = "1"
+            return await self.http.request(method, url, content=raw, headers=headers, timeout=wait)
+
+        res = await send()
+        theirs = res.headers.get(peers.HDR_NOW) if res.status_code == 403 else None
+        if theirs is not None:
+            try:
+                offset = float(theirs) - self.clock()
+            except ValueError:
+                return res
+            if abs(offset - self.clock_offset.get(pid, 0.0)) > peers.MAX_SKEW / 2:
+                self.clock_offset[pid] = offset
+                logger.warning("clock of %s is %.0f s off ours; signing on its clock", pid, offset)
+                res = await send()
+        return res
 
     async def handle_peer_command(self, body: dict[str, Any]) -> dict[str, Any]:
         op = body.get("op")

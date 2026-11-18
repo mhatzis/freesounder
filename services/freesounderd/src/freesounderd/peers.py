@@ -9,6 +9,11 @@ import time
 HDR_HOUSEHOLD = "X-FS-Household"
 HDR_TIME = "X-FS-Time"
 HDR_SIG = "X-FS-Sig"
+# Sent back on a rejected request so a peer whose clock is off (a Pi has no
+# RTC; until NTP syncs after a reflash it can be hours or days out) can sign
+# with the receiver's time instead. The time itself is not a secret; replay
+# protection stays at MAX_SKEW of the receiver's own clock.
+HDR_NOW = "X-FS-Now"
 MAX_SKEW = 120
 
 
@@ -17,8 +22,16 @@ def _message(method: str, path: str, ts: str, body: bytes) -> bytes:
     return f"{method.upper()}\n{path}\n{ts}\n{digest}".encode()
 
 
-def sign(key: str, household_id: str, method: str, path: str, body: bytes = b"") -> dict[str, str]:
-    ts = str(int(time.time()))
+def sign(
+    key: str,
+    household_id: str,
+    method: str,
+    path: str,
+    body: bytes = b"",
+    *,
+    now: float | None = None,
+) -> dict[str, str]:
+    ts = str(int(time.time() if now is None else now))
     sig = hmac.new(bytes.fromhex(key), _message(method, path, ts, body), hashlib.sha256)
     return {HDR_HOUSEHOLD: household_id, HDR_TIME: ts, HDR_SIG: sig.hexdigest()}
 

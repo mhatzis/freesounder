@@ -200,11 +200,13 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
       _debug = debugDetail(err);
     }
     // Players set up in a different home (e.g. by mistake) can be moved here.
-    unawaited(ref.read(playbackProvider.notifier).listOtherHomePlayers().then((found) {
-      if (mounted) {
-        setState(() => _otherHome = found);
-      }
-    }, onError: (Object _) {}));
+    unawaited(
+      ref.read(playbackProvider.notifier).listOtherHomePlayers().then((found) {
+        if (mounted) {
+          setState(() => _otherHome = found);
+        }
+      }, onError: (Object _) {}),
+    );
     // Players already on the network are listed even if Bluetooth failed.
     var online = const <UnclaimedPlayer>[];
     try {
@@ -324,11 +326,7 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
       setState(() => _progress = result.message);
       final id = result.playerId ?? player.id;
       _provisionedIp = provisionedIp(ip: result.ip, redirect: result.redirect);
-      ref.read(playbackProvider.notifier).rememberProvisionedPlayer(
-            id: id,
-            name: player.name,
-            address: result.ip,
-          );
+      ref.read(playbackProvider.notifier).rememberProvisionedPlayer(id: id, name: player.name, address: result.ip);
       final store = ref.read(playbackProvider.notifier);
       // With no player connected yet there is nobody to list unclaimed players.
       final unclaimed = (store.client == null && !ref.read(playbackProvider).mockMode)
@@ -337,7 +335,8 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
       if (!mounted) {
         return;
       }
-      final resolved = unclaimed ??
+      final resolved =
+          unclaimed ??
           UnclaimedPlayer(
             id: id,
             name: player.name,
@@ -393,6 +392,36 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
     return null;
   }
 
+  /// Starting a separate home switches the app to it: make that explicit,
+  /// because the rooms of the current home stop showing.
+  Future<bool> _confirmSeparateHome() async {
+    final rooms = ref.read(playbackProvider).rooms;
+    final name = _name.text.trim().isEmpty ? 'this player' : _name.text.trim();
+    final current = rooms.isEmpty ? 'your current home' : rooms.map((r) => r.name).join(', ');
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialog) => AlertDialog(
+        title: const Text('Switch to a separate home?'),
+        content: Text(
+          '$name becomes the first player of a NEW home and the app switches to it. '
+          '$current will no longer show here, and the two homes can\'t play together.\n\n'
+          'To have all rooms in one home, cancel and make sure your phone and players are on the same Wi-Fi, '
+          'then try again.',
+          key: const Key('separate-home-warning'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(dialog).pop(false), child: const Text('Cancel')),
+          FilledButton(
+            key: const Key('confirm-separate-home'),
+            onPressed: () => Navigator.of(dialog).pop(true),
+            child: const Text('Switch homes'),
+          ),
+        ],
+      ),
+    );
+    return ok ?? false;
+  }
+
   Future<bool> _confirmMove() async {
     final ok = await showDialog<bool>(
       context: context,
@@ -436,7 +465,9 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
     });
     try {
       final unclaimed = selected.unclaimed;
-      await ref.read(playbackProvider.notifier).adoptProvisioned(
+      await ref
+          .read(playbackProvider.notifier)
+          .adoptProvisioned(
             name: name,
             id: unclaimed?.id ?? selected.id,
             ip: _provisionedIp ?? unclaimed?.address ?? provisionedIp(url: unclaimed?.url),
@@ -484,9 +515,7 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
     return Padding(
       padding: EdgeInsets.fromLTRB(20, 0, 20, 20 + padding.bottom),
       child: ConstrainedBox(
-        constraints: BoxConstraints(
-          maxHeight: MediaQuery.sizeOf(context).height * 0.85,
-        ),
+        constraints: BoxConstraints(maxHeight: MediaQuery.sizeOf(context).height * 0.85),
         child: SingleChildScrollView(
           key: const Key('add-player-capture'),
           child: Column(
@@ -505,7 +534,11 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
               if (_step == _WizardStep.adopt) _adoptStep(scheme, text),
               if (_error != null && _step != _WizardStep.progress) ...[
                 const SizedBox(height: 8),
-                Text(_error!, key: const Key('add-player-error'), style: text.bodySmall?.copyWith(color: scheme.error)),
+                Text(
+                  _error!,
+                  key: const Key('add-player-error'),
+                  style: text.bodySmall?.copyWith(color: scheme.error),
+                ),
                 if (_step == _WizardStep.find && _selected != null && (_selected?.needsWifi ?? false) && !_working)
                   Align(
                     alignment: Alignment.centerLeft,
@@ -521,10 +554,7 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
                 Text(
                   (_debug?.startsWith('adopt') ?? false) ? _debug! : 'BLE: ${_debug ?? _transport.lastDebug}',
                   key: const Key('ble-debug-line'),
-                  style: text.labelSmall?.copyWith(
-                    color: scheme.onSurfaceVariant,
-                    fontFamily: 'monospace',
-                  ),
+                  style: text.labelSmall?.copyWith(color: scheme.onSurfaceVariant, fontFamily: 'monospace'),
                 ),
               ],
               const SizedBox(height: 8),
@@ -623,9 +653,7 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
     final query = _countryQuery.trim().toLowerCase();
     final matches = query.isEmpty
         ? wifiCountries
-        : wifiCountries
-            .where((c) => c.name.toLowerCase().contains(query) || c.code.toLowerCase() == query)
-            .toList();
+        : wifiCountries.where((c) => c.name.toLowerCase().contains(query) || c.code.toLowerCase() == query).toList();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -765,10 +793,10 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
                     onTap: _working
                         ? null
                         : () => setState(() {
-                              _network = network;
-                              _manualEntry = false;
-                              _error = null;
-                            }),
+                            _network = network;
+                            _manualEntry = false;
+                            _error = null;
+                          }),
                   ),
               const Divider(height: 1),
               ListTile(
@@ -780,10 +808,10 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
                 onTap: _working
                     ? null
                     : () => setState(() {
-                          _manualEntry = true;
-                          final typed = _customSsid?.trim() ?? '';
-                          _network = typed.isEmpty ? null : WifiCandidate(ssid: typed, rssi: 0, auth: 'WPA2');
-                        }),
+                        _manualEntry = true;
+                        final typed = _customSsid?.trim() ?? '';
+                        _network = typed.isEmpty ? null : WifiCandidate(ssid: typed, rssi: 0, auth: 'WPA2');
+                      }),
               ),
             ],
           ),
@@ -794,10 +822,7 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
             key: const Key('custom-ssid'),
             enabled: !_working,
             initialValue: inList ? (_customSsid ?? '') : (selectedSsid ?? _customSsid ?? ''),
-            decoration: const InputDecoration(
-              labelText: 'Network name (SSID)',
-              border: OutlineInputBorder(),
-            ),
+            decoration: const InputDecoration(labelText: 'Network name (SSID)', border: OutlineInputBorder()),
             onChanged: (value) {
               _customSsid = value;
               setState(() {
@@ -879,7 +904,11 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
           Text(_progress, textAlign: TextAlign.center, style: text.bodyMedium),
           if (_error != null) ...[
             const SizedBox(height: 8),
-            Text(_error!, textAlign: TextAlign.center, style: text.bodySmall?.copyWith(color: scheme.error)),
+            Text(
+              _error!,
+              textAlign: TextAlign.center,
+              style: text.bodySmall?.copyWith(color: scheme.error),
+            ),
             if (_failureDetail != null) ...[
               const SizedBox(height: 4),
               Text(
@@ -926,11 +955,7 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
           controller: _name,
           enabled: !_working,
           textCapitalization: TextCapitalization.words,
-          decoration: const InputDecoration(
-            labelText: 'Room name',
-            hintText: 'Kitchen',
-            border: OutlineInputBorder(),
-          ),
+          decoration: const InputDecoration(labelText: 'Room name', hintText: 'Kitchen', border: OutlineInputBorder()),
         ),
         const SizedBox(height: 16),
         FilledButton(
@@ -983,7 +1008,11 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
           const SizedBox(height: 8),
           TextButton(
             key: const Key('start-new-home'),
-            onPressed: () => _adopt(allowNewHome: true),
+            onPressed: () async {
+              if (await _confirmSeparateHome()) {
+                await _adopt(allowNewHome: true);
+              }
+            },
             child: const Text('Start a separate home with this player instead'),
           ),
         ],
