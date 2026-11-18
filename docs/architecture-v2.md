@@ -79,7 +79,7 @@ Raspberry Pi OS Lite (64-bit) supports all four. The original Pi Zero and Zero W
 2. If none is playing (for example, two idle rooms are grouped), the leader is the room the user started from in the app, the "anchor".
 3. As a tie-break and for failover, the highest **capability score** wins: wired Ethernet, then 5 GHz Wi-Fi, then 2.4 GHz, then Pi 5 > Pi 4 > Pi 3 > Zero 2 W, then the lowest player ID.
 
-**Sticky leadership, "relay mode":** if the user removes the leader's room from a playing group, the leader **keeps serving** the remaining rooms, but moves its own snapclient to a separate, silent Snapcast group on its own server. Nobody else's audio is interrupted, and there's no transfer to get wrong. That fixes the problem MA had to solve with queue transfer ([MA PR #4412](https://github.com/music-assistant/server/pull/4412)) without moving any session. Relay mode ends when the session stops. If the user then starts something new in the relaying room, the app asks: "Kitchen is still playing for Living + Office. Stop it there?" A Spotify Connect device can't take on a second session, so that question is unavoidable.
+**Ungrouped means independent (0.6.7; replaces "relay mode"):** if the user removes the leader's room from a group, the remaining rooms carry on without it. For radio, the best remaining member becomes leader and starts the same station, and the station stops in the room that left. Spotify and AirPlay sessions belong to the leader's device, so they stay there and the other rooms become independent and idle. A room that has left a group never follows its old leader: it has its own source, metadata and controls. (Up to 0.6.6 a leaving leader kept "relaying" for the old group, so the room the user had ungrouped still drove the others. That state is ended automatically on upgrade.)
 
 **Leader offline** (power cut or Wi-Fi loss):
 - **Detection.** Each member watches its snapclient's connection state and the leader's peer heartbeat (WS ping every 2 s). If neither is seen for **6 s**, the leader is suspect (*target*). A clean shutdown sends an mDNS goodbye and is noticed immediately.
@@ -208,7 +208,7 @@ Every player serves the whole API. **The app never needs to know which player le
 | `GET /api/v2/rooms`, `GET /api/v2/groups` | Convenience views of the above |
 | `PUT /api/v2/groups/{gid}/members` | `{member_ids[], anchor_id?}`. Sets membership in one go, covering grouping, ungrouping and presets. |
 | `POST /api/v2/rooms/{id}/join` | `{group_id}`, "Play here too" |
-| `POST /api/v2/rooms/{id}/leave` | Leave a group. For a playing leader this means relay mode. |
+| `POST /api/v2/rooms/{id}/leave` | Leave a group. A leader hands its members over (radio moves to the new leader); the room that left is independent. |
 | `POST /api/v2/groups/{gid}/{play\|pause\|stop\|next\|previous}` | Passed to the active source |
 | `PUT /api/v2/groups/{gid}/volume` | `{volume}`, the master volume that scales members |
 | `PUT /api/v2/rooms/{id}/volume` | `{volume, muted}` |
