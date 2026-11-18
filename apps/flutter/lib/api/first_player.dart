@@ -13,6 +13,10 @@ enum AdoptRecovery {
   /// The phone can't reach the existing home: try again, or deliberately
   /// start a separate home with this board.
   startNewHome,
+
+  /// None of the saved home's players exist on this network any more (reset
+  /// or reflashed): forget it and make this board the first player.
+  forgetOldHome,
 }
 
 /// Which part of adding a player failed, with the precise reason.

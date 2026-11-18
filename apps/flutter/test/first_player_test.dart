@@ -234,8 +234,9 @@ void main() {
       final failure = await store
           .adoptProvisioned(name: 'Kitchen', id: 'pi-2', ip: '192.168.1.77')
           .then<AdoptFailure?>((_) => null, onError: (Object e) => e as AdoptFailure);
-      expect(failure!.recovery, AdoptRecovery.startNewHome);
-      expect(failure.message, contains('separate home'));
+      // Nothing of the home answered or showed up: offer (never force) a new home.
+      expect(failure!.recovery, AdoptRecovery.forgetOldHome);
+      expect(failure.message, contains("previous home isn't on this network"));
       expect(lan.to('/api/v2/setup'), isEmpty, reason: 'the new board was not made its own home');
 
       // Back on the right Wi-Fi: the same call reconnects and joins the existing home.

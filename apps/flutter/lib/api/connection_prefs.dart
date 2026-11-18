@@ -11,6 +11,33 @@ class ConnectionPrefs {
   static const demoKey = 'prefer_demo';
   static const developerKey = 'developer_mode';
   static const wifiCountryKey = 'wifi_country';
+  static const householdKey = 'household_id';
+  static const membersKey = 'household_members';
+
+  /// Household the saved host belonged to, and its members' last known URLs,
+  /// so the app can find the home again when one player's IP changes.
+  String? get householdId => _prefs.getString(householdKey);
+
+  List<String> get knownMembers => _prefs.getStringList(membersKey) ?? const [];
+
+  Future<void> setHousehold(String? id, {List<String>? members}) async {
+    if (id == null) {
+      await _prefs.remove(householdKey);
+      await _prefs.remove(membersKey);
+      return;
+    }
+    await _prefs.setString(householdKey, id);
+    if (members != null) {
+      await _prefs.setStringList(membersKey, members);
+    }
+  }
+
+  /// Forget the saved home entirely (it was reset or reflashed).
+  Future<void> forgetHome() async {
+    await _prefs.remove(hostKey);
+    await _prefs.remove(householdKey);
+    await _prefs.remove(membersKey);
+  }
 
   String? get savedHost {
     final value = _prefs.getString(hostKey);

@@ -155,6 +155,11 @@ class LinkTimings {
 
 final linkTimingsProvider = Provider<LinkTimings>((ref) => const LinkTimings());
 
+/// mDNS discovery of players (overridable in tests).
+final discoveryProvider = Provider<Future<List<DiscoveredHost>> Function(Duration timeout)>(
+  (ref) => (timeout) => discoverControlApis(timeout: timeout),
+);
+
 /// Overridable in tests.
 final firstPlayerSetupProvider = Provider<FirstPlayerSetup Function()>((ref) => FirstPlayerSetup.new);
 
@@ -172,6 +177,7 @@ class PlaybackStore extends Notifier<PlaybackState> {
   bool _foreground = true;
   bool _disposed = false;
   String? _householdId;
+  bool _persistHome = false;
   late MockHousehold _mock;
 
   /// Household id of the connected system (from /api/v2/info), when known.
@@ -251,12 +257,20 @@ class PlaybackStore extends Notifier<PlaybackState> {
     }
     final ok = await connectTo(base, persist: false);
     if (!ok) {
-      if (hosts.isEmpty) {
-        hosts = await _safeDiscover(config.discoveryTimeout);
+      // The saved host moved or is gone: look for the same home first (its
+      // other members, mDNS by household id).
+      final seen = await _reconnectToHome();
+      if (_client != null) {
+        return;
       }
-      for (final host in hosts.where((h) => !h.unclaimed && h.url != base)) {
-        if (await connectTo(host.url, persist: false)) {
-          return;
+      hosts = state.discoveredHosts;
+      if (!seen) {
+        // Nothing of the saved home exists here any more (reset/reflashed):
+        // any set-up player on this network is the home now.
+        for (final host in hosts.where((h) => !h.unclaimed && h.url != base)) {
+          if (await connectTo(host.url, persist: true)) {
+            return;
+          }
         }
       }
       state = _emptyState(
@@ -272,7 +286,7 @@ class PlaybackStore extends Notifier<PlaybackState> {
       return const [];
     }
     try {
-      return await discoverControlApis(timeout: timeout);
+      return await ref.read(discoveryProvider)(timeout);
     } on Object {
       return const [];
     }
@@ -325,6 +339,7 @@ class PlaybackStore extends Notifier<PlaybackState> {
       }
       _subscribeEvents(client);
       _startHeartbeat();
+      _persistHome = persist || url == prefs?.savedHost || prefs?.savedHost == null;
       unawaited(_loadHouseholdId(client));
       await refreshHealth();
       _healthTimer?.cancel();
@@ -412,6 +427,9 @@ class PlaybackStore extends Notifier<PlaybackState> {
       final hh = info['household'];
       if (identical(client, _client) && hh is Map && hh['id'] is String) {
         _householdId = hh['id'] as String;
+        if (_persistHome) {
+          await _rememberHome(client);
+        }
       }
     } on Object {
       // Optional: only used to spot players that belong to another home.
@@ -964,31 +982,41 @@ class PlaybackStore extends Notifier<PlaybackState> {
     }
     final address = provisionedIp(ip: ip, url: url);
     if (_client == null && !allowNewHome) {
-      // A home already exists (saved or seen on the network) but the phone is
-      // not connected to it right now. Never quietly make the new board a
-      // second, separate home: reconnect first, or explain.
-      final known = state.hostUrl ?? ref.read(connectionPrefsProvider)?.savedHost;
-      final readyHosts = state.discoveredHosts.where((h) => !h.unclaimed && Uri.tryParse(h.url)?.host != address);
-      if (known != null || readyHosts.isNotEmpty) {
-        onProgress?.call('Reconnecting to your home…');
-        if (known != null) {
-          await connectTo(known, persist: false);
-        }
-        for (final host in readyHosts) {
-          if (_client != null) break;
-          await connectTo(host.url, persist: false);
-        }
+      // A home was saved but the phone is not connected to it right now.
+      // Never quietly make the new board a separate home: look for the home
+      // again (saved host, its last known members, mDNS), or explain.
+      final prefs = ref.read(connectionPrefsProvider);
+      final known = state.hostUrl ?? prefs?.savedHost;
+      if (known != null || (prefs?.knownMembers.isNotEmpty ?? false)) {
+        onProgress?.call('Looking for your home…');
+        final seen = await _reconnectToHome(excludeHost: address);
         if (_client == null) {
+          if (seen) {
+            throw AdoptFailure(
+              'Reaching your home',
+              'Players of your home are on the network but did not answer (last host $known)',
+              url: known,
+              recovery: AdoptRecovery.startNewHome,
+              customHint: 'Your phone can\'t reach your other players right now. Make sure it is on the same Wi-Fi '
+                  'and try again. (Adding this one now would start a separate home.)',
+            );
+          }
           throw AdoptFailure(
             'Reaching your home',
-            'Not connected to ${known ?? readyHosts.first.url}',
-            url: known ?? readyHosts.first.url,
-            recovery: AdoptRecovery.startNewHome,
-            customHint: 'Your phone can\'t reach your other players right now. Make sure it is on the same Wi-Fi '
-                'and try again. (Adding this one now would start a separate home.)',
+            'No player of the saved home answered or was found on this network (last host $known)',
+            url: known,
+            recovery: AdoptRecovery.forgetOldHome,
+            customHint: 'Your previous home isn\'t on this network (were its players reset or reflashed?). '
+                'You can set up a new home with this player.',
           );
         }
       }
+    }
+    if (allowNewHome && _client == null) {
+      // The user chose to start over: drop the old home so the app never
+      // tries to go back to it.
+      await ref.read(connectionPrefsProvider)?.forgetHome();
+      state = state.copyWith(clearHostUrl: true, rooms: const [], settings: const {});
     }
     final client = _client;
     if (resetFirst && client != null && address != null) {
@@ -1061,6 +1089,62 @@ class PlaybackStore extends Notifier<PlaybackState> {
     );
   }
 
+  /// Find the saved home again: the saved host, then its last known members,
+  /// then players seen over mDNS that belong to the same household (or, if
+  /// the household id is unknown, any set-up player). Connects to the first
+  /// that answers. Returns whether any player of that home was *seen* (so a
+  /// failure means "not reachable" rather than "gone").
+  Future<bool> _reconnectToHome({String? excludeHost}) async {
+    final prefs = ref.read(connectionPrefsProvider);
+    final savedHh = prefs?.householdId;
+    final candidates = <String>{
+      ?state.hostUrl,
+      ?prefs?.savedHost,
+      ...?prefs?.knownMembers,
+      for (final room in state.rooms) ?room.url,
+    };
+    final hosts = await _safeDiscover(ref.read(appConfigProvider).discoveryTimeout);
+    state = state.copyWith(discoveredHosts: hosts);
+    var seen = false;
+    for (final h in hosts) {
+      final sameHome = savedHh != null ? h.household == savedHh : !h.unclaimed;
+      if (sameHome && !h.unclaimed && Uri.tryParse(h.url)?.host != excludeHost) {
+        seen = true;
+        candidates.add(h.url);
+      }
+    }
+    for (final url in candidates) {
+      if (Uri.tryParse(url)?.host == excludeHost) {
+        continue;
+      }
+      if (await _canReach(url) && await connectTo(url, persist: true)) {
+        return true;
+      }
+    }
+    return seen;
+  }
+
+  /// Remember which household the connected player belongs to and where its
+  /// members are. A different household than the saved one (the old home was
+  /// reset, or the user picked another system) replaces it cleanly.
+  Future<void> _rememberHome(ControlApiClient client) async {
+    final hh = _householdId;
+    if (hh == null || !identical(client, _client)) {
+      return;
+    }
+    final prefs = ref.read(connectionPrefsProvider);
+    final previous = prefs?.householdId;
+    if (previous != null && previous != hh) {
+      // Different home: drop cached per-room settings from the old one.
+      state = state.copyWith(settings: const {});
+    }
+    final members = <String>{
+      client.baseUrl,
+      for (final room in state.rooms) ?room.url,
+    }.toList();
+    await prefs?.setHousehold(hh, members: members);
+  }
+
   /// How long the phone waits for a just-provisioned board to answer.
   Duration probeWait = const Duration(seconds: 20);
 
@@ -1112,6 +1196,7 @@ class PlaybackStore extends Notifier<PlaybackState> {
     try {
       final rooms = await client.listRooms().timeout(const Duration(seconds: 5));
       state = state.copyWith(rooms: rooms);
+      await _rememberHome(client);
     } on Object {
       // The new room arrives over the event stream once the players see each other.
     }

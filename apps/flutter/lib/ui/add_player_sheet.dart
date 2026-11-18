@@ -953,6 +953,32 @@ class _AddPlayerSheetState extends ConsumerState<AddPlayerSheet> {
             },
           ),
         ],
+        if (_recovery == AdoptRecovery.forgetOldHome && !_working) ...[
+          const SizedBox(height: 8),
+          Text(
+            'Your previous home isn\'t on this network',
+            key: const Key('old-home-gone'),
+            style: text.titleSmall?.copyWith(fontWeight: FontWeight.w600),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'None of its players answered or showed up. If you reset or reflashed them, '
+            'set up a new home with ${_name.text.trim().isEmpty ? 'this player' : _name.text.trim()} as the first player. '
+            'Add your other players to it afterwards.',
+            style: text.bodySmall,
+          ),
+          const SizedBox(height: 8),
+          FilledButton(
+            key: const Key('forget-old-home'),
+            onPressed: () => _adopt(allowNewHome: true),
+            child: const Text('Set up a new home'),
+          ),
+          TextButton(
+            key: const Key('retry-find-home'),
+            onPressed: () => _adopt(),
+            child: const Text('Look for my home again'),
+          ),
+        ],
         if (_recovery == AdoptRecovery.startNewHome && !_working) ...[
           const SizedBox(height: 8),
           TextButton(
