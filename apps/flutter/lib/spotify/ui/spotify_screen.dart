@@ -11,6 +11,7 @@ import '../spotify_api.dart';
 import '../spotify_auth.dart';
 import '../spotify_models.dart';
 import '../spotify_store.dart';
+import 'spotify_brand.dart';
 import 'spotify_setup.dart';
 
 Future<void> showSpotifyScreen(BuildContext context) {
@@ -36,7 +37,13 @@ class SpotifyScreen extends ConsumerWidget {
     final spotify = ref.watch(spotifyProvider);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Spotify'),
+        // Attribution: Spotify content is shown below, so the full logo leads.
+        title: spotify.signedIn
+            ? const Align(
+                alignment: Alignment.centerLeft,
+                child: SpotifyMark.logo(key: Key('spotify-browse-logo'), size: 26),
+              )
+            : const Text('Spotify'),
         actions: [
           if (spotify.signedIn)
             PopupMenuButton<String>(

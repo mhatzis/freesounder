@@ -12,13 +12,30 @@ import '../models/player_settings.dart';
 import '../state/playback_store.dart';
 
 const dacOptions = <(String, String)>[
-  ('auto', 'Automatic (HDMI, USB or a detected HAT)'),
+  ('auto', 'Automatic (HDMI, USB or a HAT that identifies itself)'),
   ('none', 'HDMI / USB only'),
-  ('dacplus', 'Raspberry Pi DAC+ / HiFiBerry DAC+'),
-  ('digiampplus', 'Raspberry Pi DigiAMP+ / HiFiBerry DigiAMP+'),
-  ('hifiberry-dac', 'HiFiBerry DAC / PCM5102A board'),
+  ('hifiberry-amp2', 'HiFiBerry Amp2'),
+  ('hifiberry-amp4', 'HiFiBerry Amp4'),
+  ('hifiberry-amp4pro', 'HiFiBerry Amp4 Pro'),
+  ('hifiberry-amp3', 'HiFiBerry Amp3'),
+  ('hifiberry-amp100', 'HiFiBerry Amp100'),
+  ('digiampplus', 'Raspberry Pi DigiAMP+'),
+  ('iqaudio-digiampplus', 'IQaudio DigiAMP+'),
+  ('pcm5122-amp', 'PCM5122 amp HAT (Innomaker, Waveshare…)'),
+  ('max98357a', 'MAX98357A I2S amp (Adafruit, Pimoroni…)'),
+  ('dacplus', 'Raspberry Pi DAC+'),
+  ('hifiberry-dacplus', 'HiFiBerry DAC+'),
   ('iqaudio-dacplus', 'IQaudio DAC+'),
+  ('hifiberry-dac', 'PCM5102A DAC (HiFiBerry DAC, Pimoroni pHAT DAC)'),
+  ('justboom-dac', 'JustBoom DAC / Amp'),
+  ('wm8960', 'Waveshare WM8960 audio HAT'),
 ];
+
+/// Boards that drive speakers directly; they start with a safe volume limit.
+const ampDacs = {
+  'hifiberry-amp2', 'hifiberry-amp3', 'hifiberry-amp4', 'hifiberry-amp4pro', 'hifiberry-amp100',
+  'digiampplus', 'iqaudio-digiampplus', 'pcm5122-amp', 'max98357a',
+};
 
 Future<void> showRoomSettingsSheet(BuildContext context, {required String roomId, String? roomName}) {
   return showModalBottomSheet<void>(
@@ -339,6 +356,15 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
                         ),
                       ),
                     ),
+                    if (ampDacs.contains(settings.dac)) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        'Amp board: volume starts capped at 80% (headroom for tone and loudness, no clipping). '
+                        'Raise the volume limit above if your speakers need it.',
+                        key: const Key('amp-note'),
+                        style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+                      ),
+                    ],
                     if (settings.dacRebootRequired) ...[
                       const SizedBox(height: 8),
                       Text(

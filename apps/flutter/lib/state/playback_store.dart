@@ -44,6 +44,7 @@ class PlaybackState {
     this.settings = const {},
     this.maState,
     this.maDetail,
+    this.reconnecting = false,
   });
 
   final List<Room> rooms;
@@ -64,6 +65,10 @@ class PlaybackState {
   /// auth_required or unavailable (null when unknown or in demo).
   final String? maState;
   final String? maDetail;
+
+  /// The live link to the player dropped (app woke from the background, Wi-Fi
+  /// blipped); the store is re-fetching and reconnecting on its own.
+  final bool reconnecting;
 
   /// Connected to a real system whose music side is not ready yet.
   bool get systemStarting => connected && !mockMode && maState != null && maState != 'connected';
@@ -97,6 +102,7 @@ class PlaybackState {
     String? maState,
     String? maDetail,
     bool clearMa = false,
+    bool? reconnecting,
   }) {
     return PlaybackState(
       rooms: rooms ?? this.rooms,
@@ -112,6 +118,7 @@ class PlaybackState {
       settings: settings ?? this.settings,
       maState: clearMa ? null : (maState ?? this.maState),
       maDetail: clearMa ? null : (maDetail ?? this.maDetail),
+      reconnecting: reconnecting ?? this.reconnecting,
     );
   }
 }
@@ -132,6 +139,22 @@ final controlClientFactoryProvider = Provider<ControlApiClient Function(String u
   (ref) => (url) => ControlApiClient(baseUrl: url),
 );
 
+/// Liveness timings (overridable in tests).
+class LinkTimings {
+  const LinkTimings({
+    this.heartbeat = const Duration(seconds: 12),
+    this.firstRetry = const Duration(seconds: 1),
+    this.maxRetry = const Duration(seconds: 15),
+  });
+
+  /// How often a connected app checks /health while in the foreground.
+  final Duration heartbeat;
+  final Duration firstRetry;
+  final Duration maxRetry;
+}
+
+final linkTimingsProvider = Provider<LinkTimings>((ref) => const LinkTimings());
+
 /// Overridable in tests.
 final firstPlayerSetupProvider = Provider<FirstPlayerSetup Function()>((ref) => FirstPlayerSetup.new);
 
@@ -141,6 +164,12 @@ class PlaybackStore extends Notifier<PlaybackState> {
   ControlApiClient? _client;
   StreamSubscription<Map<String, dynamic>>? _events;
   Timer? _healthTimer;
+  Timer? _heartbeat;
+  Timer? _retryTimer;
+  Duration? _retryDelay;
+  bool _resyncing = false;
+  bool _foreground = true;
+  bool _disposed = false;
   late MockHousehold _mock;
 
   ControlApiClient? get client => _client;
@@ -151,7 +180,10 @@ class PlaybackStore extends Notifier<PlaybackState> {
     _mock = MockHousehold();
     final config = ref.watch(appConfigProvider);
     ref.onDispose(() {
+      _disposed = true;
       _healthTimer?.cancel();
+      _heartbeat?.cancel();
+      _retryTimer?.cancel();
       _events?.cancel();
       _client?.close();
     });
@@ -286,9 +318,8 @@ class PlaybackStore extends Notifier<PlaybackState> {
         await prefs.setSavedHost(url);
         await prefs.setPreferDemo(false);
       }
-      _events = client.connectEvents().listen(_onEvent, onError: (Object err) {
-        state = state.copyWith(error: err.toString(), connected: false);
-      });
+      _subscribeEvents(client);
+      _startHeartbeat();
       await refreshHealth();
       _healthTimer?.cancel();
       _healthTimer = Timer.periodic(const Duration(seconds: 5), (_) {
@@ -369,9 +400,148 @@ class PlaybackStore extends Notifier<PlaybackState> {
     }
   }
 
+  // --- Staying live: event-stream reconnect, heartbeat, app resume ---------
+
+  void _subscribeEvents(ControlApiClient client) {
+    unawaited(_events?.cancel());
+    _events = client.connectEvents().listen(
+      _onEvent,
+      onError: (Object _) => _linkLost(client),
+      onDone: () => _linkLost(client),
+      cancelOnError: true,
+    );
+  }
+
+  void _startHeartbeat() {
+    _heartbeat?.cancel();
+    if (!_foreground) {
+      return;
+    }
+    _heartbeat = Timer.periodic(ref.read(linkTimingsProvider).heartbeat, (_) => unawaited(_beat()));
+  }
+
+  Future<void> _beat() async {
+    final client = _client;
+    if (client == null || state.reconnecting) {
+      return;
+    }
+    try {
+      await client.health().timeout(const Duration(seconds: 5));
+    } on Object {
+      _linkLost(client);
+    }
+  }
+
+  /// The event stream ended or a heartbeat failed: show "Reconnecting…" and
+  /// retry with backoff (1 s, 2 s, 4 s … 15 s) until the player answers.
+  void _linkLost(ControlApiClient client) {
+    if (_disposed || !identical(client, _client) || state.mockMode) {
+      return;
+    }
+    state = state.copyWith(reconnecting: true);
+    if (_retryTimer?.isActive ?? false) {
+      return;
+    }
+    if (!_foreground) {
+      return; // resume() reconnects; no point retrying while suspended
+    }
+    final timings = ref.read(linkTimingsProvider);
+    final delay = _retryDelay ?? timings.firstRetry;
+    final doubled = delay * 2;
+    _retryDelay = doubled > timings.maxRetry ? timings.maxRetry : doubled;
+    _retryTimer = Timer(delay, () => unawaited(_resync(client)));
+  }
+
+  /// Re-fetch rooms, now playing and settings and open a fresh event stream.
+  Future<bool> _resync(ControlApiClient client) async {
+    if (_disposed || !identical(client, _client) || _resyncing) {
+      return false;
+    }
+    _resyncing = true;
+    try {
+      final rooms = await client.listRooms().timeout(const Duration(seconds: 4));
+      final activeId = rooms.any((r) => r.id == state.activeRoomId)
+          ? state.activeRoomId
+          : (rooms.isNotEmpty ? rooms.first.id : null);
+      NowPlaying? np;
+      if (activeId != null) {
+        np = await client.nowPlaying(activeId).timeout(const Duration(seconds: 4));
+      }
+      if (!identical(client, _client)) {
+        return false;
+      }
+      _subscribeEvents(client);
+      _retryDelay = null;
+      _retryTimer?.cancel();
+      state = PlaybackState(
+        rooms: rooms,
+        activeRoomId: activeId,
+        nowPlaying: np,
+        nowPlayingByRoom: np == null
+            ? state.nowPlayingByRoom
+            : {...state.nowPlayingByRoom, np.playerId: np},
+        mockMode: false,
+        connected: true,
+        discovering: false,
+        hostUrl: state.hostUrl,
+        discoveredHosts: state.discoveredHosts,
+        settings: state.settings,
+        maState: state.maState,
+        maDetail: state.maDetail,
+        reconnecting: false,
+      );
+      _startHeartbeat();
+      unawaited(_refreshOpenSettings(client));
+      return true;
+    } on Object {
+      _resyncing = false;
+      _linkLost(client);
+      return false;
+    } finally {
+      _resyncing = false;
+    }
+  }
+
+  Future<void> _refreshOpenSettings(ControlApiClient client) async {
+    for (final roomId in state.settings.keys.toList()) {
+      try {
+        final fresh = await client.getSettings(roomId).timeout(const Duration(seconds: 4));
+        state = state.copyWith(settings: {...state.settings, roomId: fresh});
+      } on Object {
+        // The settings sheet fetches again when opened.
+      }
+    }
+  }
+
+  /// App went to the background: stop the heartbeat (iOS suspends sockets).
+  void appPaused() {
+    _foreground = false;
+    _heartbeat?.cancel();
+    _retryTimer?.cancel();
+  }
+
+  /// App came back: whatever the socket looks like, re-fetch everything and
+  /// reopen the event stream so the screen is never stale after a wake.
+  Future<void> appResumed() async {
+    _foreground = true;
+    final client = _client;
+    if (client == null || state.mockMode) {
+      return;
+    }
+    _retryDelay = null;
+    _retryTimer?.cancel();
+    state = state.copyWith(reconnecting: true);
+    await _resync(client);
+  }
+
   Future<void> _teardownClient() async {
     _healthTimer?.cancel();
     _healthTimer = null;
+    _heartbeat?.cancel();
+    _heartbeat = null;
+    _retryTimer?.cancel();
+    _retryTimer = null;
+    _retryDelay = null;
     await _events?.cancel();
     _events = null;
     await _client?.close();
@@ -528,18 +698,21 @@ class PlaybackStore extends Notifier<PlaybackState> {
     }
   }
 
-  Future<List<RadioStation>> searchRadio(String query) async {
+  Future<List<RadioStation>> searchRadio(String query, {String? tag, String? country}) async {
     if (state.mockMode) {
       return [
         for (final s in _mock.radioStations)
-          if (query.isEmpty || s.name.toLowerCase().contains(query.toLowerCase())) s,
+          if ((query.isEmpty || s.name.toLowerCase().contains(query.toLowerCase())) &&
+              (tag == null || (s.tags ?? '').contains(tag)) &&
+              (country == null || s.countrycode == country))
+            s,
       ];
     }
     final client = _client;
     if (client == null) {
       throw ControlApiException('Not connected to a player');
     }
-    return client.searchRadio(query: query);
+    return client.searchRadio(query: query, tag: tag, country: country);
   }
 
   Future<List<RadioStation>> recentRadio() async {
@@ -563,6 +736,7 @@ class PlaybackStore extends Notifier<PlaybackState> {
       final np = NowPlaying(
         playerId: target,
         title: station.name,
+        stationName: station.name,
         imageUrl: station.favicon,
         state: 'playing',
         source: 'radio',

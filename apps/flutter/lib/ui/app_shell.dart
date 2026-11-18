@@ -4,6 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../state/playback_store.dart';
 import '../theme/tokens.dart';
 import 'add_player_sheet.dart';
+import '../spotify/spotify_store.dart';
+import '../spotify/ui/spotify_brand.dart';
 import '../spotify/ui/spotify_screen.dart';
 import 'artwork.dart';
 import 'mini_player.dart';
@@ -24,9 +26,21 @@ class AppShell extends ConsumerStatefulWidget {
 
 class _AppShellState extends ConsumerState<AppShell> {
   final DraggableScrollableController _sheetController = DraggableScrollableController();
+  late final AppLifecycleListener _lifecycle;
+
+  @override
+  void initState() {
+    super.initState();
+    // Phones suspend the app's sockets in the background; refresh on wake.
+    _lifecycle = AppLifecycleListener(
+      onResume: () => ref.read(playbackProvider.notifier).appResumed(),
+      onPause: () => ref.read(playbackProvider.notifier).appPaused(),
+    );
+  }
 
   @override
   void dispose() {
+    _lifecycle.dispose();
     _sheetController.dispose();
     super.dispose();
   }
@@ -123,6 +137,7 @@ class _NowPlayingCanvas extends ConsumerWidget {
           child: Column(
             children: [
               _TopBar(state: state),
+              ReconnectingBanner(visible: state.reconnecting && !state.mockMode),
               Expanded(
                 child: LayoutBuilder(
                   builder: (context, constraints) {
@@ -195,10 +210,19 @@ class _NowPlayingCanvas extends ConsumerWidget {
                                 ),
                               ),
                               if (sourceLabel(np?.source) != null)
-                                Text(
-                                  sourceLabel(np?.source)!,
-                                  key: const Key('now-playing-source'),
-                                  style: text.labelMedium?.copyWith(color: scheme.onSurfaceVariant),
+                                Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    if (np?.source == 'spotify') ...[
+                                      const SpotifyMark.icon(key: Key('now-playing-spotify-mark'), size: 21),
+                                      const SizedBox(width: 6),
+                                    ],
+                                    Text(
+                                      sourceLabel(np?.source)!,
+                                      key: const Key('now-playing-source'),
+                                      style: text.labelMedium?.copyWith(color: scheme.onSurfaceVariant),
+                                    ),
+                                  ],
                                 ),
                             ],
                             if (hasProgress) ...[
@@ -312,11 +336,15 @@ class _TopBar extends StatelessWidget {
               ),
             ),
           ),
-        IconButton(
-          key: const Key('spotify-button'),
-          tooltip: 'Spotify',
-          icon: const Icon(Icons.library_music_outlined),
-          onPressed: () => showSpotifyScreen(context),
+        Consumer(
+          builder: (context, ref, _) => IconButton(
+            key: const Key('spotify-button'),
+            tooltip: 'Spotify',
+            icon: ref.watch(spotifyProvider.select((s) => s.signedIn))
+                ? const SpotifyMark.icon(size: 22)
+                : const Icon(Icons.library_music_outlined),
+            onPressed: () => showSpotifyScreen(context),
+          ),
         ),
         IconButton(
           key: const Key('radio-button'),
@@ -347,4 +375,51 @@ String? sourceLabel(String? source) {
     'airplay' => 'AirPlay',
     _ => null,
   };
+}
+
+/// Slim "Reconnecting…" strip while the store re-fetches after a wake or a
+/// dropped link; it slides away as soon as the player answers.
+class ReconnectingBanner extends StatelessWidget {
+  const ReconnectingBanner({super.key, required this.visible});
+
+  final bool visible;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return AnimatedSize(
+      duration: const Duration(milliseconds: 200),
+      curve: Curves.easeOut,
+      child: !visible
+          ? const SizedBox(width: double.infinity)
+          : Padding(
+              key: const Key('reconnecting-banner'),
+              padding: const EdgeInsets.only(top: 8, right: 12),
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: scheme.secondaryContainer,
+                  borderRadius: BorderRadius.circular(99),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      SizedBox(
+                        width: 12,
+                        height: 12,
+                        child: CircularProgressIndicator(strokeWidth: 1.5, color: scheme.onSecondaryContainer),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Reconnecting…',
+                        style: Theme.of(context).textTheme.labelMedium?.copyWith(color: scheme.onSecondaryContainer),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+    );
+  }
 }

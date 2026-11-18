@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../api/connection_prefs.dart';
 import '../app_version.dart';
 import '../spotify/spotify_store.dart';
+import '../spotify/ui/spotify_brand.dart';
 import '../spotify/ui/spotify_screen.dart';
 import '../state/playback_store.dart';
 import 'add_player_sheet.dart';
@@ -192,7 +193,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               return ListTile(
                 key: const Key('spotify-tile'),
                 contentPadding: EdgeInsets.zero,
-                leading: const Icon(Icons.library_music_outlined),
+                leading: spotify.signedIn
+                    ? const SpotifyMark.icon(key: Key('spotify-tile-mark'))
+                    : const Icon(Icons.library_music_outlined),
                 title: const Text('Spotify'),
                 subtitle: Text(
                   spotify.signedIn

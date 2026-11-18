@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/errors.dart';
 import '../models/now_playing.dart';
+import '../spotify/ui/spotify_brand.dart';
 import '../spotify/ui/spotify_screen.dart';
 import '../state/playback_store.dart';
 import 'artwork.dart';
@@ -120,7 +121,9 @@ class _NowPlayingScreenState extends ConsumerState<NowPlayingScreen> {
                   Center(
                     child: Chip(
                       key: const Key('np-screen-source'),
-                      avatar: Icon(sourceIcon(np?.source), size: 16),
+                      avatar: np?.source == 'spotify'
+                          ? const SpotifyMark.icon(key: Key('np-source-spotify-mark'), size: 21)
+                          : Icon(sourceIcon(np?.source), size: 16),
                       label: Text(sourceName(np?.source)!),
                     ),
                   ),
@@ -200,7 +203,7 @@ class _NowPlayingScreenState extends ConsumerState<NowPlayingScreen> {
                     OutlinedButton.icon(
                       key: const Key('np-screen-spotify'),
                       onPressed: () => showSpotifyScreen(context),
-                      icon: const Icon(Icons.library_music),
+                      icon: const SpotifyMark.icon(size: 21),
                       label: const Text('Spotify'),
                     ),
                     OutlinedButton.icon(

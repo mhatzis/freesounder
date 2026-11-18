@@ -32,9 +32,41 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Demo FM'), findsOneWidget);
     await tester.tap(find.byKey(const Key('radio-station-demo-fm')));
-    await tester.pumpAndSettle();
+    // The live equaliser animates forever, so pump frames instead of settling.
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
     final container = ProviderScope.containerOf(tester.element(find.byType(Scaffold).first));
     final np = container.read(playbackProvider).nowPlaying;
     expect(np?.title ?? np?.album ?? '', isNotEmpty);
+    expect(find.byKey(const Key('radio-live')), findsOneWidget, reason: 'the playing station shows the live bars');
+  });
+
+  testWidgets('genre and country chips filter the search', (tester) async {
+    tester.view.physicalSize = const Size(4000, 1200);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          appConfigProvider.overrideWithValue(const AppConfig(forceDemo: true, discoveryTimeout: Duration.zero)),
+        ],
+        child: const MaterialApp(home: RadioScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Demo FM'), findsOneWidget);
+    expect(find.text('Example Jazz'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('radio-chip-tag-jazz')));
+    await tester.pumpAndSettle();
+    expect(find.text('Demo FM'), findsNothing);
+    expect(find.text('Example Jazz'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('radio-chip-tag-jazz')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('radio-chip-country-AU')));
+    await tester.pumpAndSettle();
+    expect(find.text('Demo FM'), findsOneWidget);
+    expect(find.text('Example Jazz'), findsNothing);
   });
 }

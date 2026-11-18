@@ -58,6 +58,7 @@ dev_dependencies:
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
   flutter_launcher_icons: ^0.14.4
+  flutter_native_splash: ^2.4.6
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
@@ -72,6 +73,8 @@ flutter:
 
   assets:
     - assets/logo.png
+    - assets/brand/spotify/
+    - assets/splash/mark_f.png
 
 flutter_launcher_icons:
   android: true
@@ -86,3 +89,18 @@ flutter_launcher_icons:
     image_path: assets/logo.png
     background_color: "#2157B0"
     theme_color: "#2157B0"
+
+# Native launch screen on the brand gradient (`dart run flutter_native_splash:create`).
+# The F mark sits exactly where the in-app intro (lib/ui/intro_splash.dart)
+# draws it, so the hand-off is seamless and the sound waves draw outward.
+flutter_native_splash:
+  background_image: assets/splash/background.png
+  image: assets/splash/mark_f.png
+  android_12:
+    color: "#2C2878"
+    image: assets/splash/android12_mark.png
+    icon_background_color: "#2C2878"
+  ios: true
+  android: true
+  web: false
+  fullscreen: false

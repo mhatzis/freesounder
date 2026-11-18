@@ -219,6 +219,9 @@ class ControlApiClient {
     final httpUri = Uri.parse(baseUrl);
     final scheme = httpUri.scheme == 'https' ? 'wss' : 'ws';
     final wsUri = httpUri.replace(scheme: scheme, path: '/api/v2/ws');
+    // A resume or reconnect replaces the old socket; close it so it can't
+    // linger half-open after the app was suspended.
+    unawaited(_channel?.sink.close());
     _channel = WebSocketChannel.connect(wsUri);
     return _channel!.stream.map((raw) {
       if (raw is String) {
