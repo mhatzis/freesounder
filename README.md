@@ -21,6 +21,18 @@ Details, hardware prices and sources: [docs/architecture.md](docs/architecture.m
 
 Design research Page: [freesounder – Architecture Research & Recommended Stack](https://cursor.com/canvas/store-1e1f00a9-5a68-4935-844e-05e60d7c3684/36256424-0c34-4af8-91ca-18271424bb71).
 
+## Factory reset
+
+Reset a player (forget Wi-Fi, home and room; back to Bluetooth setup as
+`fs-new`) without the app:
+
+- **Pi 5:** press the power button 5 times within 3 s. One press is a clean shutdown.
+- **Any Pi:** plug it in, unplug it after about 20 s, 5 times in a row, then leave it on.
+- **Wired button:** a button from GPIO3 (pin 5) to GND (pin 6). Tap it 5 times; one press shuts down and wakes the Pi.
+- **Console:** `sudo freesounder-setup factory-reset`.
+
+See [docs/reset.md](docs/reset.md) for the exact timing, the wiring, and I2C HATs.
+
 ## Repository layout
 
 | Path | Role |

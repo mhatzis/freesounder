@@ -1,0 +1,107 @@
+#!/bin/bash
+# FreeSounder factory reset: forget Wi-Fi, the home (household key and
+# members), the room name and every per-room setting, and go back to
+# Bluetooth setup mode as fs-new. Image-level settings stay: fsadmin, the
+# Wi-Fi country, the DAC/amp choice and the button pin. Developer SSH is
+# switched off.
+#
+#   factory-reset [--reason button|power-cycle|app|console] [--early] [--no-reboot]
+#
+# --early runs before NetworkManager and freesounderd start (power-cycle
+# reset at boot): nothing to stop, no reboot needed.
+set -u
+reason=console
+early=0
+reboot=1
+while [[ $# -gt 0 ]]; do
+	case "$1" in
+		--reason) reason=${2:-console}; shift ;;
+		--early) early=1; reboot=0 ;;
+		--no-reboot) reboot=0 ;;
+	esac
+	shift
+done
+
+say() { logger -t freesounder-reset "$*" 2>/dev/null; echo "$*"; }
+say "factory reset (reason: $reason)"
+install -d -m 0755 /run/freesounder
+echo resetting > /run/freesounder/reset-state
+
+# Feedback 1: fast-blink the green ACT LED until the reboot.
+act=""
+act_before=mmc0
+for led in /sys/class/leds/ACT /sys/class/leds/led0; do
+	if [[ -w "$led/trigger" ]]; then
+		act=$led
+		act_before=$(sed -n 's/.*\[\([^]]*\)\].*/\1/p' "$led/trigger" 2>/dev/null)
+		act_before=${act_before:-mmc0}
+		echo timer > "$led/trigger" 2>/dev/null || true
+		echo 80 > "$led/delay_on" 2>/dev/null || true
+		echo 80 > "$led/delay_off" 2>/dev/null || true
+		break
+	fi
+done
+
+if [[ $early -eq 0 ]]; then
+	systemctl stop freesounderd.service freesounder-spotify.service snapserver.service \
+		snapclient.service 2>/dev/null || true
+	# Feedback 2: a short tone through the player's own output, if it has one.
+	if command -v aplay >/dev/null && [[ -x /opt/freesounder/venv/bin/python ]]; then
+		/opt/freesounder/venv/bin/python - <<'PY' 2>/dev/null || true
+from freesounderd.audio import tone_wav
+open("/run/freesounder/reset-tone.wav", "wb").write(tone_wav(1.5))
+PY
+		timeout 4 aplay -q -D freesounder /run/freesounder/reset-tone.wav 2>/dev/null ||
+			timeout 4 aplay -q /run/freesounder/reset-tone.wav 2>/dev/null || true
+		rm -f /run/freesounder/reset-tone.wav
+	fi
+fi
+
+# Home, room and per-room state (household key, members, group, settings,
+# radio favourites, Spotify credentials).
+if [[ -d /var/lib/freesounder ]]; then
+	find /var/lib/freesounder -mindepth 1 -delete 2>/dev/null || true
+fi
+rm -f /etc/freesounder/name /etc/freesounder/configured /etc/freesounder/hostname \
+	/etc/freesounder/player-id /etc/freesounder/audio-output /etc/freesounder/ma-token \
+	/etc/freesounder/ma-admin.json
+
+# Wi-Fi: every saved connection (the image ships none).
+if [[ $early -eq 0 ]] && command -v nmcli >/dev/null; then
+	nmcli -t -f UUID,TYPE connection show 2>/dev/null | while IFS=: read -r uuid type; do
+		[[ "$type" == "802-11-wireless" ]] && nmcli connection delete uuid "$uuid" >/dev/null 2>&1
+	done
+fi
+rm -f /etc/NetworkManager/system-connections/*.nmconnection 2>/dev/null || true
+
+# Developer SSH off.
+if [[ -x /usr/lib/freesounder/ssh-developer && $early -eq 0 ]]; then
+	/usr/lib/freesounder/ssh-developer disable >/dev/null 2>&1 || true
+fi
+rm -f /run/freesounder/ssh-developer.json
+systemctl disable ssh.service ssh.socket >/dev/null 2>&1 || true
+
+# Hostname back to fs-new.
+printf 'fs-new\n' > /etc/hostname
+if [[ -f /etc/hosts ]]; then
+	sed -i -E 's/^(127\.0\.1\.1[[:space:]]+).*/\1fs-new/' /etc/hosts
+fi
+hostname fs-new 2>/dev/null || true
+
+# "Reset - ready for setup" on the status screen until the app sets it up.
+install -d -m 0755 /var/lib/freesounder
+date -Iseconds > /var/lib/freesounder/reset-done
+echo done > /run/freesounder/reset-state
+sync
+say "factory reset done; Bluetooth setup mode as fs-new"
+
+if [[ $early -eq 1 && -n "$act" ]]; then
+	# No reboot at boot time: show the blink for a moment, then give the LED back.
+	sleep 5
+	echo "$act_before" > "$act/trigger" 2>/dev/null || true
+fi
+
+if [[ $reboot -eq 1 ]]; then
+	sleep 2
+	systemctl reboot
+fi

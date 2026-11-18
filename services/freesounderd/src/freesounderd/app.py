@@ -149,6 +149,8 @@ def create_app(
             raise HTTPException(status_code=409, detail="This player is already set up.")
         household = body.household or store.new_household()
         store.save_household(household)
+        # Set up again after a factory reset: drop the "ready for setup" note.
+        (settings.state_dir / "reset-done").unlink(missing_ok=True)
         for hint in body.peers:
             if hint.id != engine.id:
                 engine.peer_hints[hint.id] = (hint.ip, hint.port)
@@ -384,6 +386,31 @@ def create_app(
     @app.get("/api/v2/radio/favourites")
     async def radio_favourites() -> list[dict[str, Any]]:
         return store.radio_favourites()
+
+    @app.delete("/api/v2/rooms/{rid}")
+    async def forget_room(rid: str) -> dict[str, Any]:
+        """Forget an offline member (it was reset or is gone for good)."""
+        if rid == engine.id:
+            raise HTTPException(status_code=409, detail="This is the player you are connected to.")
+        if engine.peer_alive(rid):
+            raise HTTPException(status_code=409, detail="That player is online; reset it instead.")
+        engine.peers.pop(rid, None)
+        engine.peer_hints.pop(rid, None)
+        store.forget_peer(rid)
+        engine.kick()
+        return {"ok": True}
+
+    @app.get("/api/v2/rooms/{rid}/diagnostics")
+    async def room_diagnostics(rid: str) -> dict[str, Any]:
+        if rid != engine.id:
+            return await engine.forward(rid, "GET", f"/api/v2/rooms/{rid}/diagnostics", wait=20)
+        if not settings.manage_system:
+            return {"previous_boot_ended": "unknown (not on a player)"}
+        from freesounderd import diagnostics
+
+        data = await diagnostics.collect()
+        data["version"] = __version__
+        return data
 
     # -------------------------------------------------------------- settings
     @app.get("/api/v2/rooms/{rid}/settings", response_model=PlayerSettings)

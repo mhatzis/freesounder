@@ -1,0 +1,14 @@
+[Unit]
+Description=FreeSounder factory reset requested by power-cycling
+DefaultDependencies=no
+After=local-fs.target freesounder-boot-count.service
+Before=sysinit.target NetworkManager.service freesounderd.service freesounder-hostname.service
+ConditionPathExists=/var/lib/freesounder/reset-pending
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/freesounder/factory-reset --reason power-cycle --early
+SyslogIdentifier=freesounder-reset
+
+[Install]
+WantedBy=sysinit.target

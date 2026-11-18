@@ -97,6 +97,13 @@ class ControlApiClient {
   Future<void> leaveGroup(String groupId, String playerId) =>
       _send('POST', '/api/v2/rooms/$playerId/leave');
 
+  /// Forget an offline room (a player that was reset or removed).
+  Future<void> forgetRoom(String playerId) => _send('DELETE', '/api/v2/rooms/$playerId');
+
+  /// Player diagnostics: boot reason, power/throttle flags, previous-boot errors.
+  Future<Map<String, dynamic>> diagnostics(String playerId) async =>
+      await _getJson('/api/v2/rooms/$playerId/diagnostics') as Map<String, dynamic>;
+
   Future<void> setGroupMembers(String groupId, List<String> memberIds) =>
       _send('PUT', '/api/v2/groups/$groupId/members', {'members': memberIds});
 

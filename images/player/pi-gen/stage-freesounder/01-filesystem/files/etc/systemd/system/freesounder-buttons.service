@@ -1,0 +1,13 @@
+[Unit]
+Description=FreeSounder power/GPIO button (1 press = shutdown, 5 quick presses = factory reset)
+After=systemd-udevd.service
+
+[Service]
+Type=simple
+ExecStart=/opt/freesounder/venv/bin/freesounder-reset-triggers buttons
+SyslogIdentifier=freesounder-buttons
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -42,6 +42,14 @@ systemctl enable freesounder-hostname.service
 systemctl enable freesounder-status.service
 systemctl enable freesounder-sanitize-imager.service
 systemctl enable freesounder-ssh-reset.service
+systemctl enable freesounder-buttons.service
+systemctl enable freesounder-boot-count.service
+systemctl enable freesounder-boot-count-clear.service
+systemctl enable freesounder-factory-reset.service
+systemctl enable freesounder-power-boot.service
+systemctl enable freesounder-power.timer
+# Persistent journal directory owned as journald expects.
+systemd-tmpfiles --create --prefix /var/log/journal 2>/dev/null || true
 
 # Keep the placeholder pi account locked and unusable for login.
 if getent passwd pi >/dev/null; then

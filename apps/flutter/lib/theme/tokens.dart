@@ -10,6 +10,9 @@ abstract final class FsTokens {
   static const double sheetHalf = 0.5;
   static const double sheetFull = 0.92;
 
+  /// Height of the persistent mini player (without the bottom safe area).
+  static const double miniPlayerHeight = 64;
+
   /// Mid-tone sampled from the logo gradient (indigo → teal).
   static const Color seed = Color(0xFF2157B0);
   static const Color indigo = Color(0xFF2C2878);

@@ -8,8 +8,11 @@ import logging
 import random
 import re
 import socket
+import ssl
 import time
+from collections.abc import Callable
 from typing import Any
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 
@@ -106,6 +109,87 @@ class RadioBrowser:
         return data if isinstance(data, dict) else {}
 
 
+class NoIcy(Exception):
+    """The stream has no ICY metadata (HLS, plain HTTP audio, ...)."""
+
+
+async def fetch_icy_title(
+    url: str, user_agent: str = "FreeSounder", wait: float = 8.0
+) -> str | None:
+    """Current ICY StreamTitle of a Shoutcast/Icecast stream.
+
+    ffmpeg only prints the title once, when it opens the stream, so a long
+    session kept showing the first song. This opens a short side
+    connection with ``Icy-MetaData: 1``, reads up to the first metadata block
+    and closes. Handles "ICY 200 OK" status lines (Shoutcast v1), which HTTP
+    libraries reject, and up to three redirects.
+    """
+
+    async def once(target: str) -> tuple[str | None, str | None]:
+        parts = urlsplit(target)
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            raise NoIcy(target)
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+        ssl_ctx = ssl.create_default_context() if parts.scheme == "https" else None
+        reader, writer = await asyncio.open_connection(
+            parts.hostname, port, ssl=ssl_ctx, server_hostname=parts.hostname if ssl_ctx else None
+        )
+        try:
+            path = parts.path or "/"
+            if parts.query:
+                path += "?" + parts.query
+            host = parts.hostname if parts.port is None else f"{parts.hostname}:{parts.port}"
+            writer.write(
+                (
+                    f"GET {path} HTTP/1.0\r\nHost: {host}\r\nUser-Agent: {user_agent}\r\n"
+                    "Icy-MetaData: 1\r\nAccept: */*\r\nConnection: close\r\n\r\n"
+                ).encode()
+            )
+            await writer.drain()
+            status = (await reader.readline()).decode("latin-1").strip()
+            headers: dict[str, str] = {}
+            while True:
+                line = (await reader.readline()).decode("latin-1").strip()
+                if not line:
+                    break
+                key, _, value = line.partition(":")
+                headers[key.strip().lower()] = value.strip()
+            code = status.split(" ")[1] if " " in status else ""
+            if code in ("301", "302", "303", "307", "308") and headers.get("location"):
+                return None, urljoin(target, headers["location"])
+            if code != "200":
+                raise NoIcy(status)
+            metaint = int(headers.get("icy-metaint", "0") or 0)
+            if metaint <= 0:
+                raise NoIcy("no icy-metaint")
+            await reader.readexactly(metaint)
+            length = (await reader.readexactly(1))[0] * 16
+            if length == 0:
+                return "", None
+            raw = await reader.readexactly(length)
+            text = raw.rstrip(b"\0").decode("utf-8", errors="replace")
+            match = re.search(r"StreamTitle='(.*?)';", text, re.S)
+            return (match.group(1).strip() if match else ""), None
+        finally:
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
+
+    async def run() -> str | None:
+        target = url
+        for _ in range(4):
+            title, redirect = await once(target)
+            if redirect is None:
+                return title or None
+            target = redirect
+        raise NoIcy("too many redirects")
+
+    return await asyncio.wait_for(run(), timeout=wait)
+
+
+TITLE_POLL = 15.0
+
+
 class RadioPlayer:
     """Runs ffmpeg <url> -> s16le 44.1 kHz stereo into the leader's radio FIFO."""
 
@@ -121,6 +205,12 @@ class RadioPlayer:
         self._fake_running = False
         self.restarts = 0
         self._next_try = 0.0
+        # Song-title refresh (see fetch_icy_title). Overridable in tests.
+        self.title_fetcher = fetch_icy_title
+        self.poll_titles = managed
+        self.title_poll = TITLE_POLL
+        self.on_title: Callable[[], None] | None = None
+        self._titles: asyncio.Task[None] | None = None
 
     @property
     def running(self) -> bool:
@@ -173,6 +263,7 @@ class RadioPlayer:
         if not url:
             return
         self.stream_title = None
+        self._start_titles(url)
         if not self.managed:
             self._fake_running = True
             return
@@ -198,7 +289,41 @@ class RadioPlayer:
             text = line.decode(errors="replace").strip()
             match = _STREAM_TITLE.search(text)
             if match:
-                self.stream_title = match.group(1).strip() or None
+                self._set_title(match.group(1).strip() or None)
+
+    def _set_title(self, title: str | None) -> None:
+        if title != self.stream_title:
+            self.stream_title = title
+            if self.on_title is not None:
+                self.on_title()
+
+    def _start_titles(self, url: str) -> None:
+        if self._titles is not None:
+            self._titles.cancel()
+            self._titles = None
+        if self.poll_titles:
+            self._titles = asyncio.create_task(self._poll_titles(url))
+
+    async def _poll_titles(self, url: str) -> None:
+        """Keep stream_title current for as long as this station plays."""
+        misses = 0
+        while self.station is not None and self.station.get("url") == url:
+            await asyncio.sleep(self.title_poll)
+            if self.paused or self.station is None or self.station.get("url") != url:
+                return
+            try:
+                title = await self.title_fetcher(url, USER_AGENT)
+            except NoIcy:
+                logger.info("No ICY metadata on %s; song titles stay as ffmpeg reported", url)
+                return
+            except (OSError, TimeoutError, asyncio.IncompleteReadError, ValueError, ssl.SSLError):
+                misses += 1
+                if misses >= 20:
+                    return
+                continue
+            misses = 0
+            if title is not None:
+                self._set_title(title)
 
     async def pause(self) -> None:
         await self.stop(keep_station=True)
@@ -209,6 +334,9 @@ class RadioPlayer:
             self.station = None
             self.paused = False
         self._fake_running = False
+        if self._titles is not None:
+            self._titles.cancel()
+            self._titles = None
         proc, self._proc = self._proc, None
         if proc is not None and proc.returncode is None:
             proc.terminate()

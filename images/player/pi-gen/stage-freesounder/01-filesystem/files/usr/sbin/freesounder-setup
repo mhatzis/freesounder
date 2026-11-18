@@ -14,7 +14,9 @@ Usage:
   freesounder-setup dsp-bench           # time the DSP chain while sweeping settings (silent)
   freesounder-setup set-name <room>     # rename the room (also fs-<room> hostname)
   freesounder-setup set-dac auto|none|dacplus|digiampplus|hifiberry-dac|iqaudio-dacplus
-  freesounder-setup reset               # forget the household and room (factory reset)
+  freesounder-setup reset               # leave the home (keeps Wi-Fi)
+  freesounder-setup factory-reset       # forget Wi-Fi, home, room; back to Bluetooth setup as fs-new
+  freesounder-setup diagnostics         # last shutdown reason, power/throttle flags, previous-boot errors
 
 Every player is equal. Use the FreeSounder app for everything else.
 HELP
@@ -104,6 +106,14 @@ CONF
 		api -X POST http://127.0.0.1:8080/api/v2/reset -d '{"confirm": true}'
 		rm -rf /var/lib/freesounder/spotify/* 2>/dev/null || true
 		echo
+		;;
+	factory-reset)
+		need_root
+		exec /usr/lib/freesounder/factory-reset --reason console
+		;;
+	diagnostics)
+		id=$(cat /etc/freesounder/player-id)
+		api "http://127.0.0.1:8080/api/v2/rooms/${id}/diagnostics" | jq . 2>/dev/null || true
 		;;
 	help|-h|--help) usage ;;
 	*) usage; exit 1 ;;

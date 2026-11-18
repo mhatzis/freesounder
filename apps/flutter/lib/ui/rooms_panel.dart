@@ -90,7 +90,14 @@ class RoomsPanel extends ConsumerWidget {
                     ),
                   )
                 : ListView.separated(
-                    padding: const EdgeInsets.fromLTRB(12, 4, 12, 24),
+                    key: const Key('rooms-list'),
+                    // The last room must scroll clear of the mini player.
+                    padding: EdgeInsets.fromLTRB(
+                      12,
+                      4,
+                      12,
+                      24 + (asRail ? 0 : FsTokens.miniPlayerHeight + MediaQuery.paddingOf(context).bottom),
+                    ),
                     itemCount: rooms.length,
                     separatorBuilder: (_, _) => const SizedBox(height: 4),
                     itemBuilder: (context, index) => _RoomTile(room: rooms[index]),
@@ -107,6 +114,30 @@ class _RoomTile extends ConsumerWidget {
 
   final Room room;
 
+  Future<void> _confirmForget(BuildContext context, WidgetRef ref) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialog) => AlertDialog(
+        title: Text('Remove ${room.name}?'),
+        content: const Text(
+          'This player has not been seen for a while. Remove it if you reset it or no longer use it. '
+          'If it comes back online it shows up again.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(dialog).pop(false), child: const Text('Cancel')),
+          FilledButton(
+            key: const Key('confirm-forget-room'),
+            onPressed: () => Navigator.of(dialog).pop(true),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true) {
+      await ref.read(playbackProvider.notifier).forgetRoom(room.id);
+    }
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final state = ref.watch(playbackProvider);
@@ -117,13 +148,21 @@ class _RoomTile extends ConsumerWidget {
     final nowArtist = np?.hasTrack == true ? np!.artist : room.nowArtist;
     final art = [...?np?.artworkCandidates, ?room.nowImageUrl];
     final nowLine = [?nowTitle, ?nowArtist].where((s) => s.isNotEmpty).join(' · ');
+    final offline = !room.available;
+    final status = offline
+        ? 'Offline'
+        : [
+            if (room.volume != null) '${room.volume}',
+            if (room.isGrouped) room.groupName ?? 'Grouped',
+            if (room.relayingFor != null) 'Playing for ${room.relayingFor}',
+          ].join(' · ');
     return Material(
       color: selected ? scheme.primaryContainer.withValues(alpha: 0.55) : Colors.transparent,
       borderRadius: BorderRadius.circular(16),
       child: InkWell(
         borderRadius: BorderRadius.circular(16),
         onTap: () => ref.read(playbackProvider.notifier).selectRoom(room.id),
-        onLongPress: () => showRoomSettingsSheet(context, roomId: room.id, roomName: room.name),
+        onLongPress: offline ? null : () => showRoomSettingsSheet(context, roomId: room.id, roomName: room.name),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(12, 10, 8, 6),
           child: Column(
@@ -142,16 +181,31 @@ class _RoomTile extends ConsumerWidget {
                       color: selected ? scheme.primary : scheme.onSurfaceVariant,
                     ),
                   const SizedBox(width: 12),
+                  // Title takes the free width (ellipsised, never squeezed to
+                  // one letter per line); status goes on its own line under it.
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
                           room.name,
+                          key: Key('room-name-${room.id}'),
+                          maxLines: 1,
+                          softWrap: false,
+                          overflow: TextOverflow.ellipsis,
                           style: Theme.of(context).textTheme.titleSmall
                               ?.copyWith(fontWeight: selected ? FontWeight.w600 : FontWeight.w500),
                         ),
-                        if (nowLine.isNotEmpty)
+                        if (status.isNotEmpty)
+                          Text(
+                            status,
+                            key: Key('room-status-${room.id}'),
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.labelSmall
+                                ?.copyWith(color: offline ? scheme.error : scheme.onSurfaceVariant),
+                          ),
+                        if (nowLine.isNotEmpty && !offline)
                           Text(
                             nowLine,
                             key: Key('room-now-${room.id}'),
@@ -162,34 +216,36 @@ class _RoomTile extends ConsumerWidget {
                       ],
                     ),
                   ),
-                  Text(
-                    [
-                      if (room.volume != null) '${room.volume}',
-                      if (room.isGrouped) room.groupName ?? 'Grouped',
-                      if (room.relayingFor != null) 'Playing for ${room.relayingFor}',
-                    ].join(' · '),
-                    key: Key('room-status-${room.id}'),
-                    style: Theme.of(context).textTheme.labelSmall?.copyWith(color: scheme.onSurfaceVariant),
-                  ),
-                  IconButton(
-                    key: Key('room-group-${room.id}'),
-                    tooltip: 'Group with other rooms',
-                    icon: Icon(room.isGrouped ? Icons.link : Icons.add_link, size: 20),
-                    onPressed: () => showGroupSheet(context, room),
-                  ),
-                  IconButton(
-                    key: Key('room-settings-${room.id}'),
-                    tooltip: 'Room settings',
-                    icon: const Icon(Icons.tune, size: 20),
-                    onPressed: () => showRoomSettingsSheet(context, roomId: room.id, roomName: room.name),
-                  ),
+                  if (offline)
+                    IconButton(
+                      key: Key('room-forget-${room.id}'),
+                      tooltip: 'Remove this room',
+                      icon: const Icon(Icons.delete_outline, size: 20),
+                      onPressed: () => _confirmForget(context, ref),
+                    ),
+                  if (!offline)
+                    IconButton(
+                      key: Key('room-group-${room.id}'),
+                      tooltip: 'Group with other rooms',
+                      icon: Icon(room.isGrouped ? Icons.link : Icons.add_link, size: 20),
+                      onPressed: () => showGroupSheet(context, room),
+                    ),
+                  if (!offline)
+                    IconButton(
+                      key: Key('room-settings-${room.id}'),
+                      tooltip: 'Room settings',
+                      icon: const Icon(Icons.tune, size: 20),
+                      onPressed: () => showRoomSettingsSheet(context, roomId: room.id, roomName: room.name),
+                    ),
                 ],
               ),
               Slider(
                 value: (room.volume ?? 0).clamp(0, 100).toDouble(),
                 max: 100,
                 label: '${room.volume ?? 0}',
-                onChanged: (value) => ref.read(playbackProvider.notifier).setVolume(room.id, value.round()),
+                onChanged: offline
+                    ? null
+                    : (value) => ref.read(playbackProvider.notifier).setVolume(room.id, value.round()),
               ),
             ],
           ),

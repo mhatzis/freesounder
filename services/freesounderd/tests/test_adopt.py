@@ -99,3 +99,52 @@ async def test_board_already_in_another_home_is_refused_until_reset(lan: Lan, ma
     assert b.store.known_peers() == {}
     res = await a.client.post("/api/v2/players/adopt", json={"ip": b.ip, "room": "Lounge"})
     assert res.status_code == 200, res.text
+
+
+async def test_offline_member_stays_listed_as_offline_and_can_be_removed(
+    lan: Lan, make_player
+) -> None:
+    from .conftest import age_out
+
+    a, b = make_player("10.0.0.1"), make_player("10.0.0.2")
+    await a.client.post("/api/v2/setup", json={"room": "Kitchen"})
+    await a.client.post("/api/v2/players/adopt", json={"ip": b.ip, "id": b.id, "room": "Patio"})
+    await settle(lan, [a, b])
+    # Patio loses power; long enough that the live record is forgotten.
+    lan.down.add(b.ip)
+    age_out(a, b.id, seconds=10_000)
+    await settle(lan, [a])
+    assert b.id not in a.engine.peers
+    rooms = {r["id"]: r for r in (await a.client.get("/api/v2/rooms")).json()}
+    assert rooms[b.id]["name"] == "Patio" and rooms[b.id]["available"] is False
+    groups = (await a.client.get("/api/v2/groups")).json()
+    assert all(b.id not in g["member_ids"] for g in groups)
+    # Also after a restart of Kitchen's daemon (state from disk only).
+    a.engine.peers.clear()
+    rooms = {r["id"]: r for r in (await a.client.get("/api/v2/rooms")).json()}
+    assert rooms[b.id]["available"] is False
+    # Back online: available again.
+    lan.down.discard(b.ip)
+    await settle(lan, [a, b])
+    rooms = {r["id"]: r for r in (await a.client.get("/api/v2/rooms")).json()}
+    assert rooms[b.id]["available"] is True
+    assert (await a.client.delete(f"/api/v2/rooms/{b.id}")).status_code == 409
+    # Removed while offline: gone for good (until it is seen again).
+    lan.down.add(b.ip)
+    age_out(a, b.id, seconds=10_000)
+    await settle(lan, [a])
+    assert (await a.client.delete(f"/api/v2/rooms/{b.id}")).status_code == 200
+    assert b.id not in {r["id"] for r in (await a.client.get("/api/v2/rooms")).json()}
+
+
+def test_previous_boot_ending_is_classified() -> None:
+    from freesounderd.diagnostics import classify_ending
+
+    assert classify_ending("systemd-logind[1]: Power key pressed short.") == (
+        "power button pressed (clean shutdown)"
+    )
+    assert classify_ending("kernel: reboot: Power down") == "clean power-off"
+    assert classify_ending("snapclient[9]: playing\nkernel: wlan0: ...") == (
+        "power lost or hard reset (no clean shutdown was logged)"
+    )
+    assert classify_ending("") == "unknown (no log of the previous boot)"

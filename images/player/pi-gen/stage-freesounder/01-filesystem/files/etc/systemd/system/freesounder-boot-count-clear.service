@@ -1,0 +1,11 @@
+[Unit]
+Description=FreeSounder: this boot ran normally, clear the power-cycle counter (at 25 s uptime)
+After=freesounder-boot-count.service
+
+[Service]
+Type=simple
+ExecStart=/opt/freesounder/venv/bin/freesounder-reset-triggers boot-clear
+SyslogIdentifier=freesounder-reset
+
+[Install]
+WantedBy=multi-user.target

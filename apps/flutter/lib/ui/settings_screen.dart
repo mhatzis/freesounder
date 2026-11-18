@@ -41,9 +41,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     _versionTaps += 1;
     if (_versionTaps == 7) {
       ref.read(developerModeProvider.notifier).set(true);
-      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-        const SnackBar(content: Text('Developer mode on')),
-      );
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(const SnackBar(content: Text('Developer mode on')));
     }
   }
 
@@ -71,7 +69,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         children: [
           Text('System', style: text.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
           const SizedBox(height: 8),
-          _StatusCard(state: state),
+          _StatusCard(state: state, developer: ref.watch(developerModeProvider)),
           if (state.error != null) ...[
             const SizedBox(height: 8),
             Text(state.error!, style: text.bodySmall?.copyWith(color: scheme.error)),
@@ -95,12 +93,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 contentPadding: EdgeInsets.zero,
                 leading: Icon(
                   Icons.speaker_group_outlined,
-                  color: host.url == state.hostUrl && !state.mockMode
-                      ? scheme.primary
-                      : scheme.onSurfaceVariant,
+                  color: host.url == state.hostUrl && !state.mockMode ? scheme.primary : scheme.onSurfaceVariant,
                 ),
                 title: Text(host.name),
-                subtitle: Text(host.url),
+                subtitle: ref.watch(developerModeProvider) ? Text(host.url) : null,
                 trailing: host.url == state.hostUrl && !state.mockMode
                     ? Text('Connected', style: text.labelSmall?.copyWith(color: scheme.primary))
                     : null,
@@ -126,9 +122,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             runSpacing: 8,
             children: [
               FilledButton(
-                onPressed: _busy
-                    ? null
-                    : () => _run(() => ref.read(playbackProvider.notifier).connectTo(_host.text)),
+                onPressed: _busy ? null : () => _run(() => ref.read(playbackProvider.notifier).connectTo(_host.text)),
                 child: const Text('Connect'),
               ),
               OutlinedButton(
@@ -136,9 +130,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 child: const Text('Reconnect'),
               ),
               OutlinedButton(
-                onPressed: _busy
-                    ? null
-                    : () => _run(() => ref.read(playbackProvider.notifier).refreshDiscovery()),
+                onPressed: _busy ? null : () => _run(() => ref.read(playbackProvider.notifier).refreshDiscovery()),
                 child: const Text('Search again'),
               ),
             ],
@@ -175,6 +167,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             title: const Text('Add a player'),
             subtitle: const Text('Set up a new Pi over Bluetooth, or adopt one already on your network'),
             onTap: () => showAddPlayerSheet(context),
+          ),
+          ListTile(
+            key: const Key('reset-help-tile'),
+            contentPadding: EdgeInsets.zero,
+            leading: const Icon(Icons.restart_alt),
+            title: const Text('Reset a player'),
+            subtitle: const Text('Start a player over from scratch (Wi-Fi, home and room name)'),
+            onTap: () => showResetHelp(context),
           ),
           const SizedBox(height: 16),
           Text('Music', style: text.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
@@ -223,10 +223,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               'AirPlay as one speaker, for example "Kitchen + 1". Pick it there.',
             ),
           ),
-          if (_busy) ...[
-            const SizedBox(height: 16),
-            const LinearProgressIndicator(),
-          ],
+          if (_busy) ...[const SizedBox(height: 16), const LinearProgressIndicator()],
           const SizedBox(height: 16),
           ListTile(
             key: const Key('app-version-tile'),
@@ -245,30 +242,56 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 }
 
 class _StatusCard extends StatelessWidget {
-  const _StatusCard({required this.state});
+  const _StatusCard({required this.state, this.developer = false});
 
   final PlaybackState state;
+  final bool developer;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final title = state.mockMode
-        ? 'Demo household'
-        : (state.connected ? 'Connected' : 'Not connected');
+    final title = state.mockMode ? 'Demo household' : (state.connected ? 'Connected' : 'Not connected');
+    final rooms = state.rooms.where((r) => !r.isGroup).length;
+    // The player's address is only for developers; everyone else sees the home.
     final detail = state.mockMode
         ? 'Three example rooms. Connect to a player when you have a Pi ready.'
-        : (state.hostUrl ?? 'No player saved yet');
+        : developer
+        ? 'Connected to ${state.hostUrl ?? 'no player yet'}'
+        : state.connected
+        ? (rooms == 1 ? '1 room in your home' : '$rooms rooms in your home')
+        : (state.hostUrl == null ? 'No player set up yet' : 'Looking for your players on this Wi-Fi…');
     return Card(
       elevation: 0,
       color: scheme.surfaceContainerLow,
       child: ListTile(
-        leading: Icon(
-          state.mockMode ? Icons.science_outlined : Icons.home_outlined,
-          color: scheme.primary,
-        ),
+        leading: Icon(state.mockMode ? Icons.science_outlined : Icons.home_outlined, color: scheme.primary),
         title: Text(title),
         subtitle: Text(detail),
       ),
     );
   }
+}
+
+/// How to factory-reset a player without the app (docs/reset.md).
+const resetHelpText =
+    'A reset forgets the player\'s Wi-Fi, its home and its room name, and puts it back into '
+    'Bluetooth setup mode, ready to add again.\n\n'
+    'Raspberry Pi 5: press its power button 5 times quickly (within 3 seconds). '
+    'One press shuts it down cleanly.\n\n'
+    'Any Pi, no tools: plug it in, wait about 20 seconds, unplug. Do this 5 times in a row '
+    '(from the 2nd time the green light blinks once for each), then plug it in and leave it.\n\n'
+    'Wired button (optional): a push button between pin 5 (GPIO3) and pin 6 (GND). '
+    'Tap it 5 times quickly to reset; one press shuts down, and pressing it again starts the Pi.\n\n'
+    'The screen on the Pi (HDMI) then shows "Reset - ready for setup". '
+    'Remove the old room from your other players with the bin icon next to it.';
+
+Future<void> showResetHelp(BuildContext context) {
+  return showDialog<void>(
+    context: context,
+    builder: (dialog) => AlertDialog(
+      title: const Text('Reset a player'),
+      content: const SingleChildScrollView(child: Text(resetHelpText, key: Key('reset-help-text'))),
+      actions: [TextButton(onPressed: () => Navigator.of(dialog).pop(), child: const Text('OK'))],
+    ),
+  );
 }

@@ -49,6 +49,20 @@ install -m 0644 files/etc/systemd/system/freesounder-hostname.service "${ROOTFS_
 install -m 0644 files/etc/systemd/system/freesounder-status.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-status.service"
 install -m 0644 files/etc/systemd/system/freesounder-sanitize-imager.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-sanitize-imager.service"
 install -m 0644 files/etc/systemd/system/freesounder-ssh-reset.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-ssh-reset.service"
+# Factory reset (buttons, power-cycle counter), power logging, persistent journal.
+install -m 0755 files/usr/lib/freesounder/factory-reset "${ROOTFS_DIR}/usr/lib/freesounder/factory-reset"
+install -m 0644 files/etc/freesounder/button "${ROOTFS_DIR}/etc/freesounder/button"
+for unit in freesounder-buttons.service freesounder-boot-count.service \
+	freesounder-boot-count-clear.service freesounder-factory-reset.service \
+	freesounder-power.service freesounder-power-boot.service freesounder-power.timer; do
+	install -m 0644 "files/etc/systemd/system/${unit}" "${ROOTFS_DIR}/etc/systemd/system/${unit}"
+done
+install -d "${ROOTFS_DIR}/etc/systemd/logind.conf.d" "${ROOTFS_DIR}/etc/systemd/journald.conf.d"
+install -m 0644 files/etc/systemd/logind.conf.d/10-freesounder.conf \
+	"${ROOTFS_DIR}/etc/systemd/logind.conf.d/10-freesounder.conf"
+install -m 0644 files/etc/systemd/journald.conf.d/10-freesounder.conf \
+	"${ROOTFS_DIR}/etc/systemd/journald.conf.d/10-freesounder.conf"
+install -d -m 2755 "${ROOTFS_DIR}/var/log/journal"
 install -m 0644 files/etc/default/snapclient "${ROOTFS_DIR}/etc/default/snapclient"
 install -m 0644 files/etc/alsa/conf.d/99-freesounder.conf "${ROOTFS_DIR}/etc/alsa/conf.d/99-freesounder.conf"
 install -m 0755 files/etc/update-motd.d/20-freesounder "${ROOTFS_DIR}/etc/update-motd.d/20-freesounder"

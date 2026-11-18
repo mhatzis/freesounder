@@ -726,6 +726,21 @@ class PlaybackStore extends Notifier<PlaybackState> {
     await _transport(room.id, 'next');
   }
 
+  /// Remove an offline room from the home (it reappears if it comes back).
+  Future<void> forgetRoom(String roomId) async {
+    if (state.mockMode) {
+      _mock.rooms.removeWhere((r) => r.id == roomId);
+      state = state.copyWith(rooms: List.of(_mock.rooms));
+      return;
+    }
+    final client = _client;
+    if (client == null) {
+      return;
+    }
+    await client.forgetRoom(roomId);
+    state = state.copyWith(rooms: state.rooms.where((r) => r.id != roomId).toList());
+  }
+
   Future<void> setVolume(String roomId, int level) async {
     final limit = state.settings[roomId]?.volumeLimit ?? 100;
     final clamped = level.clamp(0, limit);

@@ -191,6 +191,9 @@ class Engine:
         self.radio_browser = RadioBrowser(self.http, settings.radio_browser_base)
         self.art = ArtLookup(self.http, enabled=settings.radio_art_lookup)
         self.art.on_found = self.kick
+        # New song on the radio (ICY title poll): recompute now playing and
+        # push it to the app and the group straight away.
+        self.radio.on_title = self.kick
         self.airplay_art = AirplayArt()
         self._spotify_login_active = False
         self._spotify_login_lock = asyncio.Lock()
@@ -265,6 +268,23 @@ class Engine:
             item = dict(rec)
             item["available"] = now - rec.get("_seen", 0) <= self.settings.leader_timeout
             out[pid] = item
+        # Members this player has seen before but not lately (switched off,
+        # unplugged, or not back since our restart): show them as offline
+        # rather than letting the room vanish. "Remove" in the app forgets one.
+        if self.store.household() is not None:
+            names = self.store.known_peer_names()
+            for pid, (ip, port) in self.store.known_peers().items():
+                if pid in out:
+                    continue
+                out[pid] = {
+                    "id": pid,
+                    "room": names.get(pid) or "Offline player",
+                    "ip": ip,
+                    "port": port,
+                    "available": False,
+                    "follow": None,
+                    "offline": True,
+                }
         return out
 
     def _members(self, recs: dict[str, dict[str, Any]], leader: str) -> list[dict[str, Any]]:
@@ -279,6 +299,8 @@ class Engine:
         recs = self.records()
         out = []
         for rec in recs.values():
+            if rec.get("offline"):
+                continue
             if rec.get("follow"):
                 leader = recs.get(rec["follow"])
                 if leader is not None and leader.get("follow") is None:
@@ -549,7 +571,7 @@ class Engine:
             self.peers[pid] = rec
             self.peer_hints.pop(pid, None)
             try:
-                self.store.remember_peer(pid, ip, port)
+                self.store.remember_peer(pid, ip, port, rec.get("room"))
             except OSError:
                 pass
             # Gossip: members it knows become candidates here too.

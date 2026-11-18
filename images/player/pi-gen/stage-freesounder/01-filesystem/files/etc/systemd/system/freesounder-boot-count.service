@@ -1,0 +1,15 @@
+[Unit]
+Description=FreeSounder power-cycle reset counter (5 short boots in a row = factory reset)
+DefaultDependencies=no
+After=local-fs.target
+Before=sysinit.target freesounder-factory-reset.service
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/freesounder/venv/bin/freesounder-reset-triggers boot-count
+SyslogIdentifier=freesounder-reset
+
+[Install]
+WantedBy=sysinit.target

@@ -104,12 +104,43 @@ class Store:
                     out[str(pid)] = (rec["ip"], int(rec.get("port", 8080)))
         return out
 
-    def remember_peer(self, pid: str, ip: str, port: int = 8080) -> None:
+    def known_peer_names(self) -> dict[str, str]:
+        try:
+            raw = json.loads(self.known_peers_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        return {
+            str(pid): rec["room"]
+            for pid, rec in raw.items()
+            if isinstance(rec, dict) and isinstance(rec.get("room"), str)
+        }
+
+    def remember_peer(self, pid: str, ip: str, port: int = 8080, room: str | None = None) -> None:
         current = self.known_peers()
-        if current.get(pid) == (ip, port):
+        names = self.known_peer_names()
+        if current.get(pid) == (ip, port) and (room is None or names.get(pid) == room):
             return
         current[pid] = (ip, port)
-        data = {k: {"ip": v[0], "port": v[1]} for k, v in current.items()}
+        if room:
+            names[pid] = room
+        data = {
+            k: {"ip": v[0], "port": v[1], **({"room": names[k]} if k in names else {})}
+            for k, v in current.items()
+        }
+        _write_atomic(self.known_peers_path, json.dumps(data, indent=2) + "\n")
+
+    def forget_peer(self, pid: str) -> None:
+        current = self.known_peers()
+        names = self.known_peer_names()
+        if pid not in current:
+            return
+        current.pop(pid)
+        data = {
+            k: {"ip": v[0], "port": v[1], **({"room": names[k]} if k in names else {})}
+            for k, v in current.items()
+        }
         _write_atomic(self.known_peers_path, json.dumps(data, indent=2) + "\n")
 
     def state(self) -> str:

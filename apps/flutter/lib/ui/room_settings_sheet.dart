@@ -33,8 +33,15 @@ const dacOptions = <(String, String)>[
 
 /// Boards that drive speakers directly; they start with a safe volume limit.
 const ampDacs = {
-  'hifiberry-amp2', 'hifiberry-amp3', 'hifiberry-amp4', 'hifiberry-amp4pro', 'hifiberry-amp100',
-  'digiampplus', 'iqaudio-digiampplus', 'pcm5122-amp', 'max98357a',
+  'hifiberry-amp2',
+  'hifiberry-amp3',
+  'hifiberry-amp4',
+  'hifiberry-amp4pro',
+  'hifiberry-amp100',
+  'digiampplus',
+  'iqaudio-digiampplus',
+  'pcm5122-amp',
+  'max98357a',
 };
 
 Future<void> showRoomSettingsSheet(BuildContext context, {required String roomId, String? roomName}) {
@@ -206,6 +213,30 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
       _toneBusy = false;
       _toneResult = result;
       _audioLines = lines;
+    });
+  }
+
+  bool _diagBusy = false;
+  String? _diag;
+
+  Future<void> _loadDiagnostics() async {
+    setState(() => _diagBusy = true);
+    String text;
+    try {
+      final client = ref.read(playbackProvider.notifier).client;
+      if (client == null) {
+        throw StateError('Not connected');
+      }
+      text = formatDiagnostics(await client.diagnostics(widget.roomId));
+    } on Object catch (err) {
+      text = 'Could not read diagnostics: ${userMessageFor(err)}';
+    }
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _diagBusy = false;
+      _diag = text;
     });
   }
 
@@ -432,6 +463,17 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
                     ],
                     if (_ssh?.warning != null)
                       Text(_ssh!.warning!, style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant)),
+                    const SizedBox(height: 8),
+                    OutlinedButton.icon(
+                      key: const Key('diagnostics-button'),
+                      onPressed: _diagBusy ? null : _loadDiagnostics,
+                      icon: const Icon(Icons.monitor_heart_outlined),
+                      label: Text(_diagBusy ? 'Reading diagnostics…' : 'Diagnostics (last shutdown, power)'),
+                    ),
+                    if (_diag != null) ...[
+                      const SizedBox(height: 8),
+                      SelectableText(_diag!, key: const Key('diagnostics-text'), style: text.bodySmall),
+                    ],
                   ],
                   if (_error != null) ...[
                     const SizedBox(height: 8),
@@ -519,4 +561,28 @@ String _balance(double value) {
   }
   final amount = value.abs() % 1 == 0 ? value.abs().toStringAsFixed(0) : value.abs().toStringAsFixed(1);
   return value < 0 ? 'L $amount' : 'R $amount';
+}
+
+/// Diagnostics from the player as plain text (developer mode).
+String formatDiagnostics(Map<String, dynamic> d) {
+  List<String> lines(Object? v) => [for (final x in (v as List? ?? const [])) '$x'];
+  final flags = lines(d['throttled_flags']);
+  return [
+    'Previous boot ended: ${d['previous_boot_ended'] ?? 'unknown'}',
+    'Power: ${d['throttled'] ?? '?'} ${flags.isEmpty ? '(ok)' : '(${flags.join(', ')})'}',
+    if (d['input_voltage'] != null) 'Input voltage: ${d['input_voltage']}',
+    if (d['temperature'] != null) 'Temperature: ${d['temperature']}',
+    if (d['pmic_reset_reason'] != null) 'Pi 5 reset reason: ${d['pmic_reset_reason']}',
+    if (lines(d['power_log']).isNotEmpty) ...['', 'Power log:', ...lines(d['power_log'])],
+    if (lines(d['previous_boot_errors']).isNotEmpty) ...[
+      '',
+      'Previous boot errors:',
+      ...lines(d['previous_boot_errors']),
+    ],
+    if (lines(d['previous_boot_tail']).isNotEmpty) ...[
+      '',
+      'Previous boot, last lines:',
+      ...lines(d['previous_boot_tail']),
+    ],
+  ].join('\n');
 }

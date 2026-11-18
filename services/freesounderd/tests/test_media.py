@@ -202,3 +202,42 @@ async def test_airplay_sender_volume_becomes_group_volume(lan: Lan, make_player)
     assert (
         await a.client.post("/api/v2/airplay/volume", json={"airplay_db": 5})
     ).status_code == 422
+
+
+async def test_grouped_radio_song_changes_reach_every_member(lan: Lan, make_player) -> None:
+    """Two rooms grouped on radio: a new song shows on the member too, with new art."""
+    a, b = await setup_household(make_player, ("10.0.0.1", "Pi 5"), ("10.0.0.2", "Pi 5"))
+    await settle(lan, [a, b])
+    await a.client.put(f"/api/v2/groups/{a.id}/members", json={"members": [a.id, b.id]})
+    titles = ["Daft Punk - One More Time", "Air - Sexy Boy"]
+
+    async def fetcher(url: str, ua: str) -> str | None:
+        return titles[0]
+
+    radio = a.engine.radio
+    radio.poll_titles, radio.title_poll, radio.title_fetcher = True, 0.01, fetcher
+    await a.client.post(
+        f"/api/v2/groups/{a.id}/radio",
+        json={"url": "http://radio.example/s", "name": "Radio X", "favicon": "http://logo/x.png"},
+    )
+    lan.itunes = [
+        {"artistName": "Daft Punk", "artworkUrl100": "https://is1.example/dp/100x100bb.jpg"}
+    ]
+    for _ in range(3):
+        await asyncio.sleep(0.05)
+        await settle(lan, [a, b])
+    np = (await b.client.get("/api/v2/now-playing", params={"player_id": b.id})).json()
+    assert np["title"] == "One More Time"
+    assert np["image_url"] == "https://is1.example/dp/600x600bb.jpg"
+
+    titles[0] = "Air - Sexy Boy"
+    lan.itunes = [{"artistName": "Air", "artworkUrl100": "https://is1.example/air/100x100bb.jpg"}]
+    for _ in range(3):
+        await asyncio.sleep(0.05)
+        await settle(lan, [a, b])
+    np = (await b.client.get("/api/v2/now-playing", params={"player_id": b.id})).json()
+    assert (np["artist"], np["title"]) == ("Air", "Sexy Boy")
+    assert np["image_url"] == "https://is1.example/air/600x600bb.jpg"
+    rooms = (await b.client.get("/api/v2/rooms")).json()
+    assert {r["now_playing"]["title"] for r in rooms} == {"Sexy Boy"}
+    await radio.stop()
