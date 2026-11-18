@@ -192,12 +192,19 @@ jobs:
           if not build_id:
               raise SystemExit(f"Build did not become VALID in time (last state={processing})")
           group = os.environ["ASC_BETA_GROUP_ID"]
-          add = requests.post(
-              f"{base}/betaGroups/{group}/relationships/builds",
-              headers=headers(),
-              json={"data": [{"type": "builds", "id": build_id}]},
-              timeout=60,
-          )
+          # Right after VALID the build is sometimes not yet visible to the
+          # beta-group API (404 NOT_FOUND): retry for a while.
+          for attempt in range(12):
+              add = requests.post(
+                  f"{base}/betaGroups/{group}/relationships/builds",
+                  headers=headers(),
+                  json={"data": [{"type": "builds", "id": build_id}]},
+                  timeout=60,
+              )
+              if add.status_code != 404:
+                  break
+              print(f"build not visible to the beta group yet (attempt {attempt + 1}); retrying")
+              time.sleep(30)
           if add.status_code not in {200, 201, 204, 409}:
               raise SystemExit(f"Could not add build to group: {add.status_code} {add.text}")
           print(f"Added build {build_id} to Internal group {group} (HTTP {add.status_code})")
