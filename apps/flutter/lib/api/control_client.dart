@@ -131,6 +131,11 @@ class ControlApiClient {
     return (data as Map?)?.cast<String, dynamic>() ?? const {};
   }
 
+  /// Restart a player (to load a new audio board overlay).
+  Future<void> rebootPlayer(String playerId) async {
+    await _send('POST', '/api/v2/rooms/$playerId/reboot');
+  }
+
   /// Active output device, EQ chain self-test, snapclient and stream state.
   Future<Map<String, dynamic>> roomAudio(String playerId) async {
     final data = await _send('GET', '/api/v2/rooms/$playerId/audio');

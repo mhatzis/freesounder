@@ -1,0 +1,10 @@
+[Unit]
+Description=FreeSounder: re-pick the audio output after late sound cards (25 s and 75 s after boot)
+
+[Timer]
+OnBootSec=25s
+OnBootSec=75s
+AccuracySec=2s
+
+[Install]
+WantedBy=timers.target

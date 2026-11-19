@@ -93,6 +93,10 @@ install -m 0644 files/etc/udev/rules.d/81-freesounder-audio-output.rules \
 	"${ROOTFS_DIR}/etc/udev/rules.d/81-freesounder-audio-output.rules"
 install -m 0644 files/etc/systemd/system/freesounder-audio-output.service \
 	"${ROOTFS_DIR}/etc/systemd/system/freesounder-audio-output.service"
+install -m 0644 files/etc/systemd/system/freesounder-audio-output.timer \
+	"${ROOTFS_DIR}/etc/systemd/system/freesounder-audio-output.timer"
+install -m 0644 files/etc/systemd/system/freesounder-audio-detect.service \
+	"${ROOTFS_DIR}/etc/systemd/system/freesounder-audio-detect.service"
 install -d "${ROOTFS_DIR}/etc/systemd/system/snapclient.service.d"
 install -m 0644 files/etc/systemd/system/snapclient.service.d/10-freesounder.conf \
 	"${ROOTFS_DIR}/etc/systemd/system/snapclient.service.d/10-freesounder.conf"
@@ -110,13 +114,18 @@ for addr in 3f300000.mmcnr fe300000.mmcnr 1001100000.mmc 20300000.mmcnr; do
 done
 
 # Seed a DAC comment block so the overlay is discoverable before setup runs.
+# A reused rootfs may still carry an older block: replace it.
 if [ -f "${ROOTFS_DIR}/boot/firmware/config.txt" ]; then
+	sed -i '/^# --- freesounder-dac-start ---$/,/^# --- freesounder-dac-end ---$/d' \
+		"${ROOTFS_DIR}/boot/firmware/config.txt"
 	if ! grep -q 'freesounder-dac-start' "${ROOTFS_DIR}/boot/firmware/config.txt"; then
 		cat >> "${ROOTFS_DIR}/boot/firmware/config.txt" << 'CFG'
 
 # --- freesounder-dac-start ---
-# DAC: auto. HATs with an ID EEPROM load their own overlay; pick a board
-# without one in the app (room sound settings), e.g. dtoverlay=hifiberry-dac.
+[all]
+# DAC: auto (detected at boot by freesounder-audio-detect; see the app).
+# Onboard audio (Pi 4 headphone jack, HDMI) stays on as a fallback.
+dtparam=audio=on
 # --- freesounder-dac-end ---
 CFG
 	fi

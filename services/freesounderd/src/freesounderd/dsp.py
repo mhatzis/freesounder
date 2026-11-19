@@ -62,12 +62,13 @@ HDMI_FORMAT = "S16_LE"
 
 
 def read_audio_output(path: Path = AUDIO_OUTPUT_FILE) -> dict[str, str]:
-    """What select-audio-output chose: pcm, card, kind (card/hdmi/analog/null), reason.
+    """What select-audio-output chose: pcm, card, kind (card/hdmi/analog/null), reason,
+    plus the sound cards it saw and what the boot detection found.
 
     Without the file the chain uses ALSA's default device and card 0.
     """
 
-    out = {"pcm": "default", "card": "0", "kind": "", "reason": ""}
+    out = {"pcm": "default", "card": "0", "kind": "", "reason": "", "cards": "", "detected": ""}
     try:
         for line in path.read_text(encoding="utf-8").splitlines():
             key, _, value = line.partition("=")

@@ -17,6 +17,7 @@ DacChoice = Literal[
     "iqaudio-dacplus",
     "iqaudio-digiampplus",
     "hifiberry-dacplus",
+    "pifi-dacplus",
     "hifiberry-amp2",
     "hifiberry-amp3",
     "hifiberry-amp4",

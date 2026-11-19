@@ -4,7 +4,10 @@
 #   1. a DAC/HAT or USB card (anything that is not vc4-hdmi),
 #   2. the HDMI port with a display connected (Pi 5: vc4hdmi0 = HDMI0,
 #      vc4hdmi1 = HDMI1; there is no analog jack),
-#   3. otherwise the null sink (silent, but the room still appears).
+#   3. the Pi 4 headphone jack,
+#   4. otherwise the null sink (silent, but the room still appears).
+# Early in boot it waits up to 20 s for the cards (and for the DAC board when
+# one is expected), so it does not settle on the null sink while they probe.
 # HDMI uses the `hdmi:` PCM (IEC958 subframes; vc4-hdmi-0 and vc4-hdmi-1 are
 # separate cards), never `default:`, whose softvol control can sit at 0.
 # Writes /etc/freesounder/audio-output (pcm=, card=, kind=, reason=), unmutes
@@ -21,13 +24,65 @@ card=0
 kind=null
 reason="no audio device found; using the null sink so the room still registers"
 
+DETECT=${FREESOUNDER_AUDIO_DETECT:-/run/freesounder/audio-detect.json}
+BOOT_CFG=${FREESOUNDER_BOOT_CONFIG:-/boot/firmware/config.txt}
+UPTIME=${FREESOUNDER_UPTIME:-$(cut -d. -f1 /proc/uptime 2>/dev/null || echo 999)}
+WAIT=${FREESOUNDER_CARD_WAIT:-20}
+
 declare -a ids=()
 card_re='^([0-9]+) \[([A-Za-z0-9_]+) *\]: ([^ ]+)'
-while read -r line; do
-	if [[ "$line" =~ $card_re ]]; then
-		ids+=("${BASH_REMATCH[1]}:${BASH_REMATCH[2]}:${BASH_REMATCH[3]}")
-	fi
-done < "$CARDS" 2>/dev/null
+read_cards() {
+	ids=()
+	while read -r line; do
+		if [[ "$line" =~ $card_re ]]; then
+			ids+=("${BASH_REMATCH[1]}:${BASH_REMATCH[2]}:${BASH_REMATCH[3]}")
+		fi
+	done < "$CARDS" 2>/dev/null
+}
+has_external() {
+	local entry index id driver
+	for entry in "${ids[@]}"; do
+		IFS=: read -r index id driver <<<"$entry"
+		if [[ "$driver" != "vc4-hdmi" && "$id" != vc4hdmi* && "$id" != Headphones ]]; then
+			return 0
+		fi
+	done
+	return 1
+}
+# A DAC/amp board is expected when the boot detection found one or an
+# overlay is set in config.txt (or a HAT EEPROM is present).
+expect_external() {
+	grep -q '"expect_card": true' "$DETECT" 2>/dev/null && return 0
+	[[ -e /proc/device-tree/hat/product && -z "${FREESOUNDER_ASOUND_CARDS:-}" ]] && return 0
+	sed -n '/^# --- freesounder-dac-start ---$/,/^# --- freesounder-dac-end ---$/p' "$BOOT_CFG" 2>/dev/null |
+		grep -q '^dtoverlay='
+}
+read_cards
+# Early in boot the cards may still be probing (I2C codecs, vc4 HDMI,
+# USB): wait for them instead of settling on the null sink.
+if (( UPTIME < 180 )); then
+	waited=0
+	while (( waited < WAIT )); do
+		if (( ${#ids[@]} > 0 )) && { has_external || ! expect_external; }; then
+			break
+		fi
+		sleep 1
+		waited=$((waited + 1))
+		read_cards
+	done
+fi
+cards_seen=$(cat "$CARDS" 2>/dev/null | md5sum)
+card_list=""
+for entry in "${ids[@]}"; do
+	IFS=: read -r _ id _ <<<"$entry"
+	card_list+="${card_list:+, }$id"
+done
+if (( ${#ids[@]} == 0 )); then
+	reason="no sound card found (the kernel listed none); using the null sink so the room still registers"
+else
+	reason="no DAC/USB card, no HDMI display and no headphone jack; using the null sink so the room still registers"
+fi
+detected=$(sed -n 's/.*"detected": "\(.*\)",$/\1/p' "$DETECT" 2>/dev/null | head -1)
 
 hdmi_connected() {
 	# vc4hdmi0 -> HDMI-A-1, vc4hdmi1 -> HDMI-A-2
@@ -99,7 +154,8 @@ if [[ $kind != null && -z "${FREESOUNDER_NO_RENDER:-}" ]]; then
 	unmute_card "$card"
 fi
 
-new=$(printf 'pcm=%s\ncard=%s\nkind=%s\nreason=%s' "$pcm" "$card" "$kind" "$reason")
+new=$(printf 'pcm=%s\ncard=%s\nkind=%s\nreason=%s\ncards=%s\ndetected=%s' \
+	"$pcm" "$card" "$kind" "$reason" "${card_list:-none}" "${detected:-}")
 changed=0
 if [[ "$(cat "$OUT" 2>/dev/null)" != "$new" ]]; then
 	install -d "$(dirname "$OUT")"
@@ -113,4 +169,9 @@ fi
 # Hotplug (udev): only bounce snapclient when the device actually changed.
 if [[ "${1:-}" == "--restart-if-changed" && $changed == 1 ]]; then
 	systemctl --no-block try-restart snapclient.service || true
+fi
+# A card that appeared while this ran would be missed (a second udev start
+# of the oneshot merges into the running one): look again.
+if [[ "$(cat "$CARDS" 2>/dev/null | md5sum)" != "$cards_seen" && "${FS_SAO_PASS:-0}" -lt 3 ]]; then
+	FS_SAO_PASS=$(( ${FS_SAO_PASS:-0} + 1 )) exec "$0" --restart-if-changed
 fi

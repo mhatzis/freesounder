@@ -1420,6 +1420,18 @@ class PlaybackStore extends Notifier<PlaybackState> {
     return describeToneResult(result);
   }
 
+  /// Restart a player; it drops off for about a minute.
+  Future<void> rebootPlayer(String playerId) async {
+    if (state.mockMode) {
+      return;
+    }
+    final client = _client;
+    if (client == null) {
+      throw ControlApiException('Not connected to a system');
+    }
+    await client.rebootPlayer(playerId);
+  }
+
   Future<Map<String, dynamic>> roomAudio(String playerId) async {
     if (state.mockMode) {
       return const {
@@ -1562,6 +1574,8 @@ List<String> describeRoomAudio(Map<String, dynamic> audio) {
   return [
     'Output: ${output['reason'] ?? output['pcm'] ?? 'unknown'}',
     if (output['pcm'] != null) 'Device: ${output['pcm']}${hw != null ? ' (${hw['state'] ?? '?'})' : ''}',
+    if ((output['detected'] as String?)?.isNotEmpty ?? false) 'Detected: ${output['detected']}',
+    if ((output['cards'] as String?)?.isNotEmpty ?? false) 'Sound cards: ${output['cards']}',
     if (chain != null)
       chain['ok'] == false
           ? 'Sound chain: FAILED (${chain['detail']})'
