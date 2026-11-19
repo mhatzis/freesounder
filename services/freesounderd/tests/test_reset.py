@@ -137,3 +137,23 @@ def test_wired_button_pin_choice() -> None:
     assert button_line("gpio=17", "hifiberry-amp4pro", i2c_in_use=True) == "GPIO17"
     assert button_line("gpio=off", "none", i2c_in_use=False) is None
     assert button_line("gpio=banana", "none", i2c_in_use=False) is None
+
+
+def test_i2c_in_use_sees_dac_overlay_without_i2c_dev(tmp_path):
+    from freesounderd.reset import i2c_in_use
+
+    assert i2c_in_use(tmp_path) is False
+    boot = tmp_path / "boot/firmware"
+    boot.mkdir(parents=True)
+    (boot / "config.txt").write_text(
+        "[all]\n# --- freesounder-dac-start ---\n[all]\ndtparam=audio=on\n"
+        "dtoverlay=hifiberry-dacplus-std\n# --- freesounder-dac-end ---\n"
+    )
+    assert i2c_in_use(tmp_path) is True
+    (boot / "config.txt").write_text(
+        "# --- freesounder-dac-start ---\n[all]\ndtparam=audio=on\n# --- freesounder-dac-end ---\n"
+    )
+    assert i2c_in_use(tmp_path) is False
+    adapter = tmp_path / "sys/bus/i2c/devices/i2c-1"
+    adapter.mkdir(parents=True)
+    assert i2c_in_use(tmp_path) is True

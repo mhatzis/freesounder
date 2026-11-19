@@ -20,7 +20,12 @@ const audioBoardOptions = <AudioBoardOption>[
     'Automatic',
     subtitle: 'Finds HATs, I2C DAC/amp boards and USB at boot; else HDMI or the headphone jack',
   ),
-  AudioBoardOption('hifiberry-dacplus', 'HiFiBerry DAC+', 'DAC boards', subtitle: 'Also DAC2 Pro and DAC+ clones'),
+  AudioBoardOption(
+    'hifiberry-dacplus',
+    'HiFiBerry DAC+',
+    'DAC boards',
+    subtitle: 'DAC+ Standard/Pro, DAC2 Pro (clones: PiFi DAC+ 2.0)',
+  ),
   AudioBoardOption(
     'pifi-dacplus',
     'PiFi DAC+ 2.0',

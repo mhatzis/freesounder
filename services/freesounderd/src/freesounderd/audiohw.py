@@ -54,14 +54,18 @@ BOARDS: dict[str, tuple[str, str]] = {
     "iqaudio-dacplus": ("iqaudio-dacplus", "IQaudio DAC+"),
     "iqaudio-digiampplus": ("iqaudio-dacplus,unmute_amp", "IQaudio DigiAMP+"),
     "hifiberry-dacplus": ("hifiberry-dacplus", "HiFiBerry DAC+"),
-    "pifi-dacplus": ("hifiberry-dacplus", "PiFi DAC+ 2.0 (HiFiBerry DAC+ compatible)"),
-    "hifiberry-amp2": ("hifiberry-dacplus", "HiFiBerry Amp2"),
+    # Clones and DAC+ Standard-style boards have no onboard clocks: the -std
+    # overlay makes the Pi the I2S clock master (needed on the Pi 5, works on
+    # every Pi). The plain overlay auto-detects Standard vs Pro, which clones
+    # can fool into "Pro" mode (no clock, silent card).
+    "pifi-dacplus": ("hifiberry-dacplus-std", "PiFi DAC+ 2.0 (HiFiBerry DAC+ compatible)"),
+    "hifiberry-amp2": ("hifiberry-dacplus-std", "HiFiBerry Amp2"),
     "hifiberry-amp3": ("hifiberry-amp3", "HiFiBerry Amp3"),
     "hifiberry-amp4": ("hifiberry-dacplus-std", "HiFiBerry Amp4"),
     "hifiberry-amp4pro": ("hifiberry-amp4pro", "HiFiBerry Amp4 Pro"),
     "hifiberry-amp100": ("hifiberry-amp100", "HiFiBerry Amp100"),
     "hifiberry-dac": ("hifiberry-dac", "PCM5102A DAC"),
-    "pcm5122-amp": ("hifiberry-dacplus", "PCM5122 amp HAT"),
+    "pcm5122-amp": ("hifiberry-dacplus-std", "PCM5122 amp HAT"),
     "max98357a": ("max98357a,no-sdmode", "MAX98357A I2S amp"),
     "justboom-dac": ("justboom-dac", "JustBoom DAC / Amp"),
     "wm8960": ("wm8960-soundcard", "Waveshare WM8960 audio HAT"),
@@ -81,12 +85,15 @@ CODECS: tuple[Codec, ...] = (
     Codec(
         0x4D,
         "PCM512x/TAS5756 at 0x4d (HiFiBerry DAC+ compatible, e.g. PiFi DAC+ 2.0)",
-        ("hifiberry-dacplus", "hifiberry-dacplus-std"),
+        ("hifiberry-dacplus-std", "hifiberry-dacplus"),
     ),
     Codec(0x4C, "PCM512x at 0x4c (Raspberry Pi / IQaudio DAC+ compatible)", ("iqaudio-dacplus",)),
     Codec(0x1A, "WM8960 at 0x1a (Waveshare WM8960 audio HAT)", ("wm8960-soundcard",)),
     Codec(0x1B, "TAS5713 at 0x1b (HiFiBerry Amp+)", ("hifiberry-amp",)),
 )
+
+# Overlays an earlier auto-detection wrote that are now replaced (once).
+LEGACY_OVERLAYS = {"hifiberry-dacplus": "hifiberry-dacplus-std"}
 
 ONBOARD_IDS = re.compile(r"^(vc4hdmi\d*|Headphones|b1|HDMI|ALSA)$")
 _CARD_RE = re.compile(r"^\s*(\d+) \[([A-Za-z0-9_]+) *\]: (\S+)(?: - (.*))?$")
@@ -358,6 +365,20 @@ def decide(
     non_usb = [c for c in ext if not _is_usb(c)]
     if non_usb:
         first = non_usb[0]
+        tried_before = [str(x) for x in state.get("tried", []) or []]
+        better = LEGACY_OVERLAYS.get(current or "")
+        if better and board == CODECS[0].label and better not in tried_before and reboots < 1:
+            # 0.6.9 auto-picked the plain overlay; its card can appear and stay
+            # silent on clones. Switch once to the -std overlay.
+            det = Detection(
+                f"{board} (auto-detected, switching dtoverlay={current} -> {better})",
+                overlay=better,
+                board=board,
+                action="reboot",
+                expect_card=True,
+                cards=names,
+            )
+            return set_block(config, better, f"DAC: auto-detected {board}."), det
         if current and board:
             det = Detection(
                 f"{board} (auto-detected, dtoverlay={current}); card {first['id']}",

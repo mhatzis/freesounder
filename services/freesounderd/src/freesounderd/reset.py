@@ -252,12 +252,35 @@ def button_line(config: str, dac: str, i2c_in_use: bool) -> str | None:
     return None
 
 
-def i2c_in_use() -> bool:
-    """An I2C HAT/codec on GPIO2/3: i2c-1 exists (dtparam=i2c_arm or a HAT overlay)."""
+def i2c_in_use(root: Path = Path("/")) -> bool:
+    """An I2C HAT/codec on GPIO2/3, so GPIO3 must not become a button.
 
-    if Path("/dev/i2c-1").exists():
-        return True
-    return Path("/proc/device-tree/hat/product").exists()
+    True when I2C bus 1 is enabled (its adapter exists even without the
+    i2c-dev module, so ``/dev/i2c-1`` alone is not enough: a DAC overlay
+    such as hifiberry-dacplus enables the bus but does not load i2c-dev),
+    a HAT EEPROM was read, or the freesounder block in config.txt loads a
+    DAC overlay (auto-detected boards keep ``/etc/freesounder/dac`` at auto).
+    Requesting GPIO3 as an input re-muxes it away from I2C SCL, and the
+    codec then cannot be set up when playback starts: a silent card.
+    """
+
+    for rel in (
+        "dev/i2c-1",
+        "sys/bus/i2c/devices/i2c-1",
+        "sys/class/i2c-adapter/i2c-1",
+        "proc/device-tree/hat/product",
+    ):
+        if (root / rel).exists():
+            return True
+    for rel in ("boot/firmware/config.txt", "boot/config.txt"):
+        text = _read(str(root / rel))
+        if text:
+            start = text.find("# --- freesounder-dac-start ---")
+            end = text.find("# --- freesounder-dac-end ---")
+            if 0 <= start < end and re.search(r"(?m)^dtoverlay=\S", text[start:end]):
+                return True
+            break
+    return False
 
 
 def _read(path: str) -> str:

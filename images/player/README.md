@@ -84,8 +84,11 @@ before snapclient and the GPIO button:
 
 - A HAT with an ID EEPROM loads its own overlay (firmware).
 - Otherwise the I2C bus on GPIO2/3 is probed (switched on for the probe only):
-  - PCM512x/TAS5756 at 0x4d → `hifiberry-dacplus` (HiFiBerry DAC+, PiFi
-    DAC+ 2.0 and other clones; falls back to `hifiberry-dacplus-std`).
+  - PCM512x/TAS5756 at 0x4d → `hifiberry-dacplus-std` (DAC+ Standard, PiFi
+    DAC+ 2.0 and other clones without onboard clocks; the Pi is the clock
+    master, which the Pi 5 needs). Falls back to `hifiberry-dacplus` if no
+    card appears. A player that 0.6.9 set to `hifiberry-dacplus` is moved to
+    `-std` once (one reboot).
   - PCM512x at 0x4c → `iqaudio-dacplus`.
   - WM8960 at 0x1a → `wm8960-soundcard`.
   - TAS5713 at 0x1b → `hifiberry-amp`.
@@ -94,6 +97,9 @@ before snapclient and the GPIO button:
   intentional reboot does not count towards the power-cycle reset).
 - USB audio cards are used as they are.
 - MAX98357A and PCM5102A boards have no I2C. Pick them in the app.
+- While a DAC overlay is set, the optional wired GPIO3 button stays off:
+  claiming GPIO3 as an input takes the I2C clock line away from the codec,
+  which leaves the card listed but silent.
 
 The DAC block always sits under `[all]` and keeps `dtparam=audio=on`, so the
 Pi 4 headphone jack and HDMI remain fallbacks. `select-audio-output` waits up

@@ -142,8 +142,12 @@ unmute_card() {
 	command -v amixer >/dev/null 2>&1 || return 0
 	while IFS= read -r control; do
 		control=${control#Simple mixer control }
+		# Only playback level/mute controls. Codec tuning knobs must keep their
+		# defaults: on a PCM512x "100%" means Max Overclock PLL/DAC/DSP at the
+		# limit, the longest Clock Missing Period and Volume Ramp, and "unmute"
+		# switches Auto Mute *on*.
 		case "$control" in
-			*Capture*|*Mic*|*Boost*) continue ;;
+			*Capture*|*Mic*|*Boost*|*Overclock*|*Ramp*|*"Auto Mute"*|*Clock*|*Deemphasis*|*Program*|*Mode*|*Filter*) continue ;;
 		esac
 		amixer -q -c "$c" sset "$control" 0dB unmute 2>/dev/null ||
 			amixer -q -c "$c" sset "$control" 100% unmute 2>/dev/null ||
