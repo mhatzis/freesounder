@@ -1,5 +1,9 @@
 #!/bin/bash -e
 # Install freesounder filesystem overlay.
+# A reused rootfs may carry the experimental Bluetooth-speaker build
+# (exp/bt-transmitter): drop its bluealsa drop-in (that branch re-installs it
+# below); 03-enable purges the package when the drop-in is absent.
+rm -rf "${ROOTFS_DIR}/etc/systemd/system/bluealsa.service.d"
 install -d "${ROOTFS_DIR}/etc/freesounder"
 install -d "${ROOTFS_DIR}/usr/lib/freesounder"
 install -d "${ROOTFS_DIR}/usr/sbin"
