@@ -1,2 +1,2 @@
 /// Marketing version shown in settings and room sheets.
-const appVersion = '0.6.9 (experimental BT)';
+const appVersion = '0.6.10 (experimental BT)';
