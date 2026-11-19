@@ -245,3 +245,54 @@ def test_sweep_has_no_clicks_and_limiter_prevents_clipping(tmp_path, fsdsp_so, b
     data = (tmp_path / "out.raw").read_bytes()
     out = struct.unpack(f"<{len(data) // 2}h", data[: len(data) // 2 * 2])
     assert max(abs(v) for v in out) <= int(32767 * 0.95)
+
+
+def _play_capture(
+    tmp_path: Path, env: dict, settings: PlayerSettings, params: Path, freq: float
+) -> float:
+    """RMS gain (dB) of a -10 dBFS tone through the live chain, last second."""
+
+    raw = tmp_path / "out.raw"
+    raw.unlink(missing_ok=True)
+    write_params(settings, params)
+    frames = 44100 * 2
+    play = subprocess.run(
+        ["aplay", "-q", "-D", "freesounder", "-t", "raw", "-f", "S16_LE", "-r", "44100", "-c", "2"],
+        input=_tone(freq, 0, frames),
+        env=env,
+        capture_output=True,
+        check=False,
+    )
+    assert play.returncode == 0, play.stderr.decode()
+    data = raw.read_bytes()
+    out = struct.unpack(f"<{len(data) // 2}h", data[: len(data) // 2 * 2])
+    return 20 * math.log10(_rms(out[0::2][-44100:]))
+
+
+def test_bass_and_loudness_boost_bass_and_leave_mids_alone(tmp_path, fsdsp_so) -> None:
+    """Bass +6 / Bass boost raise 60-100 Hz and do not turn the mids down.
+
+    Before, a fixed pre-gain of half the boost made 1 kHz 3 dB quieter and left
+    100 Hz lower than flat with Bass boost on, so the controls sounded reversed.
+    """
+
+    params, env = _chain_home(tmp_path, fsdsp_so, "card", "capture")
+    cases = {
+        "flat": PlayerSettings(),
+        "bass": PlayerSettings(bass=6),
+        "loud": PlayerSettings(loudness=True),
+        "cut": PlayerSettings(bass=-6),
+    }
+    raw = {
+        (name, freq): _play_capture(tmp_path, env, settings, params, freq)
+        for name, settings in cases.items()
+        for freq in (60, 100, 1000)
+    }
+    # Relative to flat at the same frequency.
+    gain = {key: value - raw[("flat", key[1])] for key, value in raw.items()}
+    print({f"{k[0]}@{k[1]}": round(v, 1) for k, v in gain.items() if k[0] != "flat"})
+    for name in ("bass", "loud", "cut"):
+        assert abs(gain[(name, 1000)]) < 0.5, gain
+    assert gain[("bass", 60)] > 4.5 and gain[("bass", 100)] > 3.5, gain
+    assert gain[("loud", 60)] > 4.0 and gain[("loud", 100)] > 2.0, gain
+    assert gain[("cut", 60)] < -4.5, gain
