@@ -17,6 +17,7 @@ class SlowPlayer {
   final controls = <String>[];
   var npDelay = Duration.zero;
   var dropNextControl = false;
+  var pauseDelay = const Duration(milliseconds: 200);
   final streams = <StreamController<Map<String, dynamic>>>[];
 
   Map<String, dynamic> room() => {
@@ -59,7 +60,7 @@ class SlowPlayer {
               dropNextControl = false;
               throw http.ClientException('Connection closed before full header was received');
             }
-            await Future<void>.delayed(const Duration(milliseconds: 200));
+            await Future<void>.delayed(pauseDelay);
             state = 'paused';
             return http.Response('{"ok":true}', 200);
           case '/health':
@@ -196,6 +197,37 @@ void main() {
     player.state = 'playing'; // someone presses play on another phone
     player.pushNp('playing');
     await Future<void>.delayed(const Duration(milliseconds: 5));
+    expect(s().nowPlaying?.state, 'playing');
+  });
+
+  test('a pause slower than the hold: the icon stays paused and one press resumes', () async {
+    // 0.6.14 with a Bluetooth speaker: the pause took ~9 s to land, the hold
+    // ran out first, a "playing" report won, and resuming took two presses.
+    final hold = PlaybackStore.playHoldMax;
+    final after = PlaybackStore.playHoldAfterReply;
+    PlaybackStore.playHoldMax = const Duration(milliseconds: 300);
+    PlaybackStore.playHoldAfterReply = const Duration(milliseconds: 300);
+    addTearDown(() {
+      PlaybackStore.playHoldMax = hold;
+      PlaybackStore.playHoldAfterReply = after;
+    });
+    player.pauseDelay = const Duration(milliseconds: 700);
+    final pending = store.togglePlayPause();
+    await Future<void>.delayed(const Duration(milliseconds: 450)); // past the hold, still sending
+    player.pushNp('playing'); // the player has not paused yet
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+    expect(s().nowPlaying?.state, 'paused', reason: 'no flip back while the pause is on its way');
+    await pending;
+    expect(player.state, 'paused');
+    player.pushNp('playing'); // an event that left just before the pause landed
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+    expect(s().nowPlaying?.state, 'paused');
+    await Future<void>.delayed(const Duration(milliseconds: 400));
+    expect(s().nowPlaying?.state, 'paused', reason: 'the icon matches the player');
+    // One press resumes.
+    await store.togglePlayPause();
+    expect(player.controls, ['pause', 'play']);
+    expect(player.state, 'playing');
     expect(s().nowPlaying?.state, 'playing');
   });
 

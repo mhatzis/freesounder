@@ -47,6 +47,10 @@ class FakeSnapserver:
             self.clients[params["id"]]["config"]["volume"] = params["volume"]
         elif method == "Client.SetLatency":
             self.clients[params["id"]]["config"]["latency"] = params["latency"]
+        elif method == "Group.SetMute":
+            for group in self.groups:
+                if group["id"] == params["id"]:
+                    group["muted"] = bool(params["mute"])
         elif method == "Group.SetStream":
             for group in self.groups:
                 if group["id"] == params["id"]:

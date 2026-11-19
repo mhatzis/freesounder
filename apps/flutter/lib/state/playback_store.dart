@@ -188,7 +188,14 @@ class PlaybackStore extends Notifier<PlaybackState> {
 
   /// How long a tapped play/pause wins over the players' reports at most;
   /// the hold ends earlier once a report read after the command agrees.
-  static const playHoldMax = Duration(seconds: 8);
+  /// It never ends while the command is still on its way: 0.6.14 let a
+  /// "playing" report win when a pause took 9 s to land, so the icon ended up
+  /// wrong and resuming took two presses.
+  static Duration playHoldMax = const Duration(seconds: 8);
+
+  /// After the player answered a play/pause, its reports still lag a little.
+  static Duration playHoldAfterReply = const Duration(seconds: 3);
+  final _playInFlight = <String, int>{};
   final _volumeLastSent = <String, DateTime>{};
   final _volumeTrailing = <String, Timer>{};
 
@@ -201,7 +208,7 @@ class PlaybackStore extends Notifier<PlaybackState> {
     }
     final now = DateTime.now();
     _volumeHolds.removeWhere((_, h) => h.until.isBefore(now));
-    _playHolds.removeWhere((_, h) => h.until.isBefore(now));
+    _playHolds.removeWhere((id, h) => h.until.isBefore(now) && (_playInFlight[id] ?? 0) == 0);
     var rooms = s.rooms;
     if (_volumeHolds.isNotEmpty && rooms.any((r) => (_volumeHolds[r.id]?.value ?? r.volume) != r.volume)) {
       rooms = [
@@ -896,14 +903,28 @@ class PlaybackStore extends Notifier<PlaybackState> {
     _playHolds[room.id] = (state: wanted, until: now.add(playHoldMax), since: now);
     _lastPlayCommand[room.id] = (state: wanted, at: now);
     state = state; // shows the new play/pause state at once
+    _playInFlight[room.id] = (_playInFlight[room.id] ?? 0) + 1;
     try {
       await _transport(room.id, shouldPause ? 'pause' : 'play', retryLink: true);
+      final h = _playHolds[room.id];
+      final after = DateTime.now().add(playHoldAfterReply);
+      if (h != null && h.state == wanted && h.until.isBefore(after)) {
+        _playHolds[room.id] = (state: h.state, until: after, since: h.since);
+      }
     } on Object {
-      _playHolds.remove(room.id);
-      _lastPlayCommand.remove(room.id);
+      if (_playHolds[room.id]?.state == wanted) {
+        _playHolds.remove(room.id);
+        _lastPlayCommand.remove(room.id);
+      }
       state = state;
       rethrow;
     } finally {
+      final left = (_playInFlight[room.id] ?? 1) - 1;
+      if (left <= 0) {
+        _playInFlight.remove(room.id);
+      } else {
+        _playInFlight[room.id] = left;
+      }
       _refreshSoon(room.id);
     }
   }

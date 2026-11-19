@@ -69,6 +69,16 @@ RELAY_IDLE_END = 30.0
 AIRPLAY_PAUSE_GRACE = 60.0
 BOOT_GRACE = 15.0
 PEER_FORGET = 600.0
+# Pause: the room's snapcast group is muted at once, so the audio already
+# buffered (snapserver's 1 s plus the client's ALSA buffer, 400 ms more on a
+# Bluetooth speaker) is not heard after the tap. The mute ends on play, or once
+# the paused source has had time to drain (and was seen paused), at most after
+# PAUSE_MUTE_MAX if the source never confirmed the pause.
+PAUSE_TAIL_MUTE = 3.0
+PAUSE_MUTE_MAX = 15.0
+# A play/pause just sent is what the player reports until a source read taken
+# after the command agrees (or this long), so a stale read can't flip it back.
+CMD_STATE_HOLD = 6.0
 
 
 class EngineError(Exception):
@@ -190,6 +200,12 @@ class Engine:
         self._lost_since: float | None = None
         self._started = time.monotonic()
         self._lock = asyncio.Lock()
+        # Play/pause do not wait for a tick (which holds _lock across slow
+        # systemctl/status calls); they only queue behind each other.
+        self._control_lock = asyncio.Lock()
+        self._cmd_state: tuple[str, float, str] | None = None
+        self._tail_mute: dict[str, Any] | None = None
+        self._sources_read_at = 0.0
         self._kick = asyncio.Event()
         self._listeners: set[asyncio.Queue[str]] = set()
         self._last_broadcast = ""
@@ -305,6 +321,15 @@ class Engine:
         return rec
 
     def play_state(self) -> str:
+        cmd = self._cmd_state
+        if cmd is not None and self.source != "none" and self.source == cmd[2]:
+            if time.monotonic() - cmd[1] < CMD_STATE_HOLD:
+                return cmd[0]
+        return self._source_state()
+
+    def _source_state(self) -> str:
+        """What the source itself last reported (no pending command)."""
+
         if self.source == "none":
             return "idle"
         if self.source == "spotify":
@@ -968,6 +993,7 @@ class Engine:
         return {"applied": True, "volume": percent}
 
     async def _update_sources(self) -> None:
+        read_at = time.monotonic()
         self._spotify_status = await self.spotify.status()
         try:
             self._server_status = await self.snap_local.status()
@@ -1026,6 +1052,70 @@ class Engine:
             np["meta_updated_at"] = self._np_changed_at
             np["meta_from"] = self.room_name()
         self.np = np
+        self._settle_cmd_state(read_at)
+        await self._tail_mute_rules()
+
+    def _settle_cmd_state(self, read_at: float) -> None:
+        """A source read taken after the last play/pause agrees: it is done."""
+
+        cmd = self._cmd_state
+        if cmd is None:
+            return
+        state, at, source = cmd
+        expired = time.monotonic() - at >= CMD_STATE_HOLD
+        if expired or source != self.source or (read_at >= at and self._source_state() == state):
+            self._cmd_state = None
+
+    async def _tail_mute_rules(self) -> None:
+        tm = self._tail_mute
+        if tm is None:
+            # Not muted by a pause: no group stays muted (e.g. after a restart).
+            for group in self._server_status.get("groups", []):
+                if group.get("muted") and self._tail_mute is None:
+                    with contextlib.suppress(SnapcastError):
+                        await self.snap_local.set_group_mute(group["id"], False)
+            return
+        actual = self._source_state()
+        if self.source != tm["source"]:
+            await self._unmute_tail()
+            return
+        if actual != "playing":
+            tm["seen_paused"] = True
+        age = time.monotonic() - tm["at"]
+        if age < PAUSE_TAIL_MUTE:
+            return
+        if actual != "playing" or tm["seen_paused"]:
+            await self._unmute_tail()  # drained and silent, or resumed from another app
+        elif age > PAUSE_MUTE_MAX:
+            logger.warning("%s did not confirm the pause; unmuting the room", self.source)
+            await self._unmute_tail()
+
+    async def _mute_tail(self) -> None:
+        stream = SOURCE_STREAM.get(self.source)
+        groups = self._server_status.get("groups", [])
+        gids = [g["id"] for g in groups if stream and g.get("stream_id") == stream]
+        if not gids:
+            return
+        self._tail_mute = {
+            "gids": gids,
+            "at": time.monotonic(),
+            "source": self.source,
+            "seen_paused": False,
+        }
+        results = await asyncio.gather(
+            *(self.snap_local.set_group_mute(g, True) for g in gids), return_exceptions=True
+        )
+        if any(isinstance(r, BaseException) for r in results):
+            logger.info("muting the paused room failed: %s", results)
+
+    async def _unmute_tail(self) -> None:
+        tm, self._tail_mute = self._tail_mute, None
+        if tm is None:
+            return
+        await asyncio.gather(
+            *(self.snap_local.set_group_mute(g, False) for g in tm["gids"]),
+            return_exceptions=True,
+        )
 
     async def _switch_source(self, new: str) -> None:
         if new == self.source:
@@ -1661,10 +1751,47 @@ class Engine:
             raise EngineError(409, "This room is still playing for its old group.")
         if leader != self.id:
             await self.forward(leader, "POST", f"/api/v2/groups/{leader}/{action}", {})
+            rec = self.peers.get(leader)
+            if action in ("play", "pause") and rec and rec.get("source", "none") != "none":
+                # Show it at once here too, not after the next peer poll.
+                rec["state"] = "playing" if action == "play" else "paused"
+                self.broadcast_if_changed()
+            return
+        if action in ("play", "pause", "toggle") and self.source != "none":
+            await self._play_pause(action)
             return
         async with self._lock:
             await self._local_control(action)
         self.kick()
+
+    async def _play_pause(self, action: str) -> None:
+        """Play/pause without waiting for a tick; pause silences the room at once."""
+
+        if action == "toggle":
+            action = "pause" if self.play_state() == "playing" else "play"
+        pause = action == "pause"
+        source = self.source
+        self._cmd_state = ("paused" if pause else "playing", time.monotonic(), source)
+        if pause:
+            await self._mute_tail()
+        else:
+            await self._unmute_tail()
+        self.broadcast_if_changed()
+        try:
+            async with self._control_lock:
+                if source == "radio":
+                    # ffmpeg start/stop must not race the tick's radio watchdog.
+                    async with self._lock:
+                        await self._local_control(action)
+                else:
+                    await self._local_control(action)
+        except Exception:
+            self._cmd_state = None
+            await self._unmute_tail()
+            self.broadcast_if_changed()
+            raise
+        finally:
+            self.kick()
 
     async def _local_control(self, action: str) -> None:
         src = self.source
