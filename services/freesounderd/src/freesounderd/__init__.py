@@ -1,3 +1,3 @@
 """FreeSounder player daemon."""
 
-__version__ = "0.6.13+btexp"
+__version__ = "0.6.14+btexp"
