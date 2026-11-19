@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import time
 from pathlib import Path
@@ -186,7 +187,9 @@ async def collect(state: Path = STATE) -> dict[str, Any]:
     history = read_json(state / "power-history.json")
     hb = read_json(state / "heartbeat.json")
     volts = ext5v()
+    audio = await audio_info()
     return {
+        "audio": audio,
         "previous_boot_ended": ended,
         "previous_boot": last,
         "throttled": f"0x{flags:x}" if flags is not None else None,
@@ -214,4 +217,75 @@ async def collect(state: Path = STATE) -> dict[str, Any]:
         "previous_boot_tail": prev_tail.splitlines()[-25:],
         "previous_boot_errors": prev_errors.splitlines()[-40:],
         "power_log": power_log.splitlines(),
+    }
+
+
+AUDIO_KERNEL_RE = re.compile(
+    r"pcm512x|hifiberry|snd_soc|asoc|i2c|bcm2835-i2s|rp1-i2s|dacplus", re.I
+)
+
+
+def _i2c_adapters() -> list[str]:
+    try:
+        return sorted(os.listdir("/sys/bus/i2c/devices"))
+    except OSError:
+        return []
+
+
+async def audio_info() -> dict[str, Any]:
+    """What a silent sound card needs: cards, overlay, I2C, mixer, kernel log."""
+
+    def read(path: str) -> str:
+        try:
+            return Path(path).read_text(errors="replace")
+        except OSError:
+            return ""
+
+    out_kv = dict(
+        line.split("=", 1)
+        for line in read("/etc/freesounder/audio-output").splitlines()
+        if "=" in line
+    )
+    card = out_kv.get("card", "0")
+    config = read("/boot/firmware/config.txt") or read("/boot/config.txt")
+    start = config.find("# --- freesounder-dac-start ---")
+    end = config.find("# --- freesounder-dac-end ---")
+    try:
+        from .reset import button_line, i2c_in_use
+
+        button = button_line(
+            read("/etc/freesounder/button"), read("/etc/freesounder/dac"), i2c_in_use()
+        )
+    except Exception:  # noqa: BLE001 - diagnostics must not fail
+        button = "?"
+    kernel = await _run("journalctl", "-k", "-b", "--no-pager", "-q", "-o", "cat")
+    return {
+        "output": out_kv,
+        "dac_choice": read("/etc/freesounder/dac").strip(),
+        "detect": read_json(Path("/run/freesounder/audio-detect.json")),
+        "config_block": config[start:end].splitlines()[1:] if 0 <= start < end else [],
+        "cards": read("/proc/asound/cards").splitlines(),
+        "aplay_l": (await _run("aplay", "-l")).splitlines(),
+        "mixer": (await _run("amixer", "-c", card, "contents")).splitlines()[:120],
+        "i2c_adapters": _i2c_adapters(),
+        "wired_button": button or "off",
+        "kernel_audio": [ln for ln in kernel.splitlines() if AUDIO_KERNEL_RE.search(ln)][-40:],
+        "audio_log": (
+            await _run(
+                "journalctl",
+                "-b",
+                "--no-pager",
+                "-q",
+                "-o",
+                "short-iso",
+                "-n",
+                "40",
+                "-t",
+                "freesounder-audio-detect",
+                "-u",
+                "freesounder-audio-output.service",
+                "-u",
+                "snapclient.service",
+            )
+        ).splitlines(),
     }

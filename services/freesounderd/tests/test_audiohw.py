@@ -73,11 +73,11 @@ def probe_found(*addrs: int):
     return lambda: (set(addrs), "")
 
 
-def test_pifi_dac_detected_gets_hifiberry_dacplus():
+def test_pifi_dac_detected_gets_hifiberry_dacplus_std():
     new, det = decide(
         choice="auto", config=STOCK, cards=cards(PI4), hat=None, probe=probe_found(0x4D), state={}
     )
-    assert block_overlay(new) == "hifiberry-dacplus"
+    assert block_overlay(new) == "hifiberry-dacplus-std"
     assert det.action == "reboot"
     assert "PiFi DAC+ 2.0" in det.detected
     assert det.expect_card
@@ -140,9 +140,9 @@ def test_working_card_after_reboot_is_reported():
     assert "sndrpihifiberry" in det.detected
 
 
-def test_card_missing_tries_std_then_gives_up():
-    config = set_block(STOCK, "hifiberry-dacplus", "auto")
-    state = {"board": "x", "pending": True, "tried": ["hifiberry-dacplus"], "reboots": 1}
+def test_card_missing_tries_plain_then_gives_up():
+    config = set_block(STOCK, "hifiberry-dacplus-std", "auto")
+    state = {"board": "x", "pending": True, "tried": ["hifiberry-dacplus-std"], "reboots": 1}
     new, det = decide(
         choice="auto",
         config=config,
@@ -151,12 +151,12 @@ def test_card_missing_tries_std_then_gives_up():
         probe=probe_found(0x4D),
         state=state,
     )
-    assert block_overlay(new) == "hifiberry-dacplus-std"
+    assert block_overlay(new) == "hifiberry-dacplus"
     assert det.action == "reboot"
     state = {
         "board": "x",
         "pending": True,
-        "tried": ["hifiberry-dacplus", "hifiberry-dacplus-std"],
+        "tried": ["hifiberry-dacplus-std", "hifiberry-dacplus"],
         "reboots": 2,
     }
     new2, det2 = decide(
@@ -164,6 +164,48 @@ def test_card_missing_tries_std_then_gives_up():
     )
     assert det2.action == "gave-up"
     assert new2 == new
+
+
+def test_pifi_first_probe_gets_std_overlay():
+    new, det = decide(
+        choice="auto", config=STOCK, cards=cards(PI4), hat=None, probe=probe_found(0x4D), state={}
+    )
+    assert block_overlay(new) == "hifiberry-dacplus-std"
+    assert det.action == "reboot"
+
+
+def test_legacy_plain_overlay_switches_to_std_once():
+    from freesounderd.audiohw import CODECS
+
+    config = set_block(STOCK, "hifiberry-dacplus", "auto")
+    state = {
+        "board": CODECS[0].label,
+        "pending": False,
+        "tried": ["hifiberry-dacplus"],
+        "reboots": 0,
+    }
+    new, det = decide(
+        choice="auto",
+        config=config,
+        cards=cards(PI4 + PIFI),
+        hat=None,
+        probe=probe_found(),
+        state=state,
+    )
+    assert block_overlay(new) == "hifiberry-dacplus-std"
+    assert det.action == "reboot"
+    # Once std was tried it is never flipped back automatically.
+    state2 = {"board": CODECS[0].label, "tried": ["hifiberry-dacplus", "hifiberry-dacplus-std"]}
+    new2, det2 = decide(
+        choice="auto",
+        config=new,
+        cards=cards(PI4 + PIFI),
+        hat=None,
+        probe=probe_found(),
+        state=state2,
+    )
+    assert new2 == new
+    assert det2.action == "none"
 
 
 def test_usb_only_still_probes_for_a_board():
@@ -183,7 +225,7 @@ def test_manual_choice_writes_overlay_and_reboots_at_most_once():
         probe=probe_found(),
         state={},
     )
-    assert block_overlay(new) == "hifiberry-dacplus"
+    assert block_overlay(new) == "hifiberry-dacplus-std"
     assert "[all]" in _block(new)
     assert det.action == "reboot"
     again, det2 = decide(
@@ -223,7 +265,7 @@ def test_boot_reboots_once_then_settles(tmp_path, monkeypatch):
     (tmp_path / "short-boots").write_text("2\n")
     status, reboots = _boot(tmp_path, PI4, {0x4D})
     assert reboots == [1]
-    assert status["overlay"] == "hifiberry-dacplus"
+    assert status["overlay"] == "hifiberry-dacplus-std"
     # The intentional reboot is not a short power cycle (factory reset counter).
     assert (tmp_path / "short-boots").read_text() == "0\n"
     # Next boot: the card is there; no more reboots, the board is remembered.
@@ -270,7 +312,7 @@ def test_set_from_app(tmp_path):
     cfg = tmp_path / "config.txt"
     cfg.write_text(STOCK + OLD_BLOCK)
     assert audiohw.run_set("pifi-dacplus", config_path=cfg, dac_path=tmp_path / "dac") == 0
-    assert block_overlay(cfg.read_text()) == "hifiberry-dacplus"
+    assert block_overlay(cfg.read_text()) == "hifiberry-dacplus-std"
     assert (tmp_path / "dac").read_text() == "pifi-dacplus\n"
     assert audiohw.run_set("bogus", config_path=cfg, dac_path=tmp_path / "dac") == 1
 
