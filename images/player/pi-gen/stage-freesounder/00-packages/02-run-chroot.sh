@@ -11,14 +11,20 @@ if [[ "$airplay" == 2 ]]; then
 else
 	apt-get install -y --no-install-recommends shairport-sync
 fi
+# UPnP/DLNA + OpenHome renderer (upmpdcli) on MPD. Debian's stock units stay
+# off: freesounder-mpd.service runs MPD with our config, freesounderd starts
+# freesounder-upnp.service on group leaders.
+apt-get install -y --no-install-recommends ./libnpupnp13_*.deb ./libupnpp17_*.deb ./upmpdcli_*.deb
 install -d /etc/freesounder
-printf '{"airplay": %s, "snapcast": "%s", "go_librespot": "%s", "shairport_sync": "%s"}\n' \
+printf '{"airplay": %s, "snapcast": "%s", "go_librespot": "%s", "shairport_sync": "%s", "upnp": "%s", "mpd": "%s"}\n' \
 	"$airplay" "$(dpkg-query -W -f='${Version}' snapserver)" \
 	"$(cat go-librespot-version)" \
-	"$(dpkg-query -W -f='${Version}' shairport-sync)" > /etc/freesounder/features.json
+	"$(dpkg-query -W -f='${Version}' shairport-sync)" \
+	"$(dpkg-query -W -f='${Version}' upmpdcli)" \
+	"$(dpkg-query -W -f='${Version}' mpd)" > /etc/freesounder/features.json
 cat /etc/freesounder/features.json
 # Every audio binary must find its libraries (fail the build, not the first boot).
-for bin in /usr/bin/snapserver /usr/bin/snapclient /usr/bin/shairport-sync /usr/local/bin/go-librespot /usr/bin/nqptp; do
+for bin in /usr/bin/snapserver /usr/bin/snapclient /usr/bin/shairport-sync /usr/local/bin/go-librespot /usr/bin/nqptp /usr/bin/mpd /usr/bin/upmpdcli; do
 	[[ -x "$bin" ]] || continue
 	if ldd "$bin" | grep 'not found'; then
 		echo "missing libraries for $bin" >&2

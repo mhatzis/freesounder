@@ -1,1 +1,4 @@
 ffmpeg
+mpd
+cifs-utils
+nfs-common

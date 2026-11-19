@@ -1,4 +1,6 @@
+import '../models/library.dart';
 import '../models/now_playing.dart';
+import '../models/podcast.dart';
 import '../models/player_settings.dart';
 import '../models/radio_station.dart';
 import '../models/room.dart';
@@ -93,6 +95,9 @@ class MockHousehold {
     return adopted;
   }
 
+  /// Demo podcast subscriptions (the real list lives on the players).
+  final podcastSubs = <Podcast>[];
+
   final List<RadioStation> radioStations = const [
     RadioStation(name: 'Demo FM', stationuuid: 'demo-fm', countrycode: 'AU', bitrate: 128, codec: 'MP3'),
     RadioStation(name: 'Example Jazz', stationuuid: 'demo-jazz', tags: 'jazz', bitrate: 96, codec: 'AAC'),
@@ -138,3 +143,31 @@ class MockHousehold {
     }
   }
 }
+
+/// Demo music library (shown when no player is connected).
+const demoAlbums = <LibraryAlbum>[
+  LibraryAlbum(album: 'Blue Hour', artist: 'The Demo Trio'),
+  LibraryAlbum(album: 'Night Drive', artist: 'Sample City'),
+];
+
+const demoTracks = <LibraryTrack>[
+  LibraryTrack(uri: 'demo/blue/01.flac', title: 'Morning Light', artist: 'The Demo Trio', album: 'Blue Hour', duration: 214),
+  LibraryTrack(uri: 'demo/blue/02.flac', title: 'Slow River', artist: 'The Demo Trio', album: 'Blue Hour', duration: 251),
+  LibraryTrack(uri: 'demo/night/01.flac', title: 'Neon', artist: 'Sample City', album: 'Night Drive', duration: 198),
+];
+
+const demoLibrarySummary = LibrarySummary(
+  shares: [LibraryShare(id: 'smb-demo', kind: 'smb', name: 'Music', host: 'nas.local', share: 'music', mounted: true)],
+  songs: 3,
+  albums: 2,
+  artists: 2,
+);
+
+const demoPodcasts = <Podcast>[
+  Podcast(feed: 'https://example.com/demo.xml', title: 'Demo Talk', author: 'FreeSounder', genre: 'Technology'),
+];
+
+const demoEpisodes = <PodcastEpisode>[
+  PodcastEpisode(id: 'ep2', title: 'Episode 2: Rooms', url: 'https://example.com/2.mp3', duration: 1800, position: 600),
+  PodcastEpisode(id: 'ep1', title: 'Episode 1: Hello', url: 'https://example.com/1.mp3', duration: 1500, done: true),
+];

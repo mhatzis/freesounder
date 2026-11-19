@@ -5,10 +5,9 @@ import '../api/connection_prefs.dart';
 import '../api/errors.dart';
 import '../models/now_playing.dart';
 import '../spotify/ui/spotify_brand.dart';
-import '../spotify/ui/spotify_screen.dart';
 import '../state/playback_store.dart';
 import 'artwork.dart';
-import 'radio_screen.dart';
+import 'sources_sheet.dart';
 
 Future<void> showNowPlayingScreen(BuildContext context) {
   return Navigator.of(context).push(
@@ -20,6 +19,9 @@ String? sourceName(String? source) => switch (source) {
       'radio' => 'Radio',
       'spotify' => 'Spotify',
       'airplay' => 'AirPlay',
+      'library' => 'Music library',
+      'podcast' => 'Podcast',
+      'upnp' => 'UPnP / DLNA',
       _ => null,
     };
 
@@ -27,6 +29,9 @@ IconData sourceIcon(String? source) => switch (source) {
       'radio' => Icons.radio,
       'spotify' => Icons.library_music,
       'airplay' => Icons.airplay,
+      'library' => Icons.album_rounded,
+      'podcast' => Icons.podcasts_rounded,
+      'upnp' => Icons.cast_connected_rounded,
       _ => Icons.music_note,
     };
 
@@ -63,7 +68,10 @@ class _NowPlayingScreenState extends ConsumerState<NowPlayingScreen> {
     final where = room == null ? '' : (room.isGrouped ? (room.groupName ?? room.name) : room.name);
     final subtitle = [np?.artist, np?.album ?? np?.contextName].whereType<String>().where((s) => s.isNotEmpty).join(' — ');
     final station = np?.source == 'radio' ? np?.stationName : null;
-    final canSeek = np?.source == 'spotify' && (np?.duration ?? 0) > 0;
+    // Spotify, and what the players' own music player (MPD) plays: library
+    // songs, podcast episodes, and UPnP / DLNA streams.
+    const seekable = {'spotify', 'library', 'podcast', 'upnp'};
+    final canSeek = seekable.contains(np?.source) && (np?.duration ?? 0) > 0;
     final volume = _volume ?? (room?.volume ?? 0).toDouble();
 
     return Scaffold(
@@ -98,7 +106,7 @@ class _NowPlayingScreenState extends ConsumerState<NowPlayingScreen> {
                         key: const Key('np-screen-art'),
                         urls: np?.artworkCandidates ?? const [],
                         trackKey: np?.trackKey,
-                        icon: np?.source == 'radio' ? Icons.radio : null,
+                        icon: const {'radio', 'library', 'podcast', 'upnp'}.contains(np?.source) ? sourceIcon(np?.source) : null,
                       ),
                     ),
                   ),
@@ -212,22 +220,13 @@ class _NowPlayingScreenState extends ConsumerState<NowPlayingScreen> {
                   ),
                 ],
                 const SizedBox(height: 12),
-                Wrap(
-                  alignment: WrapAlignment.center,
-                  spacing: 12,
-                  children: [
-                    OutlinedButton.icon(
-                      key: const Key('np-screen-spotify'),
-                      onPressed: () => showSpotifyScreen(context),
-                      icon: const SpotifyMark.icon(size: 21),
-                      label: const Text('Spotify'),
-                    ),
-                    OutlinedButton.icon(
-                      onPressed: () => showRadioScreen(context),
-                      icon: const Icon(Icons.radio),
-                      label: const Text('Radio'),
-                    ),
-                  ],
+                Center(
+                  child: OutlinedButton.icon(
+                    key: const Key('np-screen-sources'),
+                    onPressed: () => showSourcesSheet(context),
+                    icon: const Icon(Icons.library_music_outlined),
+                    label: const Text('Choose music'),
+                  ),
                 ),
               ],
             );

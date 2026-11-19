@@ -10,8 +10,17 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-STREAMS = ("Spotify", "AirPlay", "Radio", "Idle")
-SOURCE_STREAM = {"spotify": "Spotify", "airplay": "AirPlay", "radio": "Radio", "none": "Idle"}
+STREAMS = ("Spotify", "AirPlay", "Radio", "Media", "Idle")
+SOURCE_STREAM = {
+    "spotify": "Spotify",
+    "airplay": "AirPlay",
+    "radio": "Radio",
+    # MPD: library, podcasts, UPnP/DLNA.
+    "library": "Media",
+    "podcast": "Media",
+    "upnp": "Media",
+    "none": "Idle",
+}
 RELAY_GROUP_STREAM = "Idle"
 
 
@@ -134,6 +143,7 @@ def render_snapserver_conf(
         )
     lines += [
         f"source = pipe://{run_dir}/radio.fifo?name=Radio&mode=read",
+        f"source = pipe://{run_dir}/mpd.fifo?name=Media&mode=read",
         f"source = pipe://{run_dir}/idle.fifo?name=Idle&mode=read",
         "",
         "[logging]",

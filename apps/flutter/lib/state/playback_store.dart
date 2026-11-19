@@ -7,7 +7,9 @@ import '../api/control_client.dart';
 import '../api/discovery.dart';
 import '../api/first_player.dart';
 import '../api/mock_data.dart';
+import '../models/library.dart';
 import '../models/now_playing.dart';
+import '../models/podcast.dart';
 import '../spotify/spotify_store.dart';
 import '../models/player_settings.dart';
 import '../models/radio_station.dart';
@@ -182,7 +184,11 @@ class PlaybackStore extends Notifier<PlaybackState> {
   static const holdAfterChange = Duration(milliseconds: 1500);
   static const volumeSendInterval = Duration(milliseconds: 100);
   final _volumeHolds = <String, ({int value, DateTime until})>{};
-  final _playHolds = <String, ({String state, DateTime until})>{};
+  final _playHolds = <String, ({String state, DateTime until, DateTime since})>{};
+
+  /// How long a tapped play/pause wins over the players' reports at most;
+  /// the hold ends earlier once a report read after the command agrees.
+  static const playHoldMax = Duration(seconds: 8);
   final _volumeLastSent = <String, DateTime>{};
   final _volumeTrailing = <String, Timer>{};
 
@@ -626,7 +632,7 @@ class PlaybackStore extends Notifier<PlaybackState> {
   }
 
   /// Re-fetch rooms, now playing and settings and open a fresh event stream.
-  Future<bool> _resync(ControlApiClient client) async {
+  Future<bool> _resync(ControlApiClient client, {bool eventsOpen = false}) async {
     if (_disposed || !identical(client, _client) || _resyncing) {
       return false;
     }
@@ -637,13 +643,20 @@ class PlaybackStore extends Notifier<PlaybackState> {
           ? state.activeRoomId
           : (rooms.isNotEmpty ? rooms.first.id : null);
       NowPlaying? np;
+      final askedAt = DateTime.now();
       if (activeId != null) {
         np = await client.nowPlaying(activeId).timeout(const Duration(seconds: 4));
       }
       if (!identical(client, _client)) {
         return false;
       }
-      _subscribeEvents(client);
+      if (np != null) {
+        np = _notOlderThanCommand(np, askedAt);
+        _confirmPlayHold(np, askedAt);
+      }
+      if (!eventsOpen) {
+        _subscribeEvents(client);
+      }
       _failedResyncs = 0;
       _retryDelay = null;
       _retryTimer?.cancel();
@@ -742,8 +755,13 @@ class PlaybackStore extends Notifier<PlaybackState> {
     }
     _retryDelay = null;
     _retryTimer?.cancel();
+    // What is on screen is from before the phone slept: mark it stale, reopen
+    // the event stream at once (its snapshot usually lands first) and fetch
+    // in parallel. A play/pause tapped meanwhile is sent as an explicit
+    // command and held until a report read after it agrees.
     state = state.copyWith(reconnecting: true);
-    await _resync(client);
+    _subscribeEvents(client);
+    await _resync(client, eventsOpen: true);
   }
 
   Future<void> _teardownClient() async {
@@ -788,6 +806,7 @@ class PlaybackStore extends Notifier<PlaybackState> {
       }
     } else if (event == 'now_playing' && data is Map<String, dynamic>) {
       final np = NowPlaying.fromJson(data);
+      _confirmPlayHold(np, DateTime.now());
       final byRoom = Map<String, NowPlaying>.of(state.nowPlayingByRoom)..[np.playerId] = np;
       state = state.copyWith(
         nowPlayingByRoom: byRoom,
@@ -842,11 +861,14 @@ class PlaybackStore extends Notifier<PlaybackState> {
     if (client == null) {
       return;
     }
+    final askedAt = DateTime.now();
     try {
-      final np = await client.nowPlaying(roomId).timeout(const Duration(seconds: 4));
+      final read = await client.nowPlaying(roomId).timeout(const Duration(seconds: 4));
       if (_disposed || !identical(client, _client) || state.activeRoomId != roomId) {
         return; // user moved on: don't paint an old room's song
       }
+      final np = _notOlderThanCommand(read, askedAt);
+      _confirmPlayHold(np, askedAt);
       state = state.copyWith(nowPlaying: np, nowPlayingByRoom: {...state.nowPlayingByRoom, roomId: np});
     } on Object {
       // The event stream or the next heartbeat will catch up.
@@ -866,17 +888,48 @@ class PlaybackStore extends Notifier<PlaybackState> {
       state = state.copyWith(nowPlaying: next);
       return;
     }
+    // Explicit play or pause from what the user saw, never a toggle: if the
+    // screen was stale (just woke up), "pause" on a paused player is a no-op
+    // instead of starting it again.
     final wanted = shouldPause ? 'paused' : 'playing';
-    _playHolds[room.id] = (state: wanted, until: DateTime.now().add(const Duration(seconds: 3)));
+    final now = DateTime.now();
+    _playHolds[room.id] = (state: wanted, until: now.add(playHoldMax), since: now);
+    _lastPlayCommand[room.id] = (state: wanted, at: now);
     state = state; // shows the new play/pause state at once
     try {
-      await _transport(room.id, shouldPause ? 'pause' : 'play');
+      await _transport(room.id, shouldPause ? 'pause' : 'play', retryLink: true);
     } on Object {
       _playHolds.remove(room.id);
+      _lastPlayCommand.remove(room.id);
       state = state;
       rethrow;
     } finally {
       _refreshSoon(room.id);
+    }
+  }
+
+  /// A report about [np] read at [readAt]: if it was read after the last
+  /// play/pause command and agrees with it, the player has caught up and the
+  /// hold can go. Reports read before the command never end it.
+  /// A fetch that left before the last play/pause command can't undo it,
+  /// even once the hold has ended.
+  NowPlaying _notOlderThanCommand(NowPlaying np, DateTime askedAt) {
+    final cmd = _lastPlayCommand[np.playerId];
+    if (cmd == null || !askedAt.isBefore(cmd.at) || np.state == cmd.state) {
+      return np;
+    }
+    if (np.source == null || np.source == 'none') {
+      return np;
+    }
+    return np.copyWith(state: cmd.state);
+  }
+
+  final _lastPlayCommand = <String, ({String state, DateTime at})>{};
+
+  void _confirmPlayHold(NowPlaying np, DateTime readAt) {
+    final h = _playHolds[np.playerId];
+    if (h != null && np.state == h.state && !readAt.isBefore(h.since)) {
+      _playHolds.remove(np.playerId);
     }
   }
 
@@ -1058,6 +1111,171 @@ class PlaybackStore extends Notifier<PlaybackState> {
     await client.playRadio(target, station);
   }
 
+  // ---- music library and podcasts ------------------------------------------
+  // Played by the room's group leader through MPD into the group's stream, so
+  // they go through each room's sound settings like every other source.
+
+  ControlApiClient _needClient() {
+    final client = _client;
+    if (client == null) {
+      throw ControlApiException('Not connected to a player');
+    }
+    return client;
+  }
+
+  String _needRoom(String? roomId) {
+    final target = roomId ?? state.activeRoom?.id;
+    if (target == null) {
+      throw ControlApiException('Pick a room first');
+    }
+    return target;
+  }
+
+  void _demoPlay(String roomId, NowPlaying np) {
+    _mock.nowPlaying[roomId] = np;
+    state = state.copyWith(nowPlaying: roomId == state.activeRoomId ? np : null);
+  }
+
+  Future<LibrarySummary> librarySummary() async =>
+      state.mockMode ? demoLibrarySummary : _needClient().librarySummary();
+
+  Future<LibraryShare> addLibraryShare(Map<String, dynamic> body) async {
+    if (state.mockMode) {
+      throw ControlApiException('Connect to a player to add a music library');
+    }
+    final player = state.activeRoom?.id;
+    return _needClient().addLibraryShare({...body, 'player_id': ?player});
+  }
+
+  Future<void> removeLibraryShare(String id) async => state.mockMode ? null : _needClient().removeLibraryShare(id);
+
+  Future<void> rescanLibrary() async => state.mockMode ? null : _needClient().rescanLibrary();
+
+  Future<List<UsbDrive>> usbDrives() async => state.mockMode ? const [] : _needClient().usbDrives();
+
+  Future<List<String>> libraryArtists() async =>
+      state.mockMode ? {for (final a in demoAlbums) a.artist!}.toList() : _needClient().libraryArtists();
+
+  Future<List<LibraryAlbum>> libraryAlbums({String? artist}) async => state.mockMode
+      ? [for (final a in demoAlbums) if (artist == null || a.artist == artist) a]
+      : _needClient().libraryAlbums(artist: artist);
+
+  Future<List<LibraryTrack>> libraryAlbum(String album, {String? artist}) async => state.mockMode
+      ? [for (final t in demoTracks) if (t.album == album) t]
+      : _needClient().libraryAlbum(album, artist: artist);
+
+  Future<LibraryListing> libraryFolder(String path) async {
+    if (!state.mockMode) {
+      return _needClient().libraryFolder(path);
+    }
+    return path.isEmpty
+        ? LibraryListing(folders: [for (final a in demoAlbums) LibraryFolder(path: a.album, name: a.album)])
+        : LibraryListing(path: path, tracks: [for (final t in demoTracks) if (t.album == path) t]);
+  }
+
+  Future<LibrarySearchResult> librarySearch(String query) async {
+    if (!state.mockMode) {
+      return _needClient().librarySearch(query);
+    }
+    final q = query.toLowerCase();
+    bool hit(String? v) => v != null && v.toLowerCase().contains(q);
+    return LibrarySearchResult(
+      artists: {for (final a in demoAlbums) if (hit(a.artist)) a.artist!}.toList(),
+      albums: [for (final a in demoAlbums) if (hit(a.album) || hit(a.artist)) a],
+      tracks: [for (final t in demoTracks) if (hit(t.title) || hit(t.artist) || hit(t.album)) t],
+    );
+  }
+
+  /// Cover for an album or a file; null in the demo (the logo shows).
+  String? libraryArtUrl({String? uri, String? album, String? artist}) =>
+      state.mockMode ? null : _client?.libraryArtUrl(uri: uri, album: album, artist: artist);
+
+  Future<void> playLibrary(List<LibraryTrack> tracks, {int start = 0, String? contextName, String? roomId}) async {
+    final target = _needRoom(roomId);
+    if (state.mockMode) {
+      final t = tracks[start.clamp(0, tracks.length - 1)];
+      _demoPlay(
+        target,
+        NowPlaying(
+          playerId: target,
+          title: t.title,
+          artist: t.artist,
+          album: t.album,
+          duration: t.duration,
+          position: 0,
+          state: 'playing',
+          source: 'library',
+        ),
+      );
+      return;
+    }
+    await _needClient().playLibrary(target, tracks, start: start, contextName: contextName);
+    _refreshSoon(target);
+  }
+
+  Future<List<Podcast>> searchPodcasts(String query) async {
+    if (!state.mockMode) {
+      return _needClient().searchPodcasts(query);
+    }
+    return [for (final p in demoPodcasts) if (p.title.toLowerCase().contains(query.toLowerCase())) p];
+  }
+
+  Future<List<Podcast>> podcastSubscriptions() async =>
+      state.mockMode ? List.of(_mock.podcastSubs) : _needClient().podcastSubscriptions();
+
+  Future<void> subscribePodcast(Podcast podcast) async {
+    if (state.mockMode) {
+      _mock.podcastSubs.removeWhere((p) => p.feed == podcast.feed);
+      _mock.podcastSubs.insert(0, podcast);
+      return;
+    }
+    await _needClient().subscribePodcast(podcast);
+  }
+
+  Future<void> unsubscribePodcast(String feed) async {
+    if (state.mockMode) {
+      _mock.podcastSubs.removeWhere((p) => p.feed == feed);
+      return;
+    }
+    await _needClient().unsubscribePodcast(feed);
+  }
+
+  Future<PodcastFeed> podcastFeed(Podcast podcast, {bool fresh = false}) async {
+    if (!state.mockMode) {
+      return _needClient().podcastFeed(podcast.feed, fresh: fresh);
+    }
+    return PodcastFeed(
+      podcast: podcast,
+      description: 'A demo podcast.',
+      subscribed: _mock.podcastSubs.any((p) => p.feed == podcast.feed),
+      episodes: demoEpisodes,
+    );
+  }
+
+  /// Plays [episode]; resumes where anyone in the home left off unless
+  /// [fromStart].
+  Future<void> playPodcast(PodcastEpisode episode, Podcast podcast, {bool fromStart = false, String? roomId}) async {
+    final target = _needRoom(roomId);
+    if (state.mockMode) {
+      _demoPlay(
+        target,
+        NowPlaying(
+          playerId: target,
+          title: episode.title,
+          artist: podcast.title,
+          imageUrl: episode.image ?? podcast.image,
+          duration: episode.duration,
+          position: fromStart ? 0 : (episode.canResume ? episode.position : 0),
+          state: 'playing',
+          source: 'podcast',
+        ),
+      );
+      return;
+    }
+    await _needClient().playPodcast(target, episode, podcast, position: fromStart ? 0 : null);
+    _refreshSoon(target);
+  }
+
   /// Demo mode: pretend [roomId]'s group started playing [np].
   void showDemoNowPlaying(String roomId, NowPlaying np) {
     _mock.nowPlaying[roomId] = np;
@@ -1096,30 +1314,48 @@ class PlaybackStore extends Notifier<PlaybackState> {
   }
 
   /// Player first; for Spotify, the Web API when the player can't.
-  Future<void> _transport(String roomId, String action, {int? positionMs}) async {
+  Future<void> _transport(String roomId, String action, {int? positionMs, bool retryLink = false}) async {
     final client = _client;
     if (client == null) {
       return;
     }
     try {
-      switch (action) {
-        case 'play':
-          await client.play(roomId);
-        case 'pause':
-          await client.pause(roomId);
-        case 'next':
-          await client.next(roomId);
-        case 'previous':
-          await client.previous(roomId);
-        case 'seek':
-          await client.seek(roomId, positionMs ?? 0);
+      if (retryLink) {
+        // Play and pause are idempotent: right after a wake the first request
+        // can die on a socket iOS closed while suspended, so try once more.
+        try {
+          await _transportOnce(client, roomId, action, positionMs);
+        } on Object catch (e) {
+          if (e is ControlApiException && e.statusCode != null) {
+            rethrow; // the player answered: a real error, not a dead socket
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 250));
+          await _transportOnce(client, roomId, action, positionMs);
+        }
+        return;
       }
+      await _transportOnce(client, roomId, action, positionMs);
     } on Object {
       final source = nowPlayingFor(roomId)?.source ?? state.activeRoom?.source;
       if (source != 'spotify' || !ref.read(spotifyProvider).signedIn) {
         rethrow;
       }
       await ref.read(spotifyProvider.notifier).webControl(roomId, action, positionMs: positionMs);
+    }
+  }
+
+  Future<void> _transportOnce(ControlApiClient client, String roomId, String action, int? positionMs) async {
+    switch (action) {
+      case 'play':
+        await client.play(roomId);
+      case 'pause':
+        await client.pause(roomId);
+      case 'next':
+        await client.next(roomId);
+      case 'previous':
+        await client.previous(roomId);
+      case 'seek':
+        await client.seek(roomId, positionMs ?? 0);
     }
   }
 

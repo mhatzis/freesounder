@@ -7,6 +7,7 @@ DEST="${ROOTFS_DIR}/tmp/fs-debs"
 rm -rf "$DEST"
 install -d "$DEST"
 install -m 0644 "$CACHE/$SNAPSERVER_DEB" "$CACHE/$SNAPCLIENT_DEB" "$DEST/"
+install -m 0644 "$CACHE/$UPMPDCLI_DEB" "$CACHE/$LIBUPNPP_DEB" "$CACHE/$LIBNPUPNP_DEB" "$DEST/"
 if ls "$CACHE/airplay2/"shairport-sync_*.deb >/dev/null 2>&1; then
 	install -m 0644 "$CACHE/airplay2/"shairport-sync_*.deb "$CACHE/airplay2/"nqptp_*.deb "$DEST/"
 	echo 2 > "$DEST/airplay"

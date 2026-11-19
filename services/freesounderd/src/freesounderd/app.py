@@ -13,21 +13,26 @@ from typing import Any
 import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from starlette.websockets import WebSocketDisconnect
 
 from freesounderd import __version__, peers
 from freesounderd.config import DaemonSettings, load_settings
 from freesounderd.discovery import Discovery, local_ip
 from freesounderd.engine import Engine, EngineError
+from freesounderd.library import LibraryError
 from freesounderd.models import (
     AdoptBody,
     AirplayVolumeBody,
     GroupMembersBody,
     Health,
     JoinBody,
+    LibraryPlayBody,
+    LibraryShareBody,
     PlayerSettings,
     PlayerSettingsPatch,
+    PodcastInfoBody,
+    PodcastPlayBody,
     RadioPlayBody,
     SeekBody,
     SetupBody,
@@ -38,6 +43,8 @@ from freesounderd.models import (
     SshDeveloperStatus,
     VolumeBody,
 )
+from freesounderd.mpd import MpdError
+from freesounderd.podcasts import PodcastError
 from freesounderd.ssh import ssh_set, ssh_status
 from freesounderd.store import Store, detected_hat, hostname
 
@@ -91,6 +98,14 @@ def create_app(
     async def _engine_error(_request: Request, exc: EngineError) -> JSONResponse:
         return JSONResponse(status_code=exc.status, content={"detail": exc.detail})
 
+    @app.exception_handler(LibraryError)
+    async def _library_error(_request: Request, exc: LibraryError) -> JSONResponse:
+        return JSONResponse(status_code=exc.status, content={"detail": exc.detail})
+
+    @app.exception_handler(PodcastError)
+    async def _podcast_error(_request: Request, exc: PodcastError) -> JSONResponse:
+        return JSONResponse(status_code=exc.status, content={"detail": exc.detail})
+
     async def require_peer(request: Request) -> None:
         hh = store.household()
         body = await request.body()
@@ -132,6 +147,9 @@ def create_app(
                 "spotify_connect": True,
                 "airplay": engine.airplay_version,
                 "spotify_browse": False,
+                "library": True,
+                "podcasts": True,
+                "upnp": bool(store.features().get("upnp")) or not settings.manage_system,
             },
             "dac": settings_now.dac,
             "hat": detected_hat(),
@@ -391,6 +409,169 @@ def create_app(
     async def radio_favourites() -> list[dict[str, Any]]:
         return store.radio_favourites()
 
+    # -------------------------------------------------------------- library
+    def library_target(host: str | None) -> str:
+        pid = host or engine.library_host()
+        if pid != engine.id and pid not in engine.peers:
+            raise HTTPException(status_code=404, detail="That library player is unknown.")
+        return pid
+
+    async def on_library_host(request: Request, host: str | None) -> tuple[str, Any]:
+        """(pid, forwarded answer) - the answer is None when this player is the host."""
+
+        pid = library_target(host)
+        if pid == engine.id:
+            return pid, None
+        path = request.url.path + (f"?{request.url.query}" if request.url.query else "")
+        return pid, await engine.forward(pid, request.method, path, None, wait=20)
+
+    def library_meta(pid: str) -> dict[str, Any]:
+        rec = engine.records().get(pid, {})
+        return {"host_id": pid, "host_room": rec.get("room")}
+
+    @app.get("/api/v2/library")
+    async def library_summary(request: Request, host: str | None = None) -> Any:
+        pid, fwd = await on_library_host(request, host)
+        if fwd is not None:
+            return fwd
+        return {**await engine.library.summary(), **library_meta(pid)}
+
+    @app.post("/api/v2/library/shares")
+    async def library_add(body: LibraryShareBody) -> Any:
+        existing = engine.library_host()
+        if engine.library.shares() or not body.player_id:
+            pid = existing
+        else:
+            pid = body.player_id
+        if existing != engine.id and (engine.records().get(existing) or {}).get("library"):
+            pid = existing
+        if pid != engine.id:
+            return await engine.forward(
+                pid, "POST", "/api/v2/library/shares", body.model_dump(exclude_none=True), wait=90
+            )
+        share = await engine.library.add(body.model_dump(exclude_none=True))
+        engine.kick()
+        return {"share": share, **library_meta(engine.id)}
+
+    @app.delete("/api/v2/library/shares/{sid}")
+    async def library_remove(request: Request, sid: str, host: str | None = None) -> Any:
+        _pid, fwd = await on_library_host(request, host)
+        if fwd is not None:
+            return fwd
+        await engine.library.remove(sid)
+        engine.kick()
+        return {"ok": True}
+
+    @app.post("/api/v2/library/rescan")
+    async def library_rescan(request: Request, host: str | None = None) -> Any:
+        _pid, fwd = await on_library_host(request, host)
+        if fwd is not None:
+            return fwd
+        await engine.library.mount_all()
+        await engine.library.rescan()
+        return {"ok": True}
+
+    @app.get("/api/v2/library/usb")
+    async def library_usb(request: Request, host: str | None = None) -> Any:
+        _pid, fwd = await on_library_host(request, host)
+        if fwd is not None:
+            return fwd
+        return await engine.library.usb_drives()
+
+    async def mpd_query(coro: Any) -> Any:
+        try:
+            return await coro
+        except MpdError as exc:
+            raise HTTPException(status_code=503, detail=f"Library not ready: {exc}") from exc
+
+    @app.get("/api/v2/library/artists")
+    async def library_artists(request: Request, host: str | None = None) -> Any:
+        _pid, fwd = await on_library_host(request, host)
+        return fwd if fwd is not None else await mpd_query(engine.library.artists())
+
+    @app.get("/api/v2/library/albums")
+    async def library_albums(
+        request: Request, artist: str | None = None, host: str | None = None
+    ) -> Any:
+        _pid, fwd = await on_library_host(request, host)
+        return fwd if fwd is not None else await mpd_query(engine.library.albums(artist))
+
+    @app.get("/api/v2/library/album")
+    async def library_album(
+        request: Request, album: str, artist: str | None = None, host: str | None = None
+    ) -> Any:
+        _pid, fwd = await on_library_host(request, host)
+        if fwd is not None:
+            return fwd
+        return await mpd_query(engine.library.album_tracks(album, artist))
+
+    @app.get("/api/v2/library/folder")
+    async def library_folder(request: Request, path: str = "", host: str | None = None) -> Any:
+        _pid, fwd = await on_library_host(request, host)
+        return fwd if fwd is not None else await mpd_query(engine.library.folder(path))
+
+    @app.get("/api/v2/library/search")
+    async def library_search(request: Request, q: str = "", host: str | None = None) -> Any:
+        _pid, fwd = await on_library_host(request, host)
+        return fwd if fwd is not None else await mpd_query(engine.library.search(q[:200]))
+
+    @app.get("/api/v2/library/art")
+    async def library_art(
+        request: Request,
+        uri: str | None = None,
+        album: str | None = None,
+        artist: str | None = None,
+        host: str | None = None,
+    ) -> Response:
+        pid = library_target(host)
+        if pid != engine.id:
+            ip, port = engine._addr(pid)
+            query = request.url.query
+            return RedirectResponse(f"http://{ip}:{port}/api/v2/library/art?{query}", 307)
+        data, mime = await engine.library.art(uri, album, artist)
+        return Response(content=data, media_type=mime, headers={"Cache-Control": "max-age=86400"})
+
+    @app.get("/api/v2/library/file")
+    async def library_file(uri: str, sig: str) -> Response:
+        hh = store.household()
+        if hh is None or not peers.token_ok(hh.key, "libfile", uri, sig):
+            raise HTTPException(status_code=403, detail="Not allowed")
+        path = engine.library.file_path(uri)
+        return FileResponse(path)
+
+    @app.post("/api/v2/groups/{gid}/library/play")
+    async def library_play(gid: str, body: LibraryPlayBody) -> Any:
+        return await engine.play_library(gid, body.model_dump(exclude_none=True))
+
+    # -------------------------------------------------------------- podcasts
+    @app.get("/api/v2/podcasts/search")
+    async def podcast_search(q: str = "") -> Any:
+        return await engine.podcasts.search(q[:200])
+
+    @app.get("/api/v2/podcasts")
+    async def podcast_subscriptions() -> Any:
+        return {"subscriptions": engine.podcasts.subscriptions()}
+
+    @app.post("/api/v2/podcasts/subscriptions")
+    async def podcast_subscribe(body: PodcastInfoBody) -> Any:
+        subs = engine.podcasts.subscribe(body.model_dump())
+        engine.kick()
+        return {"subscriptions": subs}
+
+    @app.delete("/api/v2/podcasts/subscriptions")
+    async def podcast_unsubscribe(feed: str) -> Any:
+        subs = engine.podcasts.unsubscribe(feed)
+        engine.kick()
+        return {"subscriptions": subs}
+
+    @app.get("/api/v2/podcasts/feed")
+    async def podcast_feed(url: str, fresh: bool = False) -> Any:
+        return await engine.podcasts.feed(url, fresh=fresh)
+
+    @app.post("/api/v2/groups/{gid}/podcast/play")
+    async def podcast_play(gid: str, body: PodcastPlayBody) -> Any:
+        return await engine.play_podcast(gid, body.model_dump())
+
     @app.delete("/api/v2/rooms/{rid}")
     async def forget_room(rid: str) -> dict[str, Any]:
         """Forget an offline member (it was reset or is gone for good)."""
@@ -549,6 +730,11 @@ def create_app(
     async def peer_state(request: Request) -> dict[str, Any]:
         await require_peer(request)
         return engine.self_record()
+
+    @app.get("/api/v2/peer/podcasts")
+    async def peer_podcasts(request: Request) -> dict[str, Any]:
+        await require_peer(request)
+        return engine.podcasts.doc()
 
     @app.post("/api/v2/peer/command")
     async def peer_command(request: Request) -> dict[str, Any]:

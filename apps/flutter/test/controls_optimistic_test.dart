@@ -14,6 +14,9 @@ class SlowPlayer {
   var volume = 20;
   var state = 'playing';
   final volumePosts = <int>[];
+  final controls = <String>[];
+  var npDelay = Duration.zero;
+  var dropNextControl = false;
   final streams = <StreamController<Map<String, dynamic>>>[];
 
   Map<String, dynamic> room() => {
@@ -30,17 +33,32 @@ class SlowPlayer {
           case '/api/v2/rooms':
             return http.Response(jsonEncode([room()]), 200);
           case '/api/v2/now-playing':
+            final seen = state; // what the player reported when asked
+            await Future<void>.delayed(npDelay);
             return http.Response(
-              jsonEncode({'player_id': 'patio', 'source': 'radio', 'state': state, 'title': 'Song'}),
+              jsonEncode({'player_id': 'patio', 'source': 'radio', 'state': seen, 'title': 'Song'}),
               200,
             );
+          case '/api/v2/groups/patio/play':
+            controls.add('play');
+            state = 'playing';
+            return http.Response('{"ok":true}', 200);
           case '/api/v2/rooms/patio/volume':
             await Future<void>.delayed(const Duration(milliseconds: 30));
             final v = (jsonDecode(request.body) as Map)['volume'] as int;
             volumePosts.add(v);
             volume = v;
             return http.Response('{"ok":true}', 200);
+          case '/api/v2/groups/patio/toggle':
+            controls.add('toggle');
+            state = state == 'playing' ? 'paused' : 'playing';
+            return http.Response('{"ok":true}', 200);
           case '/api/v2/groups/patio/pause':
+            controls.add('pause');
+            if (dropNextControl) {
+              dropNextControl = false;
+              throw http.ClientException('Connection closed before full header was received');
+            }
             await Future<void>.delayed(const Duration(milliseconds: 200));
             state = 'paused';
             return http.Response('{"ok":true}', 200);
@@ -130,6 +148,55 @@ void main() {
     expect(s().nowPlaying?.state, 'paused');
     await pending;
     expect(player.state, 'paused');
+  });
+
+  test('pause right after waking: explicit pause, stale wake-up read does not flip it', () async {
+    expect(s().nowPlaying?.isPlaying, isTrue);
+    store.appPaused();
+    // While the phone sleeps nothing changes; on wake the fetch is slow and
+    // its answer ("playing") is from before the pause.
+    player.npDelay = const Duration(milliseconds: 300);
+    final resumed = store.appResumed();
+    expect(player.streams.length, 2, reason: 'event stream reopened at once on resume');
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    final pending = store.togglePlayPause();
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+    expect(s().nowPlaying?.state, 'paused', reason: 'what the user tapped shows at once');
+    await resumed;
+    expect(s().nowPlaying?.state, 'paused', reason: 'a read that left before the tap cannot undo it');
+    await pending;
+    expect(player.controls, ['pause'], reason: 'explicit pause, never a toggle');
+    expect(player.state, 'paused');
+    player.npDelay = Duration.zero;
+    await Future<void>.delayed(const Duration(milliseconds: 1600));
+    expect(s().nowPlaying?.state, 'paused');
+  });
+
+  test('pausing a player that already paused elsewhere keeps it paused', () async {
+    // The screen still says playing (stale), the player is already paused.
+    player.state = 'paused';
+    await store.togglePlayPause();
+    expect(player.controls, ['pause'], reason: 'pause on a paused player is a no-op, not play');
+    expect(player.state, 'paused');
+    expect(s().nowPlaying?.state, 'paused');
+  });
+
+  test('a dead socket after wake: the pause is retried once and lands', () async {
+    player.dropNextControl = true;
+    await store.togglePlayPause();
+    expect(player.controls, ['pause', 'pause']);
+    expect(player.state, 'paused');
+    expect(s().nowPlaying?.state, 'paused');
+  });
+
+  test('once the player confirms, a later real change shows without waiting out the hold', () async {
+    await store.togglePlayPause();
+    await Future<void>.delayed(const Duration(milliseconds: 400)); // read-back confirms "paused"
+    expect(s().nowPlaying?.state, 'paused');
+    player.state = 'playing'; // someone presses play on another phone
+    player.pushNp('playing');
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+    expect(s().nowPlaying?.state, 'playing');
   });
 
   test('NowPlaying copy keeps metadata fields', () {

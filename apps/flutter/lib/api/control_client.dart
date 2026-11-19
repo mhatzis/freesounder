@@ -4,8 +4,10 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+import '../models/library.dart';
 import '../models/now_playing.dart';
 import '../models/player_settings.dart';
+import '../models/podcast.dart';
 import '../models/radio_station.dart';
 import '../models/room.dart';
 
@@ -123,6 +125,89 @@ class ControlApiClient {
 
   Future<void> playRadio(String roomOrGroupId, RadioStation station) =>
       _send('POST', '/api/v2/groups/$roomOrGroupId/radio', station.toPlayJson());
+
+  // ---- music library (NAS / USB) -------------------------------------------
+  // Every call can go to any player: it forwards to the library's player.
+
+  Future<LibrarySummary> librarySummary() async =>
+      LibrarySummary.fromJson(await _getJson('/api/v2/library') as Map<String, dynamic>);
+
+  /// Mounts and saves a share (slow: the player tries it first). The password
+  /// stays on the player and is never sent back.
+  Future<LibraryShare> addLibraryShare(Map<String, dynamic> body) async {
+    final data = await _send('POST', '/api/v2/library/shares', body, true) as Map<String, dynamic>;
+    return LibraryShare.fromJson(data['share'] as Map<String, dynamic>);
+  }
+
+  Future<void> removeLibraryShare(String id) => _send('DELETE', '/api/v2/library/shares/${Uri.encodeComponent(id)}');
+
+  Future<void> rescanLibrary() => _send('POST', '/api/v2/library/rescan');
+
+  Future<List<UsbDrive>> usbDrives() async {
+    final data = await _getJson('/api/v2/library/usb');
+    final items = data is Map ? (data['drives'] as List? ?? const []) : (data as List? ?? const []);
+    return [for (final d in items) UsbDrive.fromJson(d as Map<String, dynamic>)];
+  }
+
+  Future<List<String>> libraryArtists() async =>
+      [for (final a in await _getJson('/api/v2/library/artists') as List<dynamic>) a as String];
+
+  Future<List<LibraryAlbum>> libraryAlbums({String? artist}) async => [
+        for (final a in await _getJson('/api/v2/library/albums', {'artist': ?artist}) as List<dynamic>)
+          LibraryAlbum.fromJson(a as Map<String, dynamic>),
+      ];
+
+  Future<List<LibraryTrack>> libraryAlbum(String album, {String? artist}) async => [
+        for (final t in await _getJson('/api/v2/library/album', {'album': album, 'artist': ?artist}) as List<dynamic>)
+          LibraryTrack.fromJson(t as Map<String, dynamic>),
+      ];
+
+  Future<LibraryListing> libraryFolder(String path) async =>
+      LibraryListing.fromJson(await _getJson('/api/v2/library/folder', {'path': path}) as Map<String, dynamic>);
+
+  Future<LibrarySearchResult> librarySearch(String query) async =>
+      LibrarySearchResult.fromJson(await _getJson('/api/v2/library/search', {'q': query}) as Map<String, dynamic>);
+
+  /// Cover art (embedded, else folder.jpg); the player redirects to the
+  /// library's player.
+  String libraryArtUrl({String? uri, String? album, String? artist}) =>
+      _uri('/api/v2/library/art', {'uri': ?uri, 'album': ?album, 'artist': ?artist}).toString();
+
+  Future<void> playLibrary(String roomOrGroupId, List<LibraryTrack> tracks, {int start = 0, String? contextName}) =>
+      _send('POST', '/api/v2/groups/$roomOrGroupId/library/play', {
+        'tracks': [for (final t in tracks) t.toJson()],
+        'start': start,
+        'context_name': ?contextName,
+      });
+
+  // ---- podcasts ----------------------------------------------------------------
+
+  Future<List<Podcast>> searchPodcasts(String query) async => [
+        for (final p in await _getJson('/api/v2/podcasts/search', {'q': query}) as List<dynamic>)
+          Podcast.fromJson(p as Map<String, dynamic>),
+      ];
+
+  Future<List<Podcast>> podcastSubscriptions() async {
+    final data = await _getJson('/api/v2/podcasts') as Map<String, dynamic>;
+    return [for (final p in (data['subscriptions'] as List? ?? const [])) Podcast.fromJson(p as Map<String, dynamic>)];
+  }
+
+  Future<void> subscribePodcast(Podcast podcast) => _send('POST', '/api/v2/podcasts/subscriptions', podcast.toJson());
+
+  Future<void> unsubscribePodcast(String feed) =>
+      _send('DELETE', '/api/v2/podcasts/subscriptions?feed=${Uri.encodeQueryComponent(feed)}');
+
+  Future<PodcastFeed> podcastFeed(String feed, {bool fresh = false}) async => PodcastFeed.fromJson(
+        await _getJson('/api/v2/podcasts/feed', {'url': feed, if (fresh) 'fresh': 'true'}) as Map<String, dynamic>,
+      );
+
+  /// Plays an episode; [position] null resumes where the home left off.
+  Future<void> playPodcast(String roomOrGroupId, PodcastEpisode episode, Podcast podcast, {double? position}) =>
+      _send('POST', '/api/v2/groups/$roomOrGroupId/podcast/play', {
+        'episode': episode.toJson(),
+        'podcast': podcast.toJson(),
+        'position': ?position,
+      });
 
   /// Seek the group's Spotify playback (milliseconds).
   /// Plays left / right / both tones through this room's full audio chain.

@@ -59,3 +59,14 @@ def verify(
         return False
     expected = hmac.new(bytes.fromhex(key), _message(method, path, ts, body), hashlib.sha256)
     return hmac.compare_digest(expected.hexdigest(), sig)
+
+
+def token(key: str, purpose: str, value: str) -> str:
+    """A capability for one URL (e.g. one library file), derived from the household key."""
+
+    mac = hmac.new(bytes.fromhex(key), f"{purpose}\n{value}".encode(), hashlib.sha256)
+    return mac.hexdigest()[:32]
+
+
+def token_ok(key: str, purpose: str, value: str, given: str) -> bool:
+    return hmac.compare_digest(token(key, purpose, value), given or "")

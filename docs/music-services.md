@@ -1,5 +1,9 @@
 # Music services in the FreeSounder app
 
+> **v2 players (0.6.x):** this page describes the older Music Assistant
+> design. For what v2 players play (radio, Spotify, AirPlay, music library,
+> podcasts, UPnP / DLNA) see [sources.md](sources.md).
+
 As of **11 November 2026, Australia/Melbourne**. The in-app **Music services** screen (app 0.5.0) is the supported way to add and remove music sources. Users should not need the Music Assistant web UI at port 8095.
 
 The Flutter app talks only to the household **control API**. The control API is a facade over Music Assistant's WebSocket commands (`config/providers/setup`, `reconfigure`, `config/flows/submit`, `get_entries`, `save`, `remove`, and `SETUP_FLOW_UPDATED` events).

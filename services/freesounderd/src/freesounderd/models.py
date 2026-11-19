@@ -264,3 +264,56 @@ class SshDeveloperStatus(BaseModel):
     password: str | None = None
     expires: str = "reboot"
     warning: str = SSH_API_WARNING
+
+
+class LibraryShareBody(BaseModel):
+    kind: str = Field(max_length=8)
+    host: str | None = Field(default=None, max_length=253)
+    share: str | None = Field(default=None, max_length=255)
+    username: str | None = Field(default=None, max_length=128)
+    password: str | None = Field(default=None, max_length=256)
+    domain: str | None = Field(default=None, max_length=128)
+    name: str | None = Field(default=None, max_length=60)
+    uuid: str | None = Field(default=None, max_length=64)
+    player_id: str | None = Field(default=None, max_length=64)
+
+    def __repr__(self) -> str:  # never show the password in logs or tracebacks
+        return f"LibraryShareBody(kind={self.kind!r}, host={self.host!r}, share={self.share!r})"
+
+    __str__ = __repr__
+
+
+class LibraryTrack(BaseModel):
+    uri: str = Field(min_length=1, max_length=2048)
+    title: str | None = None
+    artist: str | None = None
+    album: str | None = None
+    duration: float | None = None
+
+
+class LibraryPlayBody(BaseModel):
+    host: str | None = Field(default=None, max_length=64)
+    tracks: list[LibraryTrack] = Field(min_length=1, max_length=500)
+    start: int = Field(default=0, ge=0)
+    context_name: str | None = Field(default=None, max_length=200)
+
+
+class PodcastEpisodeBody(BaseModel):
+    id: str = Field(min_length=1, max_length=64)
+    url: str = Field(min_length=8, max_length=4096)
+    title: str | None = None
+    image: str | None = None
+    duration: float | None = None
+
+
+class PodcastInfoBody(BaseModel):
+    feed: str | None = Field(default=None, max_length=4096)
+    title: str | None = Field(default=None, max_length=300)
+    author: str | None = Field(default=None, max_length=300)
+    image: str | None = Field(default=None, max_length=4096)
+
+
+class PodcastPlayBody(BaseModel):
+    episode: PodcastEpisodeBody
+    podcast: PodcastInfoBody = Field(default_factory=PodcastInfoBody)
+    position: float | None = Field(default=None, ge=0)
