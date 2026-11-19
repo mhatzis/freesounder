@@ -7,9 +7,10 @@ import '../api/errors.dart';
 import '../models/podcast.dart';
 import '../state/playback_store.dart';
 import 'artwork.dart';
+import 'music_nav.dart';
 
 Future<void> showPodcastsScreen(BuildContext context) {
-  return Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const PodcastsScreen()));
+  return pushMusic<void>(context, 'podcasts', (_) => const PodcastsScreen());
 }
 
 String _ago(DateTime? date) {
@@ -111,7 +112,7 @@ class _PodcastsScreenState extends ConsumerState<PodcastsScreen> {
   }
 
   Future<void> _open(Podcast p) async {
-    await Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => PodcastScreen(podcast: p)));
+    await pushMusic<void>(context, 'podcasts/show', (_) => PodcastScreen(podcast: p));
     await _loadSubs();
   }
 
@@ -125,6 +126,7 @@ class _PodcastsScreenState extends ConsumerState<PodcastsScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Podcasts'),
+        actions: const [MusicCloseButton()],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(28),
           child: Padding(
@@ -369,7 +371,10 @@ class _PodcastScreenState extends ConsumerState<PodcastScreen> {
     final scheme = Theme.of(context).colorScheme;
     final subscribed = _subscribed ?? false;
     return Scaffold(
-      appBar: AppBar(title: Text(p.title, maxLines: 1, overflow: TextOverflow.ellipsis)),
+      appBar: AppBar(
+        title: Text(p.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+        actions: const [MusicCloseButton()],
+      ),
       body: RefreshIndicator(
         onRefresh: () => _load(fresh: true),
         child: ListView(

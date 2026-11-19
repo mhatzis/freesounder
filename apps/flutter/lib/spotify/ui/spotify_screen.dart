@@ -7,6 +7,7 @@ import '../../api/errors.dart';
 import '../../models/room.dart';
 import '../../state/playback_store.dart';
 import '../../ui/artwork.dart';
+import '../../ui/music_nav.dart';
 import '../spotify_api.dart';
 import '../spotify_auth.dart';
 import '../spotify_models.dart';
@@ -15,7 +16,7 @@ import 'spotify_brand.dart';
 import 'spotify_setup.dart';
 
 Future<void> showSpotifyScreen(BuildContext context) {
-  return Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const SpotifyScreen()));
+  return pushMusic<void>(context, 'spotify', (_) => const SpotifyScreen());
 }
 
 String spotifyErrorText(Object err) {
@@ -61,6 +62,7 @@ class SpotifyScreen extends ConsumerWidget {
                 const PopupMenuItem(value: 'signout', child: Text('Sign out of Spotify')),
               ],
             ),
+          const MusicCloseButton(),
         ],
       ),
       body: !spotify.loaded
@@ -307,7 +309,7 @@ void openSpotifyItem(BuildContext context, SpotifyItem item) {
     playSpotifyItem(context, item);
     return;
   }
-  Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => SpotifyPageScreen(item: item)));
+  pushMusic<void>(context, 'spotify/page', (_) => SpotifyPageScreen(item: item));
 }
 
 /// Pick a room or group, then play. Groups appear once ("Kitchen + 1").
@@ -409,7 +411,10 @@ class _SpotifyPageScreenState extends ConsumerState<SpotifyPageScreen> {
   Widget build(BuildContext context) {
     final text = Theme.of(context).textTheme;
     return Scaffold(
-      appBar: AppBar(title: Text(widget.item.name, maxLines: 1, overflow: TextOverflow.ellipsis)),
+      appBar: AppBar(
+        title: Text(widget.item.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+        actions: const [MusicCloseButton()],
+      ),
       body: FutureBuilder<SpotifyPage>(
         future: _page,
         builder: (context, snap) {

@@ -7,9 +7,10 @@ import '../api/errors.dart';
 import '../models/radio_station.dart';
 import '../state/playback_store.dart';
 import 'station_colors.dart';
+import 'music_nav.dart';
 
 Future<void> showRadioScreen(BuildContext context) {
-  return Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const RadioScreen()));
+  return pushMusic<void>(context, 'radio', (_) => const RadioScreen());
 }
 
 /// Colourful quick filters: (label, Radio Browser tag, colour).
@@ -135,6 +136,7 @@ class _RadioScreenState extends ConsumerState<RadioScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Radio'),
+        actions: const [MusicCloseButton()],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(28),
           child: Padding(

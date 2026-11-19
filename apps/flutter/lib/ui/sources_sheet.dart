@@ -6,6 +6,7 @@ import '../spotify/ui/spotify_brand.dart';
 import '../spotify/ui/spotify_screen.dart';
 import '../state/playback_store.dart';
 import 'library_screen.dart';
+import 'music_nav.dart';
 import 'podcasts_screen.dart';
 import 'radio_screen.dart';
 
@@ -13,11 +14,19 @@ import 'radio_screen.dart';
 /// library, podcasts, Spotify) and the apps that can cast to a group
 /// (AirPlay, UPnP / DLNA). Everything plays through each room's sound
 /// settings (bass, treble, loudness, balance).
+///
+/// Ways out, everywhere in the flow: the ✕ in the header, a swipe down on the
+/// sheet (or its handle), a tap outside it, and the system back gesture. A
+/// source screen opens on top of the picker, so its back arrow returns here
+/// and its ✕ leaves the whole flow ([closeMusic]).
 Future<void> showSourcesSheet(BuildContext context) {
   return showModalBottomSheet<void>(
     context: context,
-    showDragHandle: true,
     isScrollControlled: true,
+    useSafeArea: true,
+    isDismissible: true,
+    enableDrag: true,
+    routeSettings: const RouteSettings(name: '${musicRoutePrefix}picker'),
     builder: (_) => const SourcesSheet(),
   );
 }
@@ -51,91 +60,133 @@ class SourcesSheet extends ConsumerWidget {
     final text = Theme.of(context).textTheme;
     final scheme = Theme.of(context).colorScheme;
     final target = room == null ? null : (room.isGrouped ? (room.groupName ?? room.name) : room.name);
-    void open(Future<void> Function(BuildContext) screen) {
-      final nav = Navigator.of(context);
-      nav.pop();
-      screen(nav.context);
-    }
+    // Opens on top of the picker: back from the screen comes back here.
+    void open(Future<void> Function(BuildContext) screen) => screen(context);
 
     return SafeArea(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-        child: Column(
-          key: const Key('sources-sheet'),
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text('Play music', style: text.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
-            const SizedBox(height: 2),
-            Text(
-              target == null ? 'Pick a room first' : 'In $target',
-              key: const Key('sources-target'),
-              style: text.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
+      top: false,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Semantics(
+            label: 'Close music picker',
+            button: true,
+            child: GestureDetector(
+              key: const Key('sources-drag-handle'),
+              behavior: HitTestBehavior.opaque,
+              onTap: () => Navigator.of(context).maybePop(),
+              child: SizedBox(
+                height: 28,
+                child: Center(
+                  child: Container(
+                    width: 36,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: scheme.onSurfaceVariant.withValues(alpha: 0.4),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+              ),
             ),
-            const SizedBox(height: 16),
-            GridView.count(
-              crossAxisCount: 2,
-              shrinkWrap: true,
-              physics: const NeverScrollableScrollPhysics(),
-              mainAxisSpacing: 12,
-              crossAxisSpacing: 12,
-              childAspectRatio: 1.55,
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 4, 0),
+            child: Row(
               children: [
-                _SourceTile(
-                  key: const Key('source-radio'),
-                  label: 'Radio',
-                  detail: 'Stations worldwide',
-                  icon: Icon(sourceGlyph('radio'), color: Colors.white, size: 28),
-                  colour: sourceColours['radio']!,
-                  onTap: () => open(showRadioScreen),
+                Expanded(
+                  child: Text('Play music', style: text.titleLarge?.copyWith(fontWeight: FontWeight.w700)),
                 ),
-                _SourceTile(
-                  key: const Key('source-library'),
-                  label: 'Music library',
-                  detail: 'NAS or USB drive',
-                  icon: Icon(sourceGlyph('library'), color: Colors.white, size: 28),
-                  colour: sourceColours['library']!,
-                  onTap: () => open(showLibraryScreen),
-                ),
-                _SourceTile(
-                  key: const Key('source-podcasts'),
-                  label: 'Podcasts',
-                  detail: 'Subscribe and resume',
-                  icon: Icon(sourceGlyph('podcast'), color: Colors.white, size: 28),
-                  colour: sourceColours['podcast']!,
-                  onTap: () => open(showPodcastsScreen),
-                ),
-                _SourceTile(
-                  key: const Key('source-spotify'),
-                  label: 'Spotify',
-                  detail: spotifyIn ? 'Signed in' : 'Spotify Connect',
-                  icon: const SpotifyMark.icon(size: 28, onPureBackground: true),
-                  colour: const Color(0xFF191414),
-                  onTap: () => open(showSpotifyScreen),
+                IconButton(
+                  key: const Key('sources-close'),
+                  tooltip: 'Close',
+                  icon: const Icon(Icons.close_rounded),
+                  onPressed: () => Navigator.of(context).maybePop(),
                 ),
               ],
             ),
-            const SizedBox(height: 20),
-            Text('Cast from another app', style: text.titleSmall),
-            const SizedBox(height: 4),
-            _CastRow(
-              key: const Key('source-airplay-info'),
-              source: 'airplay',
-              title: 'AirPlay',
-              body: target == null
-                  ? 'Pick the room in Control Centre or any app’s AirPlay button.'
-                  : 'Pick “$target” in Control Centre or any app’s AirPlay button.',
+          ),
+          Flexible(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+              child: Column(
+                key: const Key('sources-sheet'),
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    target == null ? 'Pick a room first' : 'In $target',
+                    key: const Key('sources-target'),
+                    style: text.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
+                  ),
+                  const SizedBox(height: 16),
+                  GridView.count(
+                    crossAxisCount: 2,
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    mainAxisSpacing: 12,
+                    crossAxisSpacing: 12,
+                    childAspectRatio: 1.55,
+                    children: [
+                      _SourceTile(
+                        key: const Key('source-radio'),
+                        label: 'Radio',
+                        detail: 'Stations worldwide',
+                        icon: Icon(sourceGlyph('radio'), color: Colors.white, size: 28),
+                        colour: sourceColours['radio']!,
+                        onTap: () => open(showRadioScreen),
+                      ),
+                      _SourceTile(
+                        key: const Key('source-library'),
+                        label: 'Music library',
+                        detail: 'NAS or USB drive',
+                        icon: Icon(sourceGlyph('library'), color: Colors.white, size: 28),
+                        colour: sourceColours['library']!,
+                        onTap: () => open(showLibraryScreen),
+                      ),
+                      _SourceTile(
+                        key: const Key('source-podcasts'),
+                        label: 'Podcasts',
+                        detail: 'Subscribe and resume',
+                        icon: Icon(sourceGlyph('podcast'), color: Colors.white, size: 28),
+                        colour: sourceColours['podcast']!,
+                        onTap: () => open(showPodcastsScreen),
+                      ),
+                      _SourceTile(
+                        key: const Key('source-spotify'),
+                        label: 'Spotify',
+                        detail: spotifyIn ? 'Signed in' : 'Spotify Connect',
+                        icon: const SpotifyMark.icon(size: 28, onPureBackground: true),
+                        colour: const Color(0xFF191414),
+                        onTap: () => open(showSpotifyScreen),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 20),
+                  Text('Cast from another app', style: text.titleSmall),
+                  const SizedBox(height: 4),
+                  _CastRow(
+                    key: const Key('source-airplay-info'),
+                    source: 'airplay',
+                    title: 'AirPlay',
+                    body: target == null
+                        ? 'Pick the room in Control Centre or any app’s AirPlay button.'
+                        : 'Pick “$target” in Control Centre or any app’s AirPlay button.',
+                  ),
+                  _CastRow(
+                    key: const Key('source-upnp-info'),
+                    source: 'upnp',
+                    title: 'UPnP / DLNA',
+                    body: target == null
+                        ? 'Each group is a renderer (with OpenHome) for apps like BubbleUPnP, mconnect or foobar2000.'
+                        : '“$target” shows up as a renderer (with OpenHome) in apps like BubbleUPnP, mconnect, '
+                              'foobar2000 or Audirvana. Pick it there; it takes over the group like Spotify does.',
+                  ),
+                ],
+              ),
             ),
-            _CastRow(
-              key: const Key('source-upnp-info'),
-              source: 'upnp',
-              title: 'UPnP / DLNA',
-              body: target == null
-                  ? 'Each group is a renderer (with OpenHome) for apps like BubbleUPnP, mconnect or foobar2000.'
-                  : '“$target” shows up as a renderer (with OpenHome) in apps like BubbleUPnP, mconnect, '
-                        'foobar2000 or Audirvana. Pick it there; it takes over the group like Spotify does.',
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
