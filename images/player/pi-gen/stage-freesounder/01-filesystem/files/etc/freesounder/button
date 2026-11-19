@@ -1,7 +1,0 @@
-# Optional wired button (see docs/reset.md): 1 press = shut down,
-# 5 quick presses = factory reset.
-#   gpio=auto  GPIO3 / pin 5 to GND / pin 6 (also wakes a halted Pi), unless
-#              an I2C DAC/amp HAT uses GPIO2/3 - then the wired button is off.
-#   gpio=17    any other BCM GPIO to GND (no wake from halt)
-#   gpio=off   no wired button
-gpio=auto

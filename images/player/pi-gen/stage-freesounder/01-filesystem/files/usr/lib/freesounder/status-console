@@ -297,8 +297,8 @@ $(services_block)
 This player is a locked-down appliance.
 There is no login on this screen (fsadmin is on tty2+).
 Set it up in the FreeSounder app (Bluetooth or the local network).
-Factory reset: press the power button 5 times quickly (Pi 5), tap a GPIO3
-button 5 times, or see docs/reset.md (power-cycle 5 times).
+Factory reset: in the app (Room settings), press the power button 5 times
+quickly (Pi 5), or see docs/reset.md (power-cycle 5 times).
 Doctor report: /boot/firmware/freesounder-doctor.txt
 STATUS
 )

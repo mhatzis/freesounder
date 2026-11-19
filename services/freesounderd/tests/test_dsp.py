@@ -150,3 +150,22 @@ def test_amp_boards_get_a_safe_volume_limit_once() -> None:
         apply_amp_default(PlayerSettings(volume_limit=60, dac="max98357a"), None).volume_limit == 60
     )
     assert apply_amp_default(PlayerSettings(), None).volume_limit == 100
+
+
+def test_card_output_puts_one_plug_on_hw() -> None:
+    # default:CARD= is plug -> hw itself; plug -> fsdsp -> plug -> plug -> hw
+    # failed hw-params on a PCM5122 (snd_interval_empty assertion).
+    text = render_alsa_conf(PlayerSettings(), slave_pcm="default:CARD=sndrpihifiberry", kind="card")
+    assert 'slave.pcm "hw:CARD=sndrpihifiberry,DEV=0"' in text
+    assert "default:CARD" not in text.split("DSP:")[1]
+    assert 'slave.pcm "hw:CARD=Device,DEV=0"' in render_alsa_conf(slave_pcm="hw:CARD=Device,DEV=0")
+
+
+def test_direct_mode_skips_the_dsp() -> None:
+    text = render_alsa_conf(slave_pcm="hw:CARD=x,DEV=0", kind="card", direct=True)
+    main = text.split("ctl.freesounder")[0]
+    assert "type fsdsp" not in main
+    assert 'slave.pcm "freesounder_hw"' in main
+    assert "DIRECT" in text
+    # The self-test chain still exercises fsdsp.
+    assert "pcm.freesounder_selftest_dsp" in text

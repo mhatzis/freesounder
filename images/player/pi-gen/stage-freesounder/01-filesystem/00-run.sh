@@ -4,6 +4,8 @@
 # (exp/bt-transmitter): drop its bluealsa drop-in (that branch re-installs it
 # below); 03-enable purges the package when the drop-in is absent.
 rm -rf "${ROOTFS_DIR}/etc/systemd/system/bluealsa.service.d"
+# 0.6.11: the wired GPIO3 button is gone (it shared the I2C clock line).
+rm -f "${ROOTFS_DIR}/etc/freesounder/button"
 install -d "${ROOTFS_DIR}/etc/freesounder"
 install -d "${ROOTFS_DIR}/usr/lib/freesounder"
 install -d "${ROOTFS_DIR}/usr/sbin"
@@ -55,7 +57,6 @@ install -m 0644 files/etc/systemd/system/freesounder-sanitize-imager.service "${
 install -m 0644 files/etc/systemd/system/freesounder-ssh-reset.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-ssh-reset.service"
 # Factory reset (buttons, power-cycle counter), power logging, persistent journal.
 install -m 0755 files/usr/lib/freesounder/factory-reset "${ROOTFS_DIR}/usr/lib/freesounder/factory-reset"
-install -m 0644 files/etc/freesounder/button "${ROOTFS_DIR}/etc/freesounder/button"
 for unit in freesounder-buttons.service freesounder-boot-count.service \
 	freesounder-boot-count-clear.service freesounder-factory-reset.service \
 	freesounder-heartbeat.service; do

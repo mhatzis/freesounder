@@ -26,9 +26,9 @@ Design research Page: [freesounder – Architecture Research & Recommended Stack
 Reset a player (forget Wi-Fi, home and room; back to Bluetooth setup as
 `fs-new`) without the app:
 
+- **In the app:** Room settings → Factory reset (with a confirmation).
 - **Pi 5:** press the power button 5 times within 3 s. One press is a clean shutdown.
 - **Any Pi:** plug it in, unplug it after about 20 s, 5 times in a row, then leave it on.
-- **Wired button:** a button from GPIO3 (pin 5) to GND (pin 6). Tap it 5 times; one press shuts down and wakes the Pi.
 - **Console:** `sudo freesounder-setup factory-reset`.
 
 See [docs/reset.md](docs/reset.md) for the exact timing, the wiring, and I2C HATs.

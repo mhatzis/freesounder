@@ -2,7 +2,7 @@
 # FreeSounder factory reset: forget Wi-Fi, the home (household key and
 # members), the room name and every per-room setting, and go back to
 # Bluetooth setup mode as fs-new. Image-level settings stay: fsadmin, the
-# Wi-Fi country, the DAC/amp choice and the button pin. Developer SSH is
+# Wi-Fi country and the DAC/amp choice. Developer SSH is
 # switched off.
 #
 #   factory-reset [--reason button|power-cycle|app|console] [--early] [--no-reboot]

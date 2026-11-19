@@ -124,6 +124,7 @@ void main() {
     await tester.tap(find.byKey(const Key('reset-help-tile')));
     await tester.pumpAndSettle();
     expect(find.textContaining('power button 5 times'), findsOneWidget);
-    expect(find.textContaining('pin 5 (GPIO3)'), findsOneWidget);
+    expect(find.textContaining('Factory reset at the bottom'), findsOneWidget);
+    expect(find.textContaining('GPIO3'), findsNothing);
   });
 }

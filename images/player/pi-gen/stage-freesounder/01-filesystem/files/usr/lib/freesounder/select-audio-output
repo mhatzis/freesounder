@@ -10,6 +10,11 @@
 # one is expected), so it does not settle on the null sink while they probe.
 # HDMI uses the `hdmi:` PCM (IEC958 subframes; vc4-hdmi-0 and vc4-hdmi-1 are
 # separate cards), never `default:`, whose softvol control can sit at 0.
+# Cards use `hw:CARD=<id>,DEV=0` under our own plug: `default:CARD=` adds a
+# second plug, and that stack fails hw-params on a PCM5122 DAC
+# (snd_interval_empty assertion). After rendering, a 1 s silent write checks
+# the chain (check=ok or the exact aplay error); if only a plain plug opens,
+# direct=1 (no tone controls).
 # Writes /etc/freesounder/audio-output (pcm=, card=, kind=, reason=), unmutes
 # the card's mixer, and re-renders /etc/alsa/conf.d/99-freesounder.conf (with a
 # self-test). Run before snapclient starts and on HDMI hotplug.
@@ -130,7 +135,7 @@ if [[ -n "$chosen" ]]; then
 	if [[ $kind == hdmi ]]; then
 		pcm="hdmi:CARD=$id,DEV=0"
 	else
-		pcm="default:CARD=$id"
+		pcm="hw:CARD=$id,DEV=0"
 	fi
 	card=$index
 fi
@@ -158,18 +163,82 @@ if [[ $kind != null && -z "${FREESOUNDER_NO_RENDER:-}" ]]; then
 	unmute_card "$card"
 fi
 
-new=$(printf 'pcm=%s\ncard=%s\nkind=%s\nreason=%s\ncards=%s\ndetected=%s' \
-	"$pcm" "$card" "$kind" "$reason" "${card_list:-none}" "${detected:-}")
+old_out=$(cat "$OUT" 2>/dev/null)
+write_output() {
+	new=$(printf 'pcm=%s\ncard=%s\nkind=%s\nreason=%s\ncards=%s\ndetected=%s%s' \
+		"$pcm" "$card" "$kind" "$reason" "${card_list:-none}" "${detected:-}" "$1")
+	if [[ "$(cat "$OUT" 2>/dev/null)" != "$new" ]]; then
+		install -d "$(dirname "$OUT")"
+		printf '%s\n' "$new" > "$OUT"
+	fi
+}
+render() {
+	if [[ -z "${FREESOUNDER_NO_RENDER:-}" ]]; then
+		/usr/lib/freesounder/apply-dsp-config || echo "apply-dsp-config failed" >&2
+	fi
+}
+# 1 s of silence through a PCM; the last aplay line on failure.
+probe_err=""
+probe() {
+	if [[ -n "${FREESOUNDER_PROBE_RESULT:-}" ]]; then
+		probe_err=${FREESOUNDER_PROBE_RESULT#fail:}
+		[[ "$FREESOUNDER_PROBE_RESULT" == ok ]]
+		return
+	fi
+	[[ -n "${FREESOUNDER_NO_RENDER:-}" ]] && return 0
+	command -v aplay >/dev/null 2>&1 || return 0
+	probe_err=$(timeout 12 aplay -q -D "$1" -t raw -f S16_LE -r 44100 -c 2 -d 1 /dev/zero 2>&1 >/dev/null)
+	local rc=$?
+	probe_err=$(printf '%s' "$probe_err" | tail -1)
+	(( rc == 124 )) && probe_err="aplay timed out on $1"
+	return $rc
+}
+# The card's playback PCM is free (snapclient is not holding it).
+pcm_free() {
+	[[ -n "${FREESOUNDER_PROBE_RESULT:-}" ]] && return 0
+	local status
+	status=$(cat "/proc/asound/card$card/pcm0p/sub0/status" 2>/dev/null) || return 0
+	[[ "$status" == closed ]]
+}
+check=""
+last_check=$(sed -n 's/^check=//p' <<<"$old_out")
+last_direct=$(sed -n 's/^direct=//p' <<<"$old_out")
+same_pcm=0
+[[ "$(sed -n 's/^pcm=//p' <<<"$old_out")" == "$pcm" && "$(sed -n 's/^cards=//p' <<<"$old_out")" == "${card_list:-none}" ]] && same_pcm=1
+write_output ""
+render
+if [[ $kind != null && ! ( $same_pcm == 1 && $last_check == ok ) ]] && pcm_free; then
+	if probe freesounder; then
+		check=ok
+	else
+		first_err=$probe_err
+		echo "full chain would not open on $pcm: $first_err" >&2
+		write_output $'\n'"direct=1"
+		render
+		if probe freesounder; then
+			check="full chain failed ($first_err); playing without tone controls"
+			write_output $'\n'"check=$check"$'\n'"direct=1"
+		else
+			check="failed: ${probe_err:-$first_err}"
+			echo "output $pcm would not open: $probe_err" >&2
+			write_output $'\n'"check=$check"
+			render
+		fi
+	fi
+	[[ $check == ok ]] && write_output $'\n'"check=ok"
+else
+	# Already checked, in use (snapclient is playing on it), or the null
+	# sink: keep the last check for the same device.
+	if [[ $kind != null && -n "$last_check" && $same_pcm == 1 ]]; then
+		extra=$'\n'"check=$last_check"
+		[[ "$last_direct" == 1 ]] && extra+=$'\n'"direct=1"
+		write_output "$extra"
+		render
+	fi
+fi
 changed=0
-if [[ "$(cat "$OUT" 2>/dev/null)" != "$new" ]]; then
-	install -d "$(dirname "$OUT")"
-	printf '%s\n' "$new" > "$OUT"
-	changed=1
-fi
-echo "freesounder audio output: $pcm ($reason)"
-if [[ -z "${FREESOUNDER_NO_RENDER:-}" ]]; then
-	/usr/lib/freesounder/apply-dsp-config || echo "apply-dsp-config failed" >&2
-fi
+[[ "$(cat "$OUT" 2>/dev/null)" != "$old_out" ]] && changed=1
+echo "freesounder audio output: $pcm ($reason)${check:+; check: $check}"
 # Hotplug (udev): only bounce snapclient when the device actually changed.
 if [[ "${1:-}" == "--restart-if-changed" && $changed == 1 ]]; then
 	systemctl --no-block try-restart snapclient.service || true

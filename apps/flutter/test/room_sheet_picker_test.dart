@@ -149,4 +149,40 @@ void main() {
     expect(lines, contains('Detected: PCM512x/TAS5756 at 0x4d (auto-detected, dtoverlay=hifiberry-dacplus)'));
     expect(lines, contains('Sound cards: Headphones, vc4hdmi0, vc4hdmi1, sndrpihifiberry'));
   });
+
+  testWidgets('factory reset asks first, in danger style', (tester) async {
+    await _openSheet(tester);
+    await tester.scrollUntilVisible(
+      find.byKey(const Key('factory-reset-button')),
+      300,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.byKey(const Key('factory-reset-button')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('factory-reset-dialog')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('factory-reset-cancel')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('factory-reset-dialog')), findsNothing);
+    expect(find.text('Room settings'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('factory-reset-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('factory-reset-confirm')));
+    await tester.pumpAndSettle();
+    expect(find.text('Room settings'), findsNothing);
+    expect(find.textContaining('Resetting the player'), findsOneWidget);
+  });
+
+  test('room audio lines show the output check and direct mode', () {
+    final lines = describeRoomAudio({
+      'output': {
+        'pcm': 'hw:CARD=sndrpihifiberry,DEV=0',
+        'reason': 'sound card sndrpihifiberry',
+        'check': 'failed: aplay: boom',
+        'direct': '1',
+      },
+    });
+    expect(lines, contains('Output check: failed: aplay: boom'));
+    expect(lines.any((l) => l.startsWith('Tone controls: off')), isTrue);
+    expect(describeRoomAudio({'output': {'check': 'ok'}}), contains('Output check: OK'));
+  });
 }
