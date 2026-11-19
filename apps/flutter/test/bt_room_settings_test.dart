@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:freesounder/api/control_client.dart';
 import 'package:freesounder/state/playback_store.dart';
 import 'package:freesounder/ui/app_shell.dart';
+import 'package:freesounder/ui/room_settings_sheet.dart' show formatDiagnostics;
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
@@ -40,6 +41,7 @@ MockClient player() => MockClient((r) async {
         200,
       );
     case '/api/v2/rooms/patio/bluetooth':
+      if (btStatus.isEmpty) return http.Response('{"detail":"Not Found"}', 404); // a non-BT image
       return http.Response(jsonEncode(btStatus), 200);
     case '/health':
       return http.Response(jsonEncode({'status': 'ok', 'version': '0.6.12+btexp'}), 200);
@@ -55,9 +57,9 @@ class C extends ControlApiClient {
   Stream<Map<String, dynamic>> connectEvents() => StreamController<Map<String, dynamic>>().stream;
 }
 
-Future<void> openRoomSettings(WidgetTester tester) async {
-  tester.view.physicalSize = const Size(500, 2400);
-  tester.view.devicePixelRatio = 1.0;
+Future<void> openRoomSettings(WidgetTester tester, {Size size = const Size(500, 2400), double dpr = 1.0}) async {
+  tester.view.physicalSize = size;
+  tester.view.devicePixelRatio = dpr;
   addTearDown(tester.view.resetPhysicalSize);
   addTearDown(tester.view.resetDevicePixelRatio);
   final container = ProviderContainer(
@@ -103,6 +105,37 @@ void main() {
     await openRoomSettings(tester);
     expect(find.byKey(const Key('bt-unavailable')), findsOneWidget);
     expect(find.textContaining('No Bluetooth adapter found'), findsOneWidget);
+    expect(find.byKey(const Key('bt-retry')), findsOneWidget);
+  });
+
+  testWidgets('iPhone-sized: scrolling room settings reaches the Bluetooth section', (tester) async {
+    btStatus = {'experimental': true, 'available': true, 'enabled': false, 'active': false, 'latency_ms': 200};
+    await openRoomSettings(tester, size: const Size(1170, 2532), dpr: 3.0);
+    final section = find.byKey(const Key('bt-output-section'));
+    expect(section, findsOneWidget, reason: 'built (it may be below the fold)');
+    await tester.scrollUntilVisible(section, 200, scrollable: find.byType(Scrollable).last);
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(tester.getRect(section).top, lessThan(844));
+  });
+
+  test('diagnostics list the Bluetooth adapter, rfkill, bluetoothd and daemon restarts', () {
+    final text = formatDiagnostics({
+      'bt_adapters': <String>[],
+      'bt_rfkill': ['0 bluetooth blocked unblocked'],
+      'bt_bluetoothd': 'inactive',
+      'daemon_starts_this_boot': 4,
+      'bt_log': ['freesounderd: bluetooth: No Bluetooth adapter found'],
+    });
+    expect(text, contains('Bluetooth: adapters none, bluetoothd inactive, daemon started 4× this boot'));
+    expect(text, contains('rfkill: 0 bluetooth blocked unblocked'));
+    expect(text, contains('No Bluetooth adapter found'));
+  });
+
+  testWidgets('room settings on a BT build talking to a non-BT player says so', (tester) async {
+    btStatus = {};
+    await openRoomSettings(tester);
+    expect(find.byKey(const Key('bt-output-section')), findsOneWidget);
+    expect(find.text('Bluetooth needs the BT image on this player.'), findsOneWidget);
     expect(find.byKey(const Key('bt-retry')), findsOneWidget);
   });
 }

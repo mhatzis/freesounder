@@ -832,6 +832,13 @@ String formatDiagnostics(Map<String, dynamic> d) {
     if (d['boots_in_journal'] != null) 'Boots in journal: ${d['boots_in_journal']}',
     if (history.isNotEmpty) ...['', 'Power flag history:', ...history.map(hist)],
     if (lines(d['power_log']).isNotEmpty) ...['', 'Power & button log:', ...lines(d['power_log'])],
+    if (d.containsKey('bt_adapters')) ...[
+      '',
+      'Bluetooth: adapters ${lines(d['bt_adapters']).isEmpty ? 'none' : lines(d['bt_adapters']).join(', ')}, '
+          'bluetoothd ${d['bt_bluetoothd'] ?? '?'}, daemon started ${d['daemon_starts_this_boot'] ?? '?'}× this boot',
+      ...lines(d['bt_rfkill']).map((l) => 'rfkill: $l'),
+      ...lines(d['bt_log']),
+    ],
     if (lines(d['previous_boot_errors']).isNotEmpty) ...[
       '',
       'Previous boot warnings/errors:',

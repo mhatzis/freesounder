@@ -9,10 +9,15 @@ class FakeApi implements BtOutputApi {
   FakeApi(this.current);
 
   BtOutputStatus current;
+  Object? failWith;
   final calls = <String>[];
 
   @override
-  Future<BtOutputStatus> status() async => current;
+  Future<BtOutputStatus> status() async {
+    final err = failWith;
+    if (err != null) throw err;
+    return current;
+  }
 
   @override
   Future<List<BtSpeaker>> scan() async {
@@ -88,6 +93,22 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byKey(const Key('bt-unavailable')), findsNothing);
     expect(find.byKey(const Key('bt-output-section')), findsOneWidget);
+  });
+
+  testWidgets('player request fails: error and Try again, not an endless spinner', (tester) async {
+    // 0.6.13 (43): "ClientException: Connection reset by peer, uri=…/bluetooth".
+    final api = FakeApi(const BtOutputStatus(available: true))
+      ..failWith = Exception('ClientException: Connection reset by peer');
+    await pump(tester, api);
+    expect(find.byKey(const Key('bt-output-section')), findsOneWidget);
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(find.text('Could not read Bluetooth from this player'), findsOneWidget);
+    expect(find.byKey(const Key('bt-error')), findsOneWidget);
+    api.failWith = null;
+    await tester.tap(find.byKey(const Key('bt-retry')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('bt-error')), findsNothing);
+    expect(find.byKey(const Key('bt-scan-button')), findsOneWidget);
   });
 
   test('status reads the reason', () {

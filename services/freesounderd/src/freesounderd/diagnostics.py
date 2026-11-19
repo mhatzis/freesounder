@@ -217,6 +217,52 @@ async def collect(state: Path = STATE) -> dict[str, Any]:
         "previous_boot_tail": prev_tail.splitlines()[-25:],
         "previous_boot_errors": prev_errors.splitlines()[-40:],
         "power_log": power_log.splitlines(),
+        **(await bluetooth_info()),
+    }
+
+
+BT_LOG_RE = re.compile(
+    r"bluetooth|bluez|hci|rfkill|Started|Main process exited|Traceback|Failed|Killed|oom", re.I
+)
+
+
+def _bt_adapters(root: Path = Path("/sys/class/bluetooth")) -> list[str]:
+    try:
+        return sorted(p.name for p in root.iterdir())
+    except OSError:
+        return []
+
+
+async def bluetooth_info() -> dict[str, Any]:
+    """Why the experimental Bluetooth output may be missing: adapters, rfkill,
+    bluetoothd state, and daemon restarts / Bluetooth lines this boot."""
+    adapters = _bt_adapters()
+    daemon = await _run(
+        "journalctl", "-b", "-u", "freesounderd.service", "--no-pager", "-q", "-o", "short-iso"
+    )
+    bt_units = await _run(
+        "journalctl",
+        "-b",
+        "-n",
+        "30",
+        "-u",
+        "bluetooth.service",
+        "-u",
+        "hciuart.service",
+        "--no-pager",
+        "-q",
+        "-o",
+        "short-iso",
+    )
+    return {
+        "bt_adapters": adapters,
+        "bt_rfkill": (await _run("rfkill", "-n", "-o", "ID,TYPE,SOFT,HARD", "list", "bluetooth"))
+        .strip()
+        .splitlines(),
+        "bt_bluetoothd": (await _run("systemctl", "is-active", "bluetooth.service")).strip(),
+        "daemon_starts_this_boot": daemon.count("Started freesounderd"),
+        "bt_log": [ln for ln in daemon.splitlines() if BT_LOG_RE.search(ln)][-30:]
+        + bt_units.splitlines()[-15:],
     }
 
 

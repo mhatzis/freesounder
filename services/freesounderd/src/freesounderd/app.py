@@ -53,6 +53,7 @@ from freesounderd.ssh import ssh_set, ssh_status
 from freesounderd.store import Store, detected_hat, hostname
 
 logger = logging.getLogger(__name__)
+BT_STATUS_WAIT = 6.0  # s: GET /bluetooth always answers well inside the app timeout
 
 
 FACTORY_RESET = "/usr/lib/freesounder/factory-reset"
@@ -731,7 +732,17 @@ def create_app(
                 "enabled": False,
                 "active": False,
             }
-        status = await engine.bt.status()
+        try:
+            status = await asyncio.wait_for(engine.bt.status(), BT_STATUS_WAIT)
+        except Exception as exc:  # noqa: BLE001 - always answer with JSON, never drop the request
+            logger.warning("bluetooth status failed", exc_info=True)
+            return {
+                "experimental": True,
+                "available": False,
+                "reason": f"Bluetooth status failed: {exc or type(exc).__name__}",
+                "enabled": False,
+                "active": False,
+            }
         status["output"] = engine.output_kind()
         return status
 

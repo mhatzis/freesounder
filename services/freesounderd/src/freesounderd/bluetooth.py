@@ -45,7 +45,11 @@ DEFAULT_LATENCY_MS = 200  # typical SBC speaker delay that is not reported to AL
 MAX_LATENCY_MS = 1000
 MAC_RE = re.compile(r"^([0-9A-F]{2}:){5}[0-9A-F]{2}$")
 BRING_UP_EVERY = 30.0  # s: how often a missing adapter triggers a bring-up attempt
-CONTROLLER_UNITS = ("hciuart.service", "bluetooth.service")
+# Only bluetoothd: hciuart / modprobe hci_uart re-attach the UART controller,
+# which on the Pi's combined Wi-Fi + Bluetooth chip can disturb Wi-Fi.
+CONTROLLER_UNIT = "bluetooth.service"
+ADAPTER_LOOKUP_WAIT = 3.0  # s: GET /bluetooth answers fast even if BlueZ hangs
+BRING_UP_STEP_WAIT = 20.0  # s: each background bring-up step
 RETRY_MIN = 10.0  # s: first reconnect retry, doubling up to RETRY_MAX
 RETRY_MAX = 120.0
 WATCH_CONFIGURED = 5.0  # s between connection checks with a speaker set up
@@ -395,25 +399,26 @@ class BluezBackend:
 
 # ------------------------------------------------------------------ manager
 async def unblock_bluetooth() -> None:
-    """Best effort: clear an rfkill soft block and attach the UART controller.
+    """Best effort: clear an rfkill soft block on Bluetooth (bounded, never raises).
 
-    The setup (BLE provisioning) service does this before advertising, but
-    once a player is set up it no longer runs, so a soft-blocked radio or a
-    controller that did not attach at boot left no adapter for the speaker
-    output, and the app hid the whole Bluetooth section.
+    The setup (BLE provisioning) service unblocks the radio before
+    advertising; once a player is set up it no longer runs.
     """
-    for argv in (
-        ["rfkill", "unblock", "bluetooth"],
-        ["modprobe", "btbcm"],
-        ["modprobe", "hci_uart"],
-    ):
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "rfkill",
+            "unblock",
+            "bluetooth",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *argv, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
-            )
-            await asyncio.wait_for(proc.wait(), 10)
-        except Exception:  # noqa: BLE001
-            logger.debug("bluetooth bring-up: %s failed", argv[0], exc_info=True)
+            await asyncio.wait_for(proc.wait(), 5)
+        except TimeoutError:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+    except Exception:  # noqa: BLE001
+        logger.debug("bluetooth bring-up: rfkill failed", exc_info=True)
 
 
 class BtOutput:
@@ -435,6 +440,7 @@ class BtOutput:
         self.backend = backend
         self.bring_up = bring_up
         self._bring_up_at = 0.0
+        self._bring_up_task: asyncio.Task[None] | None = None
         self.reason: str | None = None  # why there is no adapter, for the app
         self.config_path = config_path
         self.reselect = reselect
@@ -498,30 +504,45 @@ class BtOutput:
             )
         return adapter, None
 
+    def _bring_up_due(self) -> bool:
+        running = self._bring_up_task is not None and not self._bring_up_task.done()
+        return not running and self.clock() >= self._bring_up_at
+
     async def find_adapter(self) -> dict[str, Any] | None:
-        """The adapter, bringing the controller up (at most every 30 s) if missing."""
-        adapter, reason = await self._lookup_adapter()
-        if adapter is None and self.clock() >= self._bring_up_at:
+        """The adapter, looked up quickly; a missing one is brought up in the background.
+
+        Never blocks the request on rfkill / systemctl / bluetoothd: 0.6.13
+        did the bring-up inside GET /bluetooth and the request died
+        ("Connection reset by peer" in the app).
+        """
+        try:
+            adapter, reason = await asyncio.wait_for(self._lookup_adapter(), ADAPTER_LOOKUP_WAIT)
+        except TimeoutError:
+            adapter, reason = None, f"BlueZ did not answer within {ADAPTER_LOOKUP_WAIT:.0f} s"
+        if adapter is None and self._bring_up_due():
             self._bring_up_at = self.clock() + BRING_UP_EVERY
-            logger.warning("bluetooth: %s; trying to bring the controller up", reason)
-            if self.bring_up is not None:
-                with contextlib.suppress(Exception):
-                    await self.bring_up()
-            if self.unit is not None:
-                for unit in CONTROLLER_UNITS:
-                    with contextlib.suppress(Exception):
-                        await self.unit("start", unit)
-            reset = getattr(self.backend, "reset", None)
-            if callable(reset):
-                reset()
-            for _ in range(5):  # bluetoothd needs a moment to register hci0
-                adapter, reason = await self._lookup_adapter()
-                if adapter is not None:
-                    logger.info("bluetooth: adapter %s is back", adapter.get("path"))
-                    break
-                await asyncio.sleep(0.5)
+            logger.warning("bluetooth: %s; switching Bluetooth on in the background", reason)
+            self._bring_up_task = asyncio.create_task(self._bring_up_controller())
+        if adapter is None and self._bring_up_task is not None and not self._bring_up_task.done():
+            reason = f"{reason}. Trying to switch Bluetooth on…"
         self.reason = reason
         return adapter
+
+    async def _bring_up_controller(self) -> None:
+        """rfkill unblock + start bluetooth.service, each bounded, off the request path."""
+        try:
+            if self.bring_up is not None:
+                await asyncio.wait_for(self.bring_up(), BRING_UP_STEP_WAIT)
+        except Exception:  # noqa: BLE001
+            logger.warning("bluetooth: bring-up step failed", exc_info=True)
+        if self.unit is not None:
+            try:
+                await asyncio.wait_for(self.unit("start", CONTROLLER_UNIT), BRING_UP_STEP_WAIT)
+            except Exception:  # noqa: BLE001
+                logger.warning("bluetooth: could not start %s", CONTROLLER_UNIT, exc_info=True)
+        if self.on_change is not None:
+            with contextlib.suppress(Exception):
+                self.on_change()
 
     # -- API
     async def status(self) -> dict[str, Any]:
@@ -531,7 +552,8 @@ class BtOutput:
         try:
             adapter = await self.find_adapter()
             if cfg["mac"]:
-                devs = {d["mac"]: d for d in await self.backend.devices()}
+                listed = await asyncio.wait_for(self.backend.devices(), ADAPTER_LOOKUP_WAIT)
+                devs = {d["mac"]: d for d in listed}
                 dev = devs.get(cfg["mac"])
                 speaker = {
                     "mac": cfg["mac"],
@@ -720,6 +742,10 @@ class BtOutput:
             self._task = asyncio.create_task(self.run())
 
     async def stop(self) -> None:
+        if self._bring_up_task is not None and not self._bring_up_task.done():
+            self._bring_up_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._bring_up_task
         if self._task is not None:
             self._task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

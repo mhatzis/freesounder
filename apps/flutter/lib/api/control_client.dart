@@ -37,7 +37,15 @@ class ControlApiClient {
   }
 
   Future<dynamic> _getJson(String path, [Map<String, String>? query]) async {
-    final response = await _http.get(_uri(path, query));
+    http.Response response;
+    try {
+      response = await _http.get(_uri(path, query));
+    } on http.ClientException catch (err) {
+      // A kept-alive connection the player had just closed ("Connection reset
+      // by peer" / "closed before full header"): a GET is safe to send again.
+      if (!isStaleConnection(err)) rethrow;
+      response = await _http.get(_uri(path, query));
+    }
     _ensureOk(response);
     return jsonDecode(response.body);
   }
@@ -521,4 +529,10 @@ class PlayerSpotify {
         loggedIn: json['logged_in'] as bool? ?? false,
         username: json['username'] as String?,
       );
+}
+
+/// The socket was closed under a reused keep-alive connection.
+bool isStaleConnection(http.ClientException err) {
+  final m = err.message.toLowerCase();
+  return m.contains('connection reset') || m.contains('closed before full header') || m.contains('broken pipe');
 }

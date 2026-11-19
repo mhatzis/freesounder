@@ -73,9 +73,17 @@ class _BluetoothOutputSectionState extends State<BluetoothOutputSection> {
   Future<void> _refresh() async {
     try {
       final status = await widget.api.status();
-      if (mounted) setState(() => _status = status);
+      if (mounted) {
+        setState(() {
+          _status = status;
+          if (_busy == null) _error = null;
+        });
+      }
     } on Object catch (err) {
-      if (mounted && _status == null) setState(() => _error = userMessageFor(err));
+      if (mounted && _status == null) {
+        final noBt = err is ControlApiException && err.statusCode == 404;
+        setState(() => _error = noBt ? 'Bluetooth needs the BT image on this player.' : userMessageFor(err));
+      }
     }
   }
 
@@ -225,7 +233,30 @@ class _BluetoothOutputSectionState extends State<BluetoothOutputSection> {
       children: [
         header,
         const SizedBox(height: 4),
-        if (status == null)
+        if (status == null && _error != null) ...[
+          // The player did not answer: say so and offer a retry, never spin.
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.error_outline_rounded, color: scheme.error),
+            title: const Text('Could not read Bluetooth from this player'),
+            subtitle: Text(
+              _error!,
+              key: const Key('bt-error'),
+              style: TextStyle(color: scheme.onSurfaceVariant),
+            ),
+          ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: OutlinedButton.icon(
+              key: const Key('bt-retry'),
+              onPressed: _retrying ? null : _retry,
+              icon: _retrying
+                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.refresh_rounded),
+              label: const Text('Try again'),
+            ),
+          ),
+        ] else if (status == null)
           const Padding(
             padding: EdgeInsets.all(12),
             child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
@@ -340,10 +371,10 @@ class _BluetoothOutputSectionState extends State<BluetoothOutputSection> {
             ),
           ],
         ],
-        if (_error != null || status?.lastError != null) ...[
+        if (status != null && (_error != null || status.lastError != null)) ...[
           const SizedBox(height: 6),
           Text(
-            _error ?? status!.lastError!,
+            _error ?? status.lastError!,
             key: const Key('bt-error'),
             style: text.bodySmall?.copyWith(color: scheme.error),
           ),

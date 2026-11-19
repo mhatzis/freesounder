@@ -397,46 +397,110 @@ async def test_bluetooth_output_sets_snapcast_latency(lan: Lan, make_player, tmp
     assert server.clients[a.id]["config"]["latency"] == 0
 
 
-async def test_missing_adapter_is_brought_up_and_explained(tmp_path: Path) -> None:
-    """0.6.12+btexp: no adapter at runtime hid the whole Bluetooth section.
+async def test_missing_adapter_is_brought_up_in_the_background(tmp_path: Path) -> None:
+    """No adapter: status() answers at once with a reason and switches
+    Bluetooth on in the background (rfkill unblock, start bluetooth.service),
+    at most every 30 s. 0.6.13 did this inside the request."""
+    import asyncio
 
-    Now status() tries to bring the controller up (rfkill unblock, start
-    bluetooth.service) at most every 30 s and says why when it can't.
-    """
     out, fake, _e, units, clock = make_output(tmp_path)
+    gate = asyncio.Event()
     brought_up: list[str] = []
 
     async def bring_up() -> None:
         brought_up.append("up")
-        fake.has_adapter = True  # rfkill unblock made hci0 appear
+        await gate.wait()  # rfkill is slow
+        fake.has_adapter = True
 
     out.bring_up = bring_up
     fake.has_adapter = False
+    st = await asyncio.wait_for(out.status(), 1)  # does not wait for the bring-up
+    assert st["available"] is False
+    assert (
+        "No Bluetooth adapter" in st["reason"] and "Trying to switch Bluetooth on" in st["reason"]
+    )
+    await asyncio.sleep(0)
+    assert brought_up == ["up"]
+    st = await asyncio.wait_for(out.status(), 1)  # one bring-up at a time
+    assert brought_up == ["up"]
+    gate.set()
+    await out._bring_up_task
+    assert ("start", "bluetooth.service") in units
+    assert ("start", "hciuart.service") not in units
     st = await out.status()
     assert st["available"] is True and st["reason"] is None
-    assert brought_up == ["up"]
-    assert ("start", "bluetooth.service") in units
 
-    # Still missing: explained, and not retried more than every 30 s.
-    async def no_luck() -> None:
-        brought_up.append("again")
-
-    out.bring_up = no_luck
+    # Missing again: not retried within 30 s, then retried.
     fake.has_adapter = False
+    gate.clear()
+    gate.set()
+    st = await out.status()
+    assert st["available"] is False and brought_up == ["up"]
     clock.now += 31
-    st = await out.status()
-    assert st["available"] is False
-    assert "No Bluetooth adapter" in st["reason"]
-    st = await out.status()
-    assert brought_up == ["up", "again"]
+    await out.status()
+    await out._bring_up_task
+    assert brought_up == ["up", "up"]
+    await out.stop()
 
-    # BlueZ itself unreachable: the error is the reason.
+
+async def test_status_answers_fast_when_bluez_hangs_or_raises(tmp_path: Path, monkeypatch) -> None:
+    import asyncio
+
+    monkeypatch.setattr(bt, "ADAPTER_LOOKUP_WAIT", 0.05)
+    out, fake, _e, _u, _c = make_output(tmp_path)
+
+    async def hang() -> dict[str, Any] | None:
+        await asyncio.sleep(3600)
+        return None
+
+    async def bring_up() -> None:
+        return None
+
+    out.bring_up = bring_up
+    fake.adapter = hang  # type: ignore[method-assign]
+    st = await asyncio.wait_for(out.status(), 1)
+    assert st["available"] is False and "did not answer" in st["reason"]
+
     async def broken() -> dict[str, Any] | None:
         raise BtError("system D-Bus unavailable: no socket")
 
     fake.adapter = broken  # type: ignore[method-assign]
-    st = await out.status()
+    st = await asyncio.wait_for(out.status(), 1)
     assert st["available"] is False and "BlueZ not reachable" in st["reason"]
+    await out.stop()
+
+
+async def test_bluetooth_api_always_answers_json(lan: Lan, make_player, tmp_path) -> None:
+    """A status() that raises or hangs must never drop the HTTP request
+    (the app saw "Connection reset by peer")."""
+    import asyncio
+
+    from freesounderd import app as app_mod
+
+    (a,) = await setup_household(make_player, ("10.0.0.1", "Pi 5"))
+    out, _fake, _e, _u, _ = make_output(tmp_path)
+    a.engine.bt = out
+
+    async def boom() -> dict[str, Any]:
+        raise RuntimeError("kaboom")
+
+    out.status = boom  # type: ignore[method-assign]
+    res = await a.client.get(f"/api/v2/rooms/{a.id}/bluetooth")
+    assert res.status_code == 200
+    assert res.json()["available"] is False and "kaboom" in res.json()["reason"]
+
+    async def slow() -> dict[str, Any]:
+        await asyncio.sleep(3600)
+        return {}
+
+    out.status = slow  # type: ignore[method-assign]
+    app_mod.BT_STATUS_WAIT = 0.05
+    try:
+        res = await a.client.get(f"/api/v2/rooms/{a.id}/bluetooth")
+    finally:
+        app_mod.BT_STATUS_WAIT = 6.0
+    assert res.status_code == 200 and res.json()["available"] is False
+    assert res.json()["reason"].startswith("Bluetooth status failed")
 
 
 async def test_bluez_backend_reconnects_after_a_dropped_bus() -> None:
@@ -530,3 +594,47 @@ async def test_bluez_backend_speaks_real_dbus(private_bus: str) -> None:
     assert devs[SPEAKER]["paired"] and devs[SPEAKER]["trusted"] and devs[SPEAKER]["connected"]
     await backend.remove(SPEAKER)
     assert SPEAKER not in {d["mac"] for d in await backend.devices()}
+
+
+async def test_bluetooth_api_through_another_room_when_the_owner_fails(
+    lan: Lan, make_player, tmp_path
+) -> None:
+    """The phone may talk to a different player than the room's own (forwarded)."""
+    a, b = await setup_household(make_player, ("10.0.0.1", "Pi 5"), ("10.0.0.2", "Pi Zero 2 W"))
+    await settle(lan, [a, b])
+    out, _fake, _e, _u, _ = make_output(tmp_path)
+    b.engine.bt = out
+
+    async def boom() -> dict[str, Any]:
+        raise RuntimeError("bluez went away")
+
+    out.status = boom  # type: ignore[method-assign]
+    res = await a.client.get(f"/api/v2/rooms/{b.id}/bluetooth")
+    assert res.status_code == 200
+    assert res.json()["available"] is False and "bluez went away" in res.json()["reason"]
+
+
+async def test_diagnostics_report_bluetooth_state(monkeypatch) -> None:
+    from freesounderd import diagnostics
+
+    async def fake_run(*cmd: str, wait: float = 8.0) -> str:
+        if cmd[:2] == ("systemctl", "is-active"):
+            return "inactive\n"
+        if cmd[0] == "rfkill":
+            return "0 bluetooth blocked unblocked\n"
+        if "freesounderd.service" in cmd:
+            return (
+                "2026-11-20T01:00:00 pi systemd[1]: Started freesounderd.service\n"
+                "2026-11-20T01:00:05 pi freesounderd[9]: bluetooth: No Bluetooth adapter\n"
+                "2026-11-20T01:00:06 pi freesounderd[9]: GET /health 200\n"
+                "2026-11-20T01:01:00 pi systemd[1]: Started freesounderd.service\n"
+            )
+        return ""
+
+    monkeypatch.setattr(diagnostics, "_run", fake_run)
+    info = await diagnostics.bluetooth_info()
+    assert info["bt_bluetoothd"] == "inactive"
+    assert info["bt_rfkill"] == ["0 bluetooth blocked unblocked"]
+    assert info["daemon_starts_this_boot"] == 2
+    assert any("No Bluetooth adapter" in ln for ln in info["bt_log"])
+    assert not any("/health" in ln for ln in info["bt_log"])
