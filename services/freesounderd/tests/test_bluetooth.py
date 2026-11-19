@@ -638,3 +638,15 @@ async def test_diagnostics_report_bluetooth_state(monkeypatch) -> None:
     assert info["daemon_starts_this_boot"] == 2
     assert any("No Bluetooth adapter" in ln for ln in info["bt_log"])
     assert not any("/health" in ln for ln in info["bt_log"])
+
+
+async def test_bluetooth_of_a_remembered_room_is_forwarded(lan: Lan, make_player, tmp_path) -> None:
+    """0.6.14: a room this player only remembered answered 404 'Unknown player'."""
+    a, b = await setup_household(make_player, ("10.0.0.1", "Pi 5"), ("10.0.0.2", "Pi Zero 2 W"))
+    await settle(lan, [a, b])
+    out, _fake, _e, _u, _ = make_output(tmp_path)
+    b.engine.bt = out
+    a.engine.peers.pop(b.id, None)  # no beacon from b since a restarted
+    res = await a.client.get(f"/api/v2/rooms/{b.id}/bluetooth")
+    assert res.status_code == 200, res.text
+    assert res.json()["available"] is True
