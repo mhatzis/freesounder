@@ -10,27 +10,8 @@ import '../api/errors.dart';
 import '../app_version.dart';
 import '../models/player_settings.dart';
 import '../state/playback_store.dart';
+import 'audio_board_picker.dart';
 import 'bluetooth_output_section.dart';
-
-const dacOptions = <(String, String)>[
-  ('auto', 'Automatic (HDMI, USB or a HAT that identifies itself)'),
-  ('none', 'HDMI / USB only'),
-  ('hifiberry-amp2', 'HiFiBerry Amp2'),
-  ('hifiberry-amp4', 'HiFiBerry Amp4'),
-  ('hifiberry-amp4pro', 'HiFiBerry Amp4 Pro'),
-  ('hifiberry-amp3', 'HiFiBerry Amp3'),
-  ('hifiberry-amp100', 'HiFiBerry Amp100'),
-  ('digiampplus', 'Raspberry Pi DigiAMP+'),
-  ('iqaudio-digiampplus', 'IQaudio DigiAMP+'),
-  ('pcm5122-amp', 'PCM5122 amp HAT (Innomaker, Waveshare…)'),
-  ('max98357a', 'MAX98357A I2S amp (Adafruit, Pimoroni…)'),
-  ('dacplus', 'Raspberry Pi DAC+'),
-  ('hifiberry-dacplus', 'HiFiBerry DAC+'),
-  ('iqaudio-dacplus', 'IQaudio DAC+'),
-  ('hifiberry-dac', 'PCM5102A DAC (HiFiBerry DAC, Pimoroni pHAT DAC)'),
-  ('justboom-dac', 'JustBoom DAC / Amp'),
-  ('wm8960', 'Waveshare WM8960 audio HAT'),
-];
 
 /// Boards that drive speakers directly; they start with a safe volume limit.
 const ampDacs = {
@@ -45,21 +26,44 @@ const ampDacs = {
   'max98357a',
 };
 
+const _sheetInitial = 0.92;
+const _sheetMin = 0.55;
+
+/// Room settings as a tall sheet that always closes: drag the handle (or the
+/// list from its top) down, fling it, tap outside, the X, or Android back.
 Future<void> showRoomSettingsSheet(BuildContext context, {required String roomId, String? roomName}) {
+  final sheet = DraggableScrollableController();
   return showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
-    showDragHandle: true,
-    builder: (context) => RoomSettingsSheet(roomId: roomId, roomName: roomName),
-  );
+    useSafeArea: true,
+    isDismissible: true,
+    enableDrag: true,
+    builder: (context) => DraggableScrollableSheet(
+      controller: sheet,
+      expand: false,
+      initialChildSize: _sheetInitial,
+      minChildSize: _sheetMin,
+      maxChildSize: 1,
+      shouldCloseOnMinExtent: true,
+      builder: (context, scroll) =>
+          RoomSettingsSheet(roomId: roomId, roomName: roomName, controller: scroll, sheet: sheet),
+    ),
+  ).whenComplete(sheet.dispose);
 }
 
 /// Per-player name, tone, volume limit and DAC.
 class RoomSettingsSheet extends ConsumerStatefulWidget {
-  const RoomSettingsSheet({super.key, required this.roomId, this.roomName});
+  const RoomSettingsSheet({super.key, required this.roomId, this.roomName, this.controller, this.sheet});
 
   final String roomId;
   final String? roomName;
+
+  /// The sheet's scroll controller: scrolling past the top shrinks the sheet.
+  final ScrollController? controller;
+
+  /// Drives the sheet size while the handle is dragged.
+  final DraggableScrollableController? sheet;
 
   @override
   ConsumerState<RoomSettingsSheet> createState() => _RoomSettingsSheetState();
@@ -217,6 +221,22 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
     });
   }
 
+  var _rebooting = false;
+
+  Future<void> _reboot() async {
+    setState(() => _rebooting = true);
+    try {
+      await ref.read(playbackProvider.notifier).rebootPlayer(widget.roomId);
+    } on Object catch (err) {
+      if (mounted) {
+        setState(() {
+          _rebooting = false;
+          _error = userMessageFor(err);
+        });
+      }
+    }
+  }
+
   bool _diagBusy = false;
   String? _diag;
 
@@ -281,213 +301,338 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
     final text = Theme.of(context).textTheme;
     final settings = _settings;
     final padding = MediaQuery.viewInsetsOf(context);
-    return Padding(
-      padding: EdgeInsets.fromLTRB(20, 0, 20, 24 + padding.bottom),
-      child: _loading
-          ? const SizedBox(height: 180, child: Center(child: CircularProgressIndicator()))
-          : SingleChildScrollView(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Text('Room settings', style: text.titleLarge?.copyWith(fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 16),
-                  TextField(
-                    key: const Key('room-name-field'),
-                    controller: _name,
-                    textCapitalization: TextCapitalization.words,
-                    decoration: const InputDecoration(labelText: 'Name', border: OutlineInputBorder()),
-                    onEditingComplete: () {
-                      if (settings != null) {
-                        _persist(settings.copyWith(name: _name.text.trim()));
-                      }
-                    },
-                  ),
-                  const SizedBox(height: 8),
-                  if (settings != null) ...[
-                    _ToneSlider(
-                      key: const Key('volume-limit-slider'),
-                      label: 'Volume limit',
-                      value: settings.volumeLimit.toDouble(),
-                      min: 1,
-                      max: 100,
-                      divisions: 99,
-                      display: '${settings.volumeLimit}',
-                      onChanged: (value) => setState(() {
-                        _settings = settings.copyWith(volumeLimit: value.round());
-                      }),
-                      onChangeEnd: (value) => _persist(settings.copyWith(volumeLimit: value.round())),
-                    ),
-                    _ToneSlider(
-                      key: const Key('bass-slider'),
-                      label: 'Bass',
-                      value: settings.bass,
-                      min: -10,
-                      max: 10,
-                      divisions: 20,
-                      display: _db(settings.bass),
-                      onChanged: (value) {
-                        setState(() => _settings = settings.copyWith(bass: value));
-                        _preview(settings.copyWith(bass: value));
-                      },
-                      onChangeEnd: (value) => _persist(settings.copyWith(bass: value)),
-                    ),
-                    _ToneSlider(
-                      key: const Key('treble-slider'),
-                      label: 'Treble',
-                      value: settings.treble,
-                      min: -10,
-                      max: 10,
-                      divisions: 20,
-                      display: _db(settings.treble),
-                      onChanged: (value) {
-                        setState(() => _settings = settings.copyWith(treble: value));
-                        _preview(settings.copyWith(treble: value));
-                      },
-                      onChangeEnd: (value) => _persist(settings.copyWith(treble: value)),
-                    ),
-                    _ToneSlider(
-                      key: const Key('balance-slider'),
-                      label: 'Balance',
-                      value: settings.balance,
-                      min: -10,
-                      max: 10,
-                      divisions: 20,
-                      display: _balance(settings.balance),
-                      leading: 'L',
-                      trailing: 'R',
-                      onChanged: (value) {
-                        setState(() => _settings = settings.copyWith(balance: value));
-                        _preview(settings.copyWith(balance: value));
-                      },
-                      onChangeEnd: (value) => _persist(settings.copyWith(balance: value)),
-                    ),
-                    SwitchListTile(
-                      key: const Key('loudness-switch'),
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text('Bass boost'),
-                      subtitle: const Text('Loudness contour — a little extra low end'),
-                      value: settings.loudness,
-                      onChanged: (value) => _persist(settings.copyWith(loudness: value)),
-                    ),
-                    const SizedBox(height: 8),
-                    InputDecorator(
-                      decoration: const InputDecoration(labelText: 'Audio board', border: OutlineInputBorder()),
-                      child: DropdownButtonHideUnderline(
-                        child: DropdownButton<String>(
-                          key: const Key('dac-dropdown'),
-                          isExpanded: true,
-                          value: dacOptions.any((o) => o.$1 == settings.dac) ? settings.dac : 'auto',
-                          items: [
-                            for (final option in dacOptions) DropdownMenuItem(value: option.$1, child: Text(option.$2)),
-                          ],
+    return CustomScrollView(
+      key: const Key('room-settings-scroll'),
+      controller: widget.controller,
+      slivers: [
+        SliverPersistentHeader(
+          pinned: true,
+          delegate: SheetHeader(
+            title: 'Room settings',
+            color: Theme.of(context).bottomSheetTheme.modalBackgroundColor ?? scheme.surfaceContainerLow,
+            sheet: widget.sheet,
+            initialSize: _sheetInitial,
+            minSize: _sheetMin,
+          ),
+        ),
+        SliverPadding(
+          padding: EdgeInsets.fromLTRB(20, 0, 20, 24 + padding.bottom),
+          sliver: SliverToBoxAdapter(
+            child: _loading
+                ? const SizedBox(height: 180, child: Center(child: CircularProgressIndicator()))
+                : Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const SizedBox(height: 4),
+                      TextField(
+                        key: const Key('room-name-field'),
+                        controller: _name,
+                        textCapitalization: TextCapitalization.words,
+                        decoration: const InputDecoration(labelText: 'Name', border: OutlineInputBorder()),
+                        onEditingComplete: () {
+                          if (settings != null) {
+                            _persist(settings.copyWith(name: _name.text.trim()));
+                          }
+                        },
+                      ),
+                      const SizedBox(height: 8),
+                      if (settings != null) ...[
+                        _ToneSlider(
+                          key: const Key('volume-limit-slider'),
+                          label: 'Volume limit',
+                          value: settings.volumeLimit.toDouble(),
+                          min: 1,
+                          max: 100,
+                          divisions: 99,
+                          display: '${settings.volumeLimit}',
+                          onChanged: (value) => setState(() {
+                            _settings = settings.copyWith(volumeLimit: value.round());
+                          }),
+                          onChangeEnd: (value) => _persist(settings.copyWith(volumeLimit: value.round())),
+                        ),
+                        _ToneSlider(
+                          key: const Key('bass-slider'),
+                          label: 'Bass',
+                          value: settings.bass,
+                          min: -10,
+                          max: 10,
+                          divisions: 20,
+                          display: _db(settings.bass),
                           onChanged: (value) {
-                            if (value != null) {
-                              _persist(settings.copyWith(dac: value));
-                            }
+                            setState(() => _settings = settings.copyWith(bass: value));
+                            _preview(settings.copyWith(bass: value));
+                          },
+                          onChangeEnd: (value) => _persist(settings.copyWith(bass: value)),
+                        ),
+                        _ToneSlider(
+                          key: const Key('treble-slider'),
+                          label: 'Treble',
+                          value: settings.treble,
+                          min: -10,
+                          max: 10,
+                          divisions: 20,
+                          display: _db(settings.treble),
+                          onChanged: (value) {
+                            setState(() => _settings = settings.copyWith(treble: value));
+                            _preview(settings.copyWith(treble: value));
+                          },
+                          onChangeEnd: (value) => _persist(settings.copyWith(treble: value)),
+                        ),
+                        _ToneSlider(
+                          key: const Key('balance-slider'),
+                          label: 'Balance',
+                          value: settings.balance,
+                          min: -10,
+                          max: 10,
+                          divisions: 20,
+                          display: _balance(settings.balance),
+                          leading: 'L',
+                          trailing: 'R',
+                          onChanged: (value) {
+                            setState(() => _settings = settings.copyWith(balance: value));
+                            _preview(settings.copyWith(balance: value));
+                          },
+                          onChangeEnd: (value) => _persist(settings.copyWith(balance: value)),
+                        ),
+                        SwitchListTile(
+                          key: const Key('loudness-switch'),
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('Bass boost'),
+                          subtitle: const Text('Loudness contour — a little extra low end'),
+                          value: settings.loudness,
+                          onChanged: (value) => _persist(settings.copyWith(loudness: value)),
+                        ),
+                        const SizedBox(height: 8),
+                        Builder(
+                          builder: (context) {
+                            final board = audioBoardFor(settings.dac);
+                            return InputDecorator(
+                              decoration: const InputDecoration(
+                                labelText: 'Audio board',
+                                border: OutlineInputBorder(),
+                                contentPadding: EdgeInsets.fromLTRB(12, 4, 4, 4),
+                              ),
+                              child: ListTile(
+                                key: const Key('dac-picker-tile'),
+                                contentPadding: EdgeInsets.zero,
+                                dense: true,
+                                title: Text(board.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+                                subtitle: board.subtitle == null
+                                    ? null
+                                    : Text(board.subtitle!, maxLines: 1, overflow: TextOverflow.ellipsis),
+                                trailing: const Icon(Icons.chevron_right),
+                                onTap: () async {
+                                  final picked = await showAudioBoardPicker(context, current: settings.dac);
+                                  final now = _settings;
+                                  if (picked != null && now != null && picked != now.dac && mounted) {
+                                    await _persist(now.copyWith(dac: picked));
+                                  }
+                                },
+                              ),
+                            );
                           },
                         ),
+                        if (ampDacs.contains(settings.dac)) ...[
+                          const SizedBox(height: 8),
+                          Text(
+                            'Amp board: volume starts capped at 80% (headroom for tone and loudness, no clipping). '
+                            'Raise the volume limit above if your speakers need it.',
+                            key: const Key('amp-note'),
+                            style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+                          ),
+                        ],
+                        if (settings.dacRebootRequired) ...[
+                          const SizedBox(height: 8),
+                          Text(
+                            'Restart this Pi for the audio board change to take effect.',
+                            style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+                          ),
+                          Align(
+                            alignment: Alignment.centerLeft,
+                            child: TextButton.icon(
+                              key: const Key('reboot-player-button'),
+                              onPressed: _rebooting ? null : _reboot,
+                              icon: const Icon(Icons.restart_alt),
+                              label: Text(_rebooting ? 'Restarting… back in about a minute' : 'Restart player now'),
+                            ),
+                          ),
+                        ],
+                      ],
+                      if (ref.read(playbackProvider.notifier).client case final client?) ...[
+                        const SizedBox(height: 20),
+                        BluetoothOutputSection(api: ClientBtOutputApi(client, widget.roomId)),
+                      ],
+                      const SizedBox(height: 16),
+                      OutlinedButton.icon(
+                        key: const Key('test-tone-button'),
+                        onPressed: _toneBusy ? null : _testTone,
+                        icon: _toneBusy
+                            ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                            : const Icon(Icons.graphic_eq),
+                        label: Text(_toneBusy ? 'Playing test tone…' : 'Play test tone'),
                       ),
-                    ),
-                    if (ampDacs.contains(settings.dac)) ...[
-                      const SizedBox(height: 8),
-                      Text(
-                        'Amp board: volume starts capped at 80% (headroom for tone and loudness, no clipping). '
-                        'Raise the volume limit above if your speakers need it.',
-                        key: const Key('amp-note'),
-                        style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+                      if (_toneResult != null) ...[
+                        const SizedBox(height: 8),
+                        Text(_toneResult!, key: const Key('test-tone-result'), style: text.bodySmall),
+                      ],
+                      if (_audioLines != null) ...[
+                        const SizedBox(height: 4),
+                        for (final line in _audioLines!)
+                          Text(line, style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant)),
+                      ],
+                      const SizedBox(height: 20),
+                      GestureDetector(
+                        key: const Key('player-version-tap'),
+                        onTap: _onVersionTap,
+                        child: Text(
+                          'FreeSounder $appVersion',
+                          textAlign: TextAlign.center,
+                          style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+                        ),
                       ),
+                      if (_developerUnlocked || ref.watch(developerModeProvider)) ...[
+                        const SizedBox(height: 16),
+                        Text('Developer', style: text.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
+                        const SizedBox(height: 4),
+                        Text(
+                          'SSH is off by default and turns itself off after a reboot. '
+                          'The household API has no login of its own — only enable this on your own network.',
+                          style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+                        ),
+                        SwitchListTile(
+                          key: const Key('ssh-developer-switch'),
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('Enable SSH'),
+                          value: _ssh?.enabled ?? false,
+                          onChanged: _sshBusy ? null : (value) => _toggleSsh(value),
+                        ),
+                        if (_ssh?.command != null) ...[
+                          SelectableText(_ssh!.command!, style: text.bodyMedium),
+                          const SizedBox(height: 4),
+                        ],
+                        if (_ssh?.password != null) ...[
+                          SelectableText('Password: ${_ssh!.password}', style: text.bodyMedium),
+                          TextButton(
+                            onPressed: () {
+                              Clipboard.setData(ClipboardData(text: _ssh!.password!));
+                            },
+                            child: const Text('Copy password'),
+                          ),
+                        ],
+                        if (_ssh?.warning != null)
+                          Text(_ssh!.warning!, style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant)),
+                        const SizedBox(height: 8),
+                        OutlinedButton.icon(
+                          key: const Key('diagnostics-button'),
+                          onPressed: _diagBusy ? null : _loadDiagnostics,
+                          icon: const Icon(Icons.monitor_heart_outlined),
+                          label: Text(_diagBusy ? 'Reading diagnostics…' : 'Diagnostics (last shutdown, power)'),
+                        ),
+                        if (_diag != null) ...[
+                          const SizedBox(height: 8),
+                          SelectableText(_diag!, key: const Key('diagnostics-text'), style: text.bodySmall),
+                        ],
+                      ],
+                      if (_error != null) ...[
+                        const SizedBox(height: 8),
+                        Text(_error!, style: text.bodySmall?.copyWith(color: scheme.error)),
+                      ],
+                      if (_saving) const Padding(padding: EdgeInsets.only(top: 12), child: LinearProgressIndicator()),
                     ],
-                    if (settings.dacRebootRequired) ...[
-                      const SizedBox(height: 8),
-                      Text(
-                        'Restart this Pi for the audio board change to take effect.',
-                        style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
-                      ),
-                    ],
-                  ],
-                  if (ref.read(playbackProvider.notifier).client case final client?) ...[
-                    const SizedBox(height: 20),
-                    BluetoothOutputSection(api: ClientBtOutputApi(client, widget.roomId)),
-                  ],
-                  const SizedBox(height: 16),
-                  OutlinedButton.icon(
-                    key: const Key('test-tone-button'),
-                    onPressed: _toneBusy ? null : _testTone,
-                    icon: _toneBusy
-                        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
-                        : const Icon(Icons.graphic_eq),
-                    label: Text(_toneBusy ? 'Playing test tone…' : 'Play test tone'),
                   ),
-                  if (_toneResult != null) ...[
-                    const SizedBox(height: 8),
-                    Text(_toneResult!, key: const Key('test-tone-result'), style: text.bodySmall),
-                  ],
-                  if (_audioLines != null) ...[
-                    const SizedBox(height: 4),
-                    for (final line in _audioLines!)
-                      Text(line, style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant)),
-                  ],
-                  const SizedBox(height: 20),
-                  GestureDetector(
-                    key: const Key('player-version-tap'),
-                    onTap: _onVersionTap,
-                    child: Text(
-                      'FreeSounder $appVersion',
-                      textAlign: TextAlign.center,
-                      style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
-                    ),
-                  ),
-                  if (_developerUnlocked || ref.watch(developerModeProvider)) ...[
-                    const SizedBox(height: 16),
-                    Text('Developer', style: text.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
-                    const SizedBox(height: 4),
-                    Text(
-                      'SSH is off by default and turns itself off after a reboot. '
-                      'The household API has no login of its own — only enable this on your own network.',
-                      style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
-                    ),
-                    SwitchListTile(
-                      key: const Key('ssh-developer-switch'),
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text('Enable SSH'),
-                      value: _ssh?.enabled ?? false,
-                      onChanged: _sshBusy ? null : (value) => _toggleSsh(value),
-                    ),
-                    if (_ssh?.command != null) ...[
-                      SelectableText(_ssh!.command!, style: text.bodyMedium),
-                      const SizedBox(height: 4),
-                    ],
-                    if (_ssh?.password != null) ...[
-                      SelectableText('Password: ${_ssh!.password}', style: text.bodyMedium),
-                      TextButton(
-                        onPressed: () {
-                          Clipboard.setData(ClipboardData(text: _ssh!.password!));
-                        },
-                        child: const Text('Copy password'),
-                      ),
-                    ],
-                    if (_ssh?.warning != null)
-                      Text(_ssh!.warning!, style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant)),
-                    const SizedBox(height: 8),
-                    OutlinedButton.icon(
-                      key: const Key('diagnostics-button'),
-                      onPressed: _diagBusy ? null : _loadDiagnostics,
-                      icon: const Icon(Icons.monitor_heart_outlined),
-                      label: Text(_diagBusy ? 'Reading diagnostics…' : 'Diagnostics (last shutdown, power)'),
-                    ),
-                    if (_diag != null) ...[
-                      const SizedBox(height: 8),
-                      SelectableText(_diag!, key: const Key('diagnostics-text'), style: text.bodySmall),
-                    ],
-                  ],
-                  if (_error != null) ...[
-                    const SizedBox(height: 8),
-                    Text(_error!, style: text.bodySmall?.copyWith(color: scheme.error)),
-                  ],
-                  if (_saving) const Padding(padding: EdgeInsets.only(top: 12), child: LinearProgressIndicator()),
-                ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Pinned sheet header: grab handle, title and a close button. Dragging it
+/// moves the whole sheet (even when the list below is scrolled) and closes it
+/// past the minimum size or on a downward fling.
+class SheetHeader extends SliverPersistentHeaderDelegate {
+  SheetHeader({required this.title, required this.color, this.sheet, this.initialSize = 0.92, this.minSize = 0.55});
+
+  final String title;
+  final Color color;
+  final DraggableScrollableController? sheet;
+  final double initialSize;
+  final double minSize;
+
+  static const height = 64.0;
+
+  @override
+  double get minExtent => height;
+
+  @override
+  double get maxExtent => height;
+
+  @override
+  bool shouldRebuild(SheetHeader old) => old.title != title || old.color != color || old.sheet != sheet;
+
+  @override
+  Widget build(BuildContext context, double shrinkOffset, bool overlapsContent) {
+    final text = Theme.of(context).textTheme;
+    final scheme = Theme.of(context).colorScheme;
+    var dragged = 0.0;
+    void close() => Navigator.of(context).maybePop();
+    return GestureDetector(
+      key: const Key('sheet-drag-handle'),
+      behavior: HitTestBehavior.opaque,
+      onVerticalDragStart: (_) => dragged = 0,
+      onVerticalDragUpdate: (d) {
+        dragged += d.delta.dy;
+        final s = sheet;
+        if (s != null && s.isAttached) {
+          final h = MediaQuery.sizeOf(context).height;
+          s.jumpTo((s.size - d.delta.dy / h).clamp(minSize, 1.0));
+        }
+      },
+      onVerticalDragEnd: (d) {
+        final s = sheet;
+        final fling = (d.primaryVelocity ?? 0) > 700;
+        final attached = s != null && s.isAttached;
+        final low = attached ? s.size <= minSize + 0.04 : dragged > 80;
+        if (fling || low) {
+          close();
+        } else if (attached) {
+          s.animateTo(initialSize, duration: const Duration(milliseconds: 180), curve: Curves.easeOut);
+        }
+      },
+      child: Material(
+        color: color,
+        child: Column(
+          children: [
+            const SizedBox(height: 10),
+            Container(
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: scheme.onSurfaceVariant.withValues(alpha: 0.4),
+                borderRadius: BorderRadius.circular(2),
               ),
             ),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.only(left: 20, right: 8),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(title, style: text.titleLarge?.copyWith(fontWeight: FontWeight.w600)),
+                    ),
+                    IconButton(
+                      key: const Key('sheet-close'),
+                      tooltip: 'Close',
+                      icon: const Icon(Icons.close),
+                      onPressed: close,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -614,7 +759,8 @@ String formatDiagnostics(Map<String, dynamic> d) {
       'Input voltage: ${d['input_voltage']}'
           '${d['input_voltage_min_this_boot'] != null ? ', lowest this boot ${d['input_voltage_min_this_boot']} V' : ''}',
     if (d['temperature'] != null) 'Temperature: ${d['temperature']}',
-    if (d['cpu_load'] != null) 'CPU load (1/5/15 min): ${load(d['cpu_load'])}${d['cpu_busy'] != null ? ', busy ${d['cpu_busy']}' : ''}',
+    if (d['cpu_load'] != null)
+      'CPU load (1/5/15 min): ${load(d['cpu_load'])}${d['cpu_busy'] != null ? ', busy ${d['cpu_busy']}' : ''}',
     if (d['cpu_mhz'] != null)
       'CPU clock: ${d['cpu_mhz']} MHz (max ${d['cpu_max_mhz'] ?? '?'} of ${d['cpu_hw_max_mhz'] ?? '?'} MHz, '
           '${d['cpu_governor'] ?? '?'}${d['cpu_clock_capped'] == true ? ', capped for heat' : ''}'

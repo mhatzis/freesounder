@@ -23,7 +23,9 @@ PI5_HDMI_ONLY = (
 )
 
 
-def _run(tmp_path: Path, cards: str, hdmi: dict[int, str]) -> dict[str, str]:
+def _run(
+    tmp_path: Path, cards: str, hdmi: dict[int, str], extra: dict[str, str] | None = None
+) -> dict[str, str]:
     drm = tmp_path / "drm"
     for port, status in hdmi.items():
         connector = drm / f"card1-HDMI-A-{port}"
@@ -37,6 +39,10 @@ def _run(tmp_path: Path, cards: str, hdmi: dict[int, str]) -> dict[str, str]:
         "FREESOUNDER_NO_RENDER": "1",
         "FREESOUNDER_ASOUND_CARDS": str(tmp_path / "cards"),
         "FREESOUNDER_DRM_DIR": str(drm),
+        "FREESOUNDER_UPTIME": "999",
+        "FREESOUNDER_AUDIO_DETECT": str(tmp_path / "detect.json"),
+        "FREESOUNDER_BOOT_CONFIG": str(tmp_path / "config.txt"),
+        **(extra or {}),
     }
     subprocess.run(["bash", "-c", script], check=True, env=env, capture_output=True)
     return dict(line.split("=", 1) for line in out.read_text().splitlines())
@@ -74,3 +80,62 @@ def test_dac_wins_over_hdmi(tmp_path):
 
 def test_no_cards_at_all(tmp_path):
     assert _run(tmp_path, "--- no soundcards ---\n", {})["pcm"] == "null"
+
+
+PI4 = (
+    " 0 [Headphones     ]: bcm2835_headpho - bcm2835 Headphones\n"
+    "                      bcm2835 Headphones\n"
+    " 1 [vc4hdmi0       ]: vc4-hdmi - vc4-hdmi-0\n"
+    "                      vc4-hdmi-0\n"
+    " 2 [vc4hdmi1       ]: vc4-hdmi - vc4-hdmi-1\n"
+    "                      vc4-hdmi-1\n"
+)
+PIFI = " 3 [sndrpihifiberry]: RPi-simple - snd_rpi_hifiberry_dacplus\n"
+
+
+def test_pi4_pifi_dac_wins_and_reports_detection(tmp_path):
+    (tmp_path / "detect.json").write_text(
+        '{\n  "detected": "PCM512x/TAS5756 at 0x4d (auto-detected, dtoverlay=hifiberry-dacplus)",\n'
+        '  "expect_card": true,\n  "cards": ""\n}\n'
+    )
+    got = _run(tmp_path, PI4 + PIFI, {1: "disconnected", 2: "disconnected"})
+    assert got["pcm"] == "default:CARD=sndrpihifiberry"
+    assert got["cards"] == "Headphones, vc4hdmi0, vc4hdmi1, sndrpihifiberry"
+    assert got["detected"].startswith("PCM512x/TAS5756 at 0x4d")
+
+
+def test_pi4_without_dac_uses_headphone_jack_not_null(tmp_path):
+    got = _run(tmp_path, PI4, {1: "disconnected", 2: "disconnected"})
+    assert got["pcm"] == "default:CARD=Headphones"
+    assert got["kind"] == "analog"
+
+
+def test_usb_card_is_picked(tmp_path):
+    usb = " 3 [Device         ]: USB-Audio - USB Audio Device\n"
+    got = _run(tmp_path, PI4 + usb, {1: "connected"})
+    assert got["pcm"] == "default:CARD=Device"
+
+
+def test_waits_for_an_expected_dac_early_in_boot(tmp_path):
+    import time
+
+    (tmp_path / "config.txt").write_text(
+        "# --- freesounder-dac-start ---\n[all]\ndtoverlay=hifiberry-dacplus\n"
+        "# --- freesounder-dac-end ---\n"
+    )
+    start = time.monotonic()
+    got = _run(
+        tmp_path,
+        PI4,
+        {1: "disconnected"},
+        {"FREESOUNDER_UPTIME": "12", "FREESOUNDER_CARD_WAIT": "2"},
+    )
+    assert time.monotonic() - start >= 1.8
+    # The DAC never came: the headphone jack, not the null sink.
+    assert got["pcm"] == "default:CARD=Headphones"
+
+
+def test_no_cards_reason_says_kernel_listed_none(tmp_path):
+    got = _run(tmp_path, "--- no soundcards ---\n", {}, {"FREESOUNDER_CARD_WAIT": "0"})
+    assert got["pcm"] == "null"
+    assert "kernel listed none" in got["reason"]

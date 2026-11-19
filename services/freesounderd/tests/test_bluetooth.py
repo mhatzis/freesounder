@@ -254,8 +254,27 @@ def test_alsa_chain_keeps_fsdsp_in_front_of_bluealsa() -> None:
     dsp = text.index("pcm.freesounder_dsp")
     hw = text.index("pcm.freesounder_hw")
     assert dsp < hw and "type fsdsp" in text
-    assert f'slave.pcm "bluealsa:DEV={SPEAKER},PROFILE=a2dp"' in text
-    assert "rate 48000" not in text.split("pcm.freesounder_selftest")[0]
+    assert f'pcm "bluealsa:DEV={SPEAKER},PROFILE=a2dp"' in text
+    main = text.split("pcm.freesounder_selftest")[0]
+    # Pinned to the transport's params (default 44.1 kHz S16 stereo), and the
+    # whole chain runs at that rate: no empty hw-params interval.
+    hw_block = main[hw:]
+    assert "format S16_LE" in hw_block and "rate 44100" in hw_block and "channels 2" in hw_block
+    assert "rate 44100" in main[: main.index("pcm.freesounder_dsp")]
+
+
+def test_alsa_chain_uses_transport_rate_and_direct_mode() -> None:
+    bt = {"rate": "48000", "format": "S16_LE", "channels": "2", "codec": "SBC"}
+    pcm = f"bluealsa:DEV={SPEAKER},PROFILE=a2dp"
+    text = render_alsa_conf(slave_pcm=pcm, kind="bluetooth", bt=bt)
+    assert "rate 48000" in text.split("pcm.freesounder_selftest")[0]
+    direct = render_alsa_conf(slave_pcm=pcm, kind="bluetooth", bt={**bt, "direct": "1"})
+    main = direct.split("pcm.freesounder_selftest")[0]
+    assert "type fsdsp" not in main and "DIRECT" in main
+    assert f'pcm "{pcm}"' in main and "rate 48000" in main
+    # A hostile format value is not written into the ALSA config.
+    odd = render_alsa_conf(slave_pcm=pcm, kind="bluetooth", bt={"format": 'S16"; x'})
+    assert 'S16"' not in odd and "format S16_LE" in odd
 
 
 SCRIPT = (
@@ -265,7 +284,21 @@ SCRIPT = (
 )
 
 
-def _select(tmp_path: Path, bt_output: str | None, pcms: str) -> dict[str, str]:
+INFO_SBC = """Device: /org/bluez/hci0/dev_AA_BB_CC_DD_EE_01
+Transport: A2DP-source
+Mode: sink
+Running: false
+Format: S16_LE
+Channels: 2
+Rate: 48000 Hz
+Available codecs: SBC
+Selected codec: SBC
+"""
+
+
+def _select(
+    tmp_path: Path, bt_output: str | None, pcms: str, info: str = INFO_SBC
+) -> dict[str, str]:
     (tmp_path / "cards").write_text(" 0 [sndrpihifiberry]: HifiberryDacp - snd_rpi_hifiberry\n")
     if bt_output is not None:
         (tmp_path / "bt-output").write_text(bt_output)
@@ -279,7 +312,10 @@ def _select(tmp_path: Path, bt_output: str | None, pcms: str) -> dict[str, str]:
         "FREESOUNDER_DRM_DIR": str(tmp_path / "drm"),
         "FREESOUNDER_BT_OUTPUT": str(tmp_path / "bt-output"),
         "FREESOUNDER_BLUEALSA_PCMS": str(tmp_path / "pcms"),
+        "FREESOUNDER_BLUEALSA_INFO": str(tmp_path / "info"),
+        "FREESOUNDER_UPTIME": "999",
     }
+    (tmp_path / "info").write_text(info)
     subprocess.run(["bash", "-c", script], check=True, env=env, capture_output=True)
     return dict(line.split("=", 1) for line in out.read_text().splitlines())
 
@@ -296,6 +332,20 @@ def test_select_picks_connected_speaker(tmp_path: Path) -> None:
     assert got["pcm"] == f"bluealsa:DEV={SPEAKER},PROFILE=a2dp"
     assert got["kind"] == "bluetooth" and "Patio Boom" in got["reason"]
     assert got["card"] == "0"
+
+
+@needs_bash
+def test_select_records_the_transport_params(tmp_path: Path) -> None:
+    got = _select(tmp_path, f"mac={SPEAKER}\nname=Aiwa ASP-0217\nenabled=1\n", CONNECTED)
+    assert got["rate"] == "48000" and got["format"] == "S16_LE" and got["channels"] == "2"
+    assert got["codec"] == "SBC" and "SBC 48000 Hz" in got["reason"]
+    # bluez-alsa 4.0 prints "Sampling:" instead of "Rate:".
+    old_cli = INFO_SBC.replace("Rate: 48000 Hz", "Sampling: 44100 Hz")
+    got = _select(tmp_path, f"mac={SPEAKER}\nenabled=1\n", CONNECTED, old_cli)
+    assert got["rate"] == "44100"
+    # Not configured yet: still picked, with safe defaults.
+    got = _select(tmp_path, f"mac={SPEAKER}\nenabled=1\n", CONNECTED, "Format: S16_LE\n")
+    assert got["kind"] == "bluetooth" and got["rate"] == "44100"
 
 
 @needs_bash

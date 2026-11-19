@@ -20,6 +20,16 @@ It lives only on `exp/bt-transmitter`, so it can be dropped easily.
   - Trusts and connects the speaker, then reconnects with backoff
     (10 s → 2 min) on boot or when the speaker comes back.
   - Falls back to wired while the speaker is away.
+- **Opening the speaker (0.6.9):**
+  - The output is chosen only once bluealsa's PCM for the speaker has a
+    configured transport. select-audio-output waits up to 6 s for it.
+  - The chain is pinned to the transport's format, rate and channels (from
+    `bluealsa-cli info`, usually SBC at 44.1 or 48 kHz, S16_LE, stereo), and
+    the whole chain is resampled once to that rate.
+  - The chain is then opened for real. If it fails (the ALSA "empty hw-params
+    interval" assertion seen on the first image), a direct `plug` into
+    bluealsa is tried without tone controls. If that fails too, the wired
+    output is used and the room info says why.
 - **Latency:** Bluetooth adds a delay. The room's Snapcast client latency is
   set to the speaker latency, 200 ms by default. You can change it in the
   app from 0 to 500 ms, and the API accepts up to 1000 ms. Wired output uses

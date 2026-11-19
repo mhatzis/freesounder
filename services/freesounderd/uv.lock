@@ -88,7 +88,7 @@ wheels = [
 
 [[package]]
 name = "freesounderd"
-version = "0.6.8+btexp"
+version = "0.6.9+btexp"
 source = { editable = "." }
 dependencies = [
     { name = "dbus-next" },

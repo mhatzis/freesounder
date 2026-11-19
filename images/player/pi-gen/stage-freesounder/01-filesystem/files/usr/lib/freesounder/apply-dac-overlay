@@ -1,9 +1,9 @@
 #!/bin/bash
 # Set or clear the I2S DAC overlay in config.txt.
-#   auto  : nothing forced. HATs with an ID EEPROM (official Raspberry Pi
-#           DAC+/DigiAMP+, most HiFiBerry and IQaudio boards) are detected by
-#           the firmware, which loads their overlay itself; select-audio-output
-#           then prefers the HAT's sound card over HDMI.
+#   auto  : detected at boot (freesounder-audio-detect.service): HATs with an
+#           ID EEPROM load their own overlay; boards without one are found on
+#           I2C (PCM512x 0x4d/0x4c, WM8960 0x1a, TAS5713 0x1b) and their
+#           overlay is written, then the Pi reboots once. USB cards just work.
 #   none  : onboard / USB audio only.
 #   Boards without an EEPROM (or to force one), choice -> dtoverlay:
 #     dacplus              rpi-dacplus                 Raspberry Pi DAC+
@@ -11,6 +11,7 @@
 #     iqaudio-dacplus      iqaudio-dacplus             IQaudio DAC+ / DAC Zero
 #     iqaudio-digiampplus  iqaudio-dacplus,unmute_amp  IQaudio DigiAMP+
 #     hifiberry-dacplus    hifiberry-dacplus           HiFiBerry DAC+ / DAC2 Pro
+#     pifi-dacplus         hifiberry-dacplus           PiFi DAC+ 2.0 (DAC+ clone)
 #     hifiberry-amp2       hifiberry-dacplus           HiFiBerry Amp2
 #     hifiberry-amp3       hifiberry-amp3              HiFiBerry Amp3
 #     hifiberry-amp4       hifiberry-dacplus-std       HiFiBerry Amp4
@@ -25,68 +26,9 @@
 #     justboom-dac         justboom-dac                JustBoom DAC / Amp
 #     wm8960               wm8960-soundcard            Waveshare WM8960 Audio HAT
 set -euo pipefail
+# The block is written by freesounderd.audiohw (shared with the boot-time
+# detection): it always starts with [all] and keeps dtparam=audio=on.
 choice=${1:-$(tr -d '[:space:]' < /etc/freesounder/dac 2>/dev/null || echo auto)}
-cfg=""
-for candidate in /boot/firmware/config.txt /boot/config.txt; do
-	if [[ -f "$candidate" ]]; then
-		cfg=$candidate
-		break
-	fi
-done
-if [[ -z "$cfg" ]]; then
-	echo "No config.txt found under /boot/firmware or /boot" >&2
-	exit 1
-fi
-
-# Remove any previous freesounder-managed block.
-python3 - "$cfg" << 'PY'
-import pathlib, sys
-p = pathlib.Path(sys.argv[1])
-text = p.read_text()
-start = "# --- freesounder-dac-start ---\n"
-end = "# --- freesounder-dac-end ---\n"
-if start in text and end in text:
-    pre, rest = text.split(start, 1)
-    _, post = rest.split(end, 1)
-    text = pre + post
-p.write_text(text)
-PY
-
-overlay=""
-case "$choice" in
-	auto|"")
-		printf 'auto\n' > /etc/freesounder/dac
-		echo "DAC: auto (EEPROM HATs load their own overlay)."
-		exit 0
-		;;
-	none)
-		printf 'none\n' > /etc/freesounder/dac
-		echo "DAC overlay cleared (onboard / USB audio)."
-		exit 0
-		;;
-	dacplus) overlay=rpi-dacplus ;;
-	digiampplus) overlay=rpi-digiampplus,unmute_amp ;;
-	iqaudio-dacplus) overlay=iqaudio-dacplus ;;
-	iqaudio-digiampplus) overlay=iqaudio-dacplus,unmute_amp ;;
-	hifiberry-dacplus|hifiberry-amp2|pcm5122-amp) overlay=hifiberry-dacplus ;;
-	hifiberry-amp3) overlay=hifiberry-amp3 ;;
-	hifiberry-amp4) overlay=hifiberry-dacplus-std ;;
-	hifiberry-amp4pro) overlay=hifiberry-amp4pro ;;
-	hifiberry-amp100) overlay=hifiberry-amp100 ;;
-	hifiberry-dac) overlay=hifiberry-dac ;;
-	max98357a) overlay=max98357a,no-sdmode ;;
-	justboom-dac) overlay=justboom-dac ;;
-	wm8960) overlay=wm8960-soundcard ;;
-	*)
-		echo "Unknown DAC '$choice' (see the list at the top of $0)" >&2
-		exit 1
-		;;
-esac
-{
-	echo "# --- freesounder-dac-start ---"
-	echo "# Set from the FreeSounder app (room sound settings: $choice)."
-	echo "dtoverlay=$overlay"
-	echo "# --- freesounder-dac-end ---"
-} >> "$cfg"
-printf '%s\n' "$choice" > /etc/freesounder/dac
-echo "Wrote dtoverlay=$overlay to $cfg (reboot to apply)."
+PYTHON=/opt/freesounder/venv/bin/python
+[[ -x "$PYTHON" ]] || PYTHON=python3
+exec "$PYTHON" -m freesounderd.audiohw set "$choice"

@@ -404,6 +404,24 @@ def create_app(
         engine.kick()
         return {"ok": True}
 
+    @app.post("/api/v2/rooms/{rid}/reboot")
+    async def room_reboot(rid: str, background: BackgroundTasks) -> dict[str, Any]:
+        """Restart a player (e.g. to load a new audio board overlay)."""
+
+        if rid != engine.id:
+            return await engine.forward(rid, "POST", f"/api/v2/rooms/{rid}/reboot", {})
+        if settings.manage_system:
+            # Intentional: not a short power cycle for the factory-reset counter.
+            with contextlib.suppress(OSError):
+                (settings.state_dir / "short-boots").write_text("0\n")
+
+        async def later() -> None:
+            await asyncio.sleep(1.0)
+            await engine.system.systemctl("reboot")
+
+        background.add_task(later)
+        return {"ok": True}
+
     @app.get("/api/v2/rooms/{rid}/diagnostics")
     async def room_diagnostics(rid: str) -> dict[str, Any]:
         if rid != engine.id:

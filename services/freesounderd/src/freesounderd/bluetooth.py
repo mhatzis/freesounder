@@ -531,7 +531,7 @@ class BtOutput:
                     await self.backend.disconnect(old)
             self._retry, self._retry_at = RETRY_MIN, 0.0
         # bluealsa needs a moment to create the PCM after the connect.
-        for _ in range(10):
+        for _ in range(20):
             await self.check(force=True)
             if self.ready:
                 break

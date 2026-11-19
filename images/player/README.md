@@ -78,6 +78,29 @@ DAC+: `dtoverlay=hifiberry-dacplus` in `/boot/firmware/config.txt`. Official
 DigiAMP+ uses the same overlay. A reboot is required after `set-dac`. Then
 plug in powered speakers (DAC+) or passives (DigiAMP+; check PSU needs).
 
+**Audio board auto-detection (0.6.9).** With the audio board on **Auto**
+(the default), `freesounder-audio-detect.service` runs early at every boot,
+before snapclient and the GPIO button:
+
+- A HAT with an ID EEPROM loads its own overlay (firmware).
+- Otherwise the I2C bus on GPIO2/3 is probed (switched on for the probe only):
+  - PCM512x/TAS5756 at 0x4d → `hifiberry-dacplus` (HiFiBerry DAC+, PiFi
+    DAC+ 2.0 and other clones; falls back to `hifiberry-dacplus-std`).
+  - PCM512x at 0x4c → `iqaudio-dacplus`.
+  - WM8960 at 0x1a → `wm8960-soundcard`.
+  - TAS5713 at 0x1b → `hifiberry-amp`.
+- If a codec answers, its overlay is written to the `[all]` section of
+  `config.txt` and the Pi reboots once (at most twice per board; the
+  intentional reboot does not count towards the power-cycle reset).
+- USB audio cards are used as they are.
+- MAX98357A and PCM5102A boards have no I2C. Pick them in the app.
+
+The DAC block always sits under `[all]` and keeps `dtparam=audio=on`, so the
+Pi 4 headphone jack and HDMI remain fallbacks. `select-audio-output` waits up
+to 20 s after boot for late cards. A timer re-checks the cards 25 s and 75 s
+after boot. What was found is in `/run/freesounder/audio-detect.json` and in
+the room's audio info in the app ("Detected:", "Sound cards:").
+
 ## What is installed
 
 - Raspberry Pi OS Lite, 64-bit (Trixie), hostname `fs-new` until adopted (`fs-<room>` after), SSH disabled

@@ -57,3 +57,26 @@ async def test_test_tone_is_forwarded_to_the_room(lan: Lan, make_player) -> None
     assert ("test-tone", "3.0") not in a.engine.system.calls
     res = await a.client.get(f"/api/v2/rooms/{b.id}/audio")
     assert res.status_code == 200
+
+
+async def test_reboot_is_forwarded_to_the_room(lan: Lan, make_player) -> None:
+    import asyncio
+
+    a, b = await setup_household(make_player, ("10.0.0.1", "Pi 5"), ("10.0.0.2", "Pi 4"))
+    await settle(lan, [a, b])
+    res = await a.client.post(f"/api/v2/rooms/{b.id}/reboot")
+    assert res.status_code == 200, res.text
+    await asyncio.sleep(1.2)
+    assert ("systemctl", "reboot") in b.engine.system.calls
+    assert ("systemctl", "reboot") not in a.engine.system.calls
+
+
+def test_audio_output_carries_detection(tmp_path) -> None:
+    out = tmp_path / "audio-output"
+    out.write_text(
+        "pcm=default:CARD=sndrpihifiberry\ncard=3\nkind=card\nreason=sound card sndrpihifiberry\n"
+        "cards=Headphones, vc4hdmi0, sndrpihifiberry\ndetected=PCM512x at 0x4d\n"
+    )
+    got = audio_state(out, tmp_path / "none.json", root=tmp_path)["output"]
+    assert got["cards"] == "Headphones, vc4hdmi0, sndrpihifiberry"
+    assert got["detected"] == "PCM512x at 0x4d"
