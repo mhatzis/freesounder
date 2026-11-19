@@ -17,5 +17,4 @@ network-manager
 rfkill
 bluez-firmware
 iw
-gpiod
 bluez-alsa-utils

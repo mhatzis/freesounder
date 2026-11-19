@@ -10,9 +10,8 @@ A factory reset makes a player forget:
 It then goes back to **Bluetooth setup mode** with the hostname `fs-new`, ready
 to be added again in the app ("Add a player").
 
-These stay the same: the `fsadmin` console account, the Wi-Fi country, the
-DAC/amp choice and the button setting (`/etc/freesounder/button`). Developer
-SSH is switched off.
+These stay the same: the `fsadmin` console account, the Wi-Fi country and
+the DAC/amp choice. Developer SSH is switched off.
 
 While it resets, the green ACT LED blinks fast and, if the player has a working
 speaker, it plays a short tone. The HDMI status screen shows
@@ -22,9 +21,19 @@ until the player is set up again.
 The other players in the home still list the old room as **Offline**. Remove
 it with the bin icon next to it in the app's Rooms list.
 
-There are four ways to reset.
+There are four ways to reset. None of them uses a 40-pin header GPIO, so
+nothing interferes with DAC/amp HATs (I2S on GPIO18-21, I2C on GPIO2/3).
 
-## 1. Raspberry Pi 5: the power button
+## 1. In the app (software reset)
+
+Open the room, **Room settings**, scroll to the bottom and tap **Factory
+reset** (red). Confirm in the dialog. The app calls
+`POST /api/v2/rooms/{id}/factory-reset` with `{"confirm": true}` (forwarded to
+that player), which runs the same routine as the other methods
+(`/usr/lib/freesounder/factory-reset --reason app`). The player restarts in
+setup mode about a minute later.
+
+## 2. Raspberry Pi 5: the power button
 
 | Action | Result |
 | --- | --- |
@@ -36,7 +45,7 @@ There are four ways to reset.
 `systemd-logind` is set to `HandlePowerKey=ignore`, and
 `freesounder-buttons.service` reads the power key from the input device.
 
-## 2. Any Pi, no tools: power-cycle 5 times
+## 3. Any Pi, no tools: power-cycle 5 times
 
 1. Plug the power in, wait **about 20 seconds**, then unplug it.
 2. Do this **5 times in a row**. From the 2nd time, about 10 s after you plug
@@ -70,52 +79,15 @@ Why ordinary use does not trigger it:
 - Unplugging before the counter is written (under about 5 s) does nothing
   either way.
 
-## 3. Optional wired button (GPIO3, all Pis)
+The power button is on the Pi 5's power chip, not on the 40-pin header.
 
-Wire a normally-open push button between:
-
-```
- Raspberry Pi 40-pin header (pin 1 is next to the SD card end, outer row = even)
-
-        3V3  (1) (2)  5V
-      GPIO2  (3) (4)  5V
-      GPIO3  (5) (6)  GND      <- button between pin 5 and pin 6
-      GPIO4  (7) (8)  GPIO14
-             ...
-```
-
-No resistor is needed: GPIO3 has a pull-up on the board. Then:
-
-| Action | Result |
-| --- | --- |
-| 1 press | clean shutdown |
-| **5 presses within 3 s** | **factory reset** |
-| 1 press while shut down | starts the Pi again (Pi 3, 4 and Zero 2 W, by the bootloader). On a Pi 5, use its own power button. |
-
-**I2C DAC and amp HATs.** GPIO2/GPIO3 are the I2C bus. Most DAC/amp HATs set
-up their chip over I2C: HiFiBerry DAC+/Amp2/Amp3/Amp4/Amp4 Pro/Amp100,
-IQaudio/Raspberry Pi DAC+ and DigiAMP+, JustBoom, WM8960 and PCM5122 amps.
-A button on GPIO3 would disturb that bus, so with the default `gpio=auto` the
-wired button is **off** in these cases:
-
-- the selected DAC is one of those,
-- a HAT with an ID EEPROM is fitted,
-- or `/dev/i2c-1` exists.
-
-PCM5102A boards (`hifiberry-dac`), MAX98357A amps and onboard/HDMI audio
-keep GPIO3.
-
-To use another pin, edit `/etc/freesounder/button` (as fsadmin, `sudo nano`)
-and restart the service (`sudo systemctl restart freesounder-buttons`):
-
-```
-gpio=17      # GPIO17 = pin 11, button to GND on pin 9 (no wake-from-halt)
-gpio=off     # no wired button
-gpio=auto    # default: GPIO3 unless I2C is in use
-```
-
-The service uses `gpiomon` (libgpiod) with the pull-up on and a 30 ms
-debounce. It works on Pi 3, 4, Zero 2 W and 5 without a `config.txt` overlay.
+**No wired header button (since 0.6.11).** Earlier images offered a push
+button on GPIO3 (pin 5). GPIO3 is also the I2C clock line that DAC/amp HATs
+(HiFiBerry DAC+ and clones such as the PiFi DAC+ 2.0, IQaudio, Amp boards)
+use, and the button service claiming it could leave the sound card listed but
+silent. It was removed: `/etc/freesounder/button` and the `gpiomon` monitor are
+gone, and FreeSounder no longer touches any header GPIO. Use the app reset
+instead.
 
 ## 4. From the console
 
@@ -165,8 +137,7 @@ minimum is 1.5 GHz) and restores the full clock below 65 C, logging
 of one core, so this never affects playback. `/etc/freesounder/cpu` can hold
 `auto` (default), `cool` (always capped) or `off` (never touch the clock).
 
-**Buttons.** Each press logs `POWER BUTTON pressed (n/5 to reset)` (or
-`WIRED BUTTON pressed`); a single press logs
+**Buttons.** Each Pi 5 power-button press logs `POWER BUTTON pressed (n/5 to reset)`; a single press logs
 `POWER BUTTON: clean shutdown requested by the power button`.
 
 **Pi 5 firmware.** `/proc/device-tree/chosen/power/power_reset` is the PMIC

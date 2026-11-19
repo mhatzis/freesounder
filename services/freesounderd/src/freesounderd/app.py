@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import subprocess
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -45,6 +46,9 @@ from freesounderd.ssh import ssh_set, ssh_status
 from freesounderd.store import Store, detected_hat, hostname
 
 logger = logging.getLogger(__name__)
+
+
+FACTORY_RESET = "/usr/lib/freesounder/factory-reset"
 
 
 def create_app(
@@ -402,6 +406,39 @@ def create_app(
         engine.peer_hints.pop(rid, None)
         store.forget_peer(rid)
         engine.kick()
+        return {"ok": True}
+
+    @app.post("/api/v2/rooms/{rid}/factory-reset")
+    async def room_factory_reset(
+        rid: str, body: dict[str, Any], background: BackgroundTasks
+    ) -> dict[str, Any]:
+        """Software factory reset (the app's Room settings -> Factory reset).
+
+        Runs the same routine as the power-button / power-cycle reset: forget
+        Wi-Fi, the home, the room name and its settings, then reboot into
+        Bluetooth setup mode as fs-new.
+        """
+
+        if not body.get("confirm"):
+            raise HTTPException(
+                status_code=400, detail="Set confirm=true to factory-reset this player."
+            )
+        if rid != engine.id:
+            return await engine.forward(
+                rid, "POST", f"/api/v2/rooms/{rid}/factory-reset", {"confirm": True}
+            )
+        if not settings.manage_system:
+            engine.system.calls.append(("factory-reset", "app"))
+            return {"ok": True}
+
+        async def later() -> None:
+            # Let the HTTP answer reach the app first.
+            await asyncio.sleep(1.0)
+            await asyncio.to_thread(
+                subprocess.run, [FACTORY_RESET, "--reason", "app"], check=False, timeout=120
+            )
+
+        background.add_task(later)
         return {"ok": True}
 
     @app.post("/api/v2/rooms/{rid}/reboot")

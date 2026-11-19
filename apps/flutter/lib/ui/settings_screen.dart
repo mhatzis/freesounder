@@ -276,12 +276,11 @@ class _StatusCard extends StatelessWidget {
 const resetHelpText =
     'A reset forgets the player\'s Wi-Fi, its home and its room name, and puts it back into '
     'Bluetooth setup mode, ready to add again.\n\n'
+    'In the app: open the room, Room settings, then Factory reset at the bottom.\n\n'
     'Raspberry Pi 5: press its power button 5 times quickly (within 3 seconds). '
     'One press shuts it down cleanly.\n\n'
     'Any Pi, no tools: plug it in, wait about 20 seconds, unplug. Do this 5 times in a row '
     '(from the 2nd time the green light blinks once for each), then plug it in and leave it.\n\n'
-    'Wired button (optional): a push button between pin 5 (GPIO3) and pin 6 (GND). '
-    'Tap it 5 times quickly to reset; one press shuts down, and pressing it again starts the Pi.\n\n'
     'The screen on the Pi (HDMI) then shows "Reset - ready for setup". '
     'Remove the old room from your other players with the bin icon next to it.';
 

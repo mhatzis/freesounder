@@ -1,10 +1,12 @@
-"""Factory reset triggers: power/GPIO button taps and rapid power cycles.
+"""Factory reset triggers: Pi 5 power-button taps and rapid power cycles.
 
-Three ways to factory-reset a player without the app (see docs/reset.md):
+Ways to factory-reset a player (see docs/reset.md):
 
-* Pi 5 power button: 5 quick presses. One press is a clean shutdown.
-* A wired button on GPIO3 (pin 5) to GND (pin 6): same as the Pi 5 button,
-  and it wakes a halted Pi. The gpio-shutdown overlay turns it into KEY_POWER.
+* In the app: Room settings -> Factory reset (``POST /api/v2/rooms/{id}/factory-reset``).
+* Pi 5 power button: 5 quick presses. One press is a clean shutdown. The
+  button is on the PMIC, not on the 40-pin header.
+* There is no wired header button any more (0.6.11): a button on GPIO3 shared
+  the I2C clock line with DAC/amp HATs. Nothing here touches header GPIOs.
 * Power-cycle: cut power 5 boots in a row while the counter is armed
   (from when it is written, about 5-15 s after power-on, until 40 s of
   uptime: unplug about 20 s after plugging in), then power on and leave it.
@@ -203,86 +205,6 @@ def power_key_devices(proc_devices: str) -> list[str]:
     return found
 
 
-# ----------------------------------------------------------------- GPIO button
-
-# DAC/amp choices (see apply-dac-overlay) whose codec is set up over I2C on
-# GPIO2/GPIO3. A button on GPIO3 would break their I2C clock line.
-I2C_DACS = {
-    "dacplus",
-    "digiampplus",
-    "iqaudio-dacplus",
-    "iqaudio-digiampplus",
-    "hifiberry-dacplus",
-    "pifi-dacplus",
-    "hifiberry-amp2",
-    "hifiberry-amp3",
-    "hifiberry-amp4",
-    "hifiberry-amp4pro",
-    "hifiberry-amp100",
-    "pcm5122-amp",
-    "justboom-dac",
-    "wm8960",
-}
-
-
-def button_line(config: str, dac: str, i2c_in_use: bool) -> str | None:
-    """Which header GPIO the optional wired button is on, or None.
-
-    /etc/freesounder/button holds ``gpio=auto`` (default), ``gpio=off`` or
-    ``gpio=<N>`` (BCM number). ``auto`` means GPIO3 (pin 5, also wakes a
-    halted Pi) unless I2C is in use on GPIO2/3 by the selected DAC/amp or
-    any HAT, in which case the wired button is off until a pin is chosen.
-    """
-
-    wanted = "auto"
-    for line in config.splitlines():
-        key, _, value = line.partition("=")
-        if key.strip() == "gpio":
-            wanted = value.strip().lower() or "auto"
-    if wanted in ("off", "none", "no"):
-        return None
-    if wanted == "auto":
-        if i2c_in_use or dac.strip() in I2C_DACS:
-            return None
-        return "GPIO3"
-    if wanted.isdigit() and 0 <= int(wanted) <= 27:
-        if int(wanted) in (2, 3) and (i2c_in_use or dac.strip() in I2C_DACS):
-            return None
-        return f"GPIO{int(wanted)}"
-    return None
-
-
-def i2c_in_use(root: Path = Path("/")) -> bool:
-    """An I2C HAT/codec on GPIO2/3, so GPIO3 must not become a button.
-
-    True when I2C bus 1 is enabled (its adapter exists even without the
-    i2c-dev module, so ``/dev/i2c-1`` alone is not enough: a DAC overlay
-    such as hifiberry-dacplus enables the bus but does not load i2c-dev),
-    a HAT EEPROM was read, or the freesounder block in config.txt loads a
-    DAC overlay (auto-detected boards keep ``/etc/freesounder/dac`` at auto).
-    Requesting GPIO3 as an input re-muxes it away from I2C SCL, and the
-    codec then cannot be set up when playback starts: a silent card.
-    """
-
-    for rel in (
-        "dev/i2c-1",
-        "sys/bus/i2c/devices/i2c-1",
-        "sys/class/i2c-adapter/i2c-1",
-        "proc/device-tree/hat/product",
-    ):
-        if (root / rel).exists():
-            return True
-    for rel in ("boot/firmware/config.txt", "boot/config.txt"):
-        text = _read(str(root / rel))
-        if text:
-            start = text.find("# --- freesounder-dac-start ---")
-            end = text.find("# --- freesounder-dac-end ---")
-            if 0 <= start < end and re.search(r"(?m)^dtoverlay=\S", text[start:end]):
-                return True
-            break
-    return False
-
-
 def _read(path: str) -> str:
     try:
         return Path(path).read_text()
@@ -300,34 +222,10 @@ def _log(msg: str) -> None:
     print(msg, flush=True)
 
 
-def _gpio_monitor() -> subprocess.Popen[bytes] | None:
-    line = button_line(
-        _read("/etc/freesounder/button"), _read("/etc/freesounder/dac"), i2c_in_use()
-    )
-    if line is None:
-        _log("wired GPIO button: off (see /etc/freesounder/button)")
-        return None
-    try:
-        proc = subprocess.Popen(
-            ["gpiomon", "--bias=pull-up", "--edges=falling", "--debounce-period=30ms", line],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-        )
-    except OSError:
-        _log("wired GPIO button: gpiomon is not installed")
-        return None
-    _log(f"wired GPIO button on {line} (to GND)")
-    return proc
-
-
 def run_buttons(argv: list[str]) -> int:
     counter = TapCounter()
     open_fds: dict[str, int] = {}
     last_scan = 0.0
-    gpio = _gpio_monitor()
-    if gpio is not None and gpio.stdout is not None:
-        os.set_blocking(gpio.stdout.fileno(), False)
-        open_fds["gpio"] = gpio.stdout.fileno()
     while True:
         now = time.monotonic()
         if now - last_scan > 10:
@@ -350,21 +248,6 @@ def run_buttons(argv: list[str]) -> int:
         else:
             time.sleep(timeout)
         for fd in ready:
-            if fd == open_fds.get("gpio"):
-                try:
-                    chunk = os.read(fd, 4096)
-                except BlockingIOError:
-                    continue
-                if not chunk:
-                    _log("wired GPIO button: monitor stopped (pin busy?)")
-                    open_fds.pop("gpio", None)
-                    continue
-                for _ in range(chunk.count(b"\n")):
-                    _log("WIRED BUTTON pressed")
-                    if counter.press(time.monotonic()) == "reset":
-                        _log("5 presses on the wired button: factory reset")
-                        subprocess.run([RESET_SCRIPT, "--reason", "button"], check=False)
-                continue
             try:
                 data = os.read(fd, _EVENT.size * 16)
             except BlockingIOError:

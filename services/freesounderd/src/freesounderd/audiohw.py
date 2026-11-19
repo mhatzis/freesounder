@@ -1,7 +1,7 @@
 """Audio board detection and the DAC overlay block in config.txt.
 
 Run at boot by ``freesounder-audio-detect.service`` (``python -m
-freesounderd.audiohw boot``), before snapclient and the button service, and
+freesounderd.audiohw boot``), before snapclient, and
 by ``apply-dac-overlay`` when the board is changed in the app (``set``).
 
 * ``auto`` (the default):
@@ -255,7 +255,7 @@ class I2cBus(contextlib.AbstractContextManager["I2cBus"]):
     def __exit__(self, *exc: object) -> None:
         if not self.added_param:
             return
-        # Give GPIO2/3 back (the optional wired button uses GPIO3).
+        # Leave the bus as config.txt has it (the DAC overlay enables it itself).
         out = _output(["dtoverlay", "-l"])
         for line in out.splitlines():
             m = re.match(r"\s*(\d+):\s+dtparam\b.*i2c_arm=on", line)

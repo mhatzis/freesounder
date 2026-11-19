@@ -1432,6 +1432,18 @@ class PlaybackStore extends Notifier<PlaybackState> {
     await client.rebootPlayer(playerId);
   }
 
+  /// Factory-reset a player from the app (same routine as the power-button reset).
+  Future<void> factoryResetPlayer(String playerId) async {
+    if (state.mockMode) {
+      return;
+    }
+    final client = _client;
+    if (client == null) {
+      throw ControlApiException('Not connected to a system');
+    }
+    await client.factoryResetPlayer(playerId);
+  }
+
   Future<Map<String, dynamic>> roomAudio(String playerId) async {
     if (state.mockMode) {
       return const {
@@ -1576,6 +1588,9 @@ List<String> describeRoomAudio(Map<String, dynamic> audio) {
     if (output['pcm'] != null) 'Device: ${output['pcm']}${hw != null ? ' (${hw['state'] ?? '?'})' : ''}',
     if ((output['detected'] as String?)?.isNotEmpty ?? false) 'Detected: ${output['detected']}',
     if ((output['cards'] as String?)?.isNotEmpty ?? false) 'Sound cards: ${output['cards']}',
+    if ((output['check'] as String?)?.isNotEmpty ?? false)
+      output['check'] == 'ok' ? 'Output check: OK' : 'Output check: ${output['check']}',
+    if (output['direct'] == '1') 'Tone controls: off (the full sound chain would not open on this device)',
     if (chain != null)
       chain['ok'] == false
           ? 'Sound chain: FAILED (${chain['detail']})'

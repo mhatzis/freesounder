@@ -122,38 +122,3 @@ def test_decode_throttled() -> None:
         "throttled since boot",
     ]
     assert decode_throttled(0) == []
-
-
-def test_wired_button_pin_choice() -> None:
-    from freesounderd.reset import button_line
-
-    assert button_line("", "auto", i2c_in_use=False) == "GPIO3"
-    assert button_line("gpio=auto\n", "hifiberry-dac", i2c_in_use=False) == "GPIO3"
-    # I2C DAC/amp (codec on GPIO2/3) or any I2C HAT: GPIO3 stays free.
-    assert button_line("", "hifiberry-amp2", i2c_in_use=False) is None
-    assert button_line("", "auto", i2c_in_use=True) is None
-    assert button_line("gpio=3", "iqaudio-dacplus", i2c_in_use=False) is None
-    # Another pin works with an I2C amp (no wake from halt there).
-    assert button_line("gpio=17", "hifiberry-amp4pro", i2c_in_use=True) == "GPIO17"
-    assert button_line("gpio=off", "none", i2c_in_use=False) is None
-    assert button_line("gpio=banana", "none", i2c_in_use=False) is None
-
-
-def test_i2c_in_use_sees_dac_overlay_without_i2c_dev(tmp_path):
-    from freesounderd.reset import i2c_in_use
-
-    assert i2c_in_use(tmp_path) is False
-    boot = tmp_path / "boot/firmware"
-    boot.mkdir(parents=True)
-    (boot / "config.txt").write_text(
-        "[all]\n# --- freesounder-dac-start ---\n[all]\ndtparam=audio=on\n"
-        "dtoverlay=hifiberry-dacplus-std\n# --- freesounder-dac-end ---\n"
-    )
-    assert i2c_in_use(tmp_path) is True
-    (boot / "config.txt").write_text(
-        "# --- freesounder-dac-start ---\n[all]\ndtparam=audio=on\n# --- freesounder-dac-end ---\n"
-    )
-    assert i2c_in_use(tmp_path) is False
-    adapter = tmp_path / "sys/bus/i2c/devices/i2c-1"
-    adapter.mkdir(parents=True)
-    assert i2c_in_use(tmp_path) is True

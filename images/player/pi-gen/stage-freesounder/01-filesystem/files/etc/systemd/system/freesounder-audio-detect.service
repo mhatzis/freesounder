@@ -1,7 +1,6 @@
 [Unit]
 Description=FreeSounder: detect the audio board (HAT EEPROM, I2C codec, USB) and set its overlay
-# Before the wired GPIO3 button claims the I2C pins, and before snapclient
-# picks an output. Writes /run/freesounder/audio-detect.json; may reboot once
+# Before snapclient picks an output. Writes /run/freesounder/audio-detect.json; may reboot once
 # to load a newly written overlay (see freesounderd/audiohw.py).
 After=local-fs.target systemd-modules-load.service systemd-udev-trigger.service freesounder-boot-count.service
 Before=freesounder-buttons.service snapclient.service freesounderd.service

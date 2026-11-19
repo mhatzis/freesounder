@@ -361,7 +361,7 @@ def test_select_gives_snapclient_a_bigger_buffer_for_bluetooth(tmp_path: Path) -
 @needs_bash
 def test_select_falls_back_to_wired_when_speaker_is_away(tmp_path: Path) -> None:
     got = _select(tmp_path, f"mac={SPEAKER}\nname=Patio Boom\nenabled=1\n", "")
-    assert got["pcm"] == "default:CARD=sndrpihifiberry" and got["kind"] == "card"
+    assert got["pcm"] == "hw:CARD=sndrpihifiberry,DEV=0" and got["kind"] == "card"
     assert "Patio Boom not connected" in got["reason"]
 
 

@@ -250,14 +250,6 @@ async def audio_info() -> dict[str, Any]:
     config = read("/boot/firmware/config.txt") or read("/boot/config.txt")
     start = config.find("# --- freesounder-dac-start ---")
     end = config.find("# --- freesounder-dac-end ---")
-    try:
-        from .reset import button_line, i2c_in_use
-
-        button = button_line(
-            read("/etc/freesounder/button"), read("/etc/freesounder/dac"), i2c_in_use()
-        )
-    except Exception:  # noqa: BLE001 - diagnostics must not fail
-        button = "?"
     kernel = await _run("journalctl", "-k", "-b", "--no-pager", "-q", "-o", "cat")
     link = await link_info(read("/etc/freesounder/bt-output"))
     return {
@@ -270,7 +262,6 @@ async def audio_info() -> dict[str, Any]:
         "aplay_l": (await _run("aplay", "-l")).splitlines(),
         "mixer": (await _run("amixer", "-c", card, "contents")).splitlines()[:120],
         "i2c_adapters": _i2c_adapters(),
-        "wired_button": button or "off",
         "kernel_audio": [ln for ln in kernel.splitlines() if AUDIO_KERNEL_RE.search(ln)][-40:],
         "audio_log": (
             await _run(

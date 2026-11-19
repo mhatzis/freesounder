@@ -74,7 +74,7 @@ def test_no_display_falls_back_to_null_sink(tmp_path):
 def test_dac_wins_over_hdmi(tmp_path):
     cards = PI5_HDMI_ONLY + " 2 [sndrpihifiberry]: RPi-simple - snd_rpi_hifiberry_dacplus\n"
     got = _run(tmp_path, cards, {1: "connected"})
-    assert got["pcm"] == "default:CARD=sndrpihifiberry"
+    assert got["pcm"] == "hw:CARD=sndrpihifiberry,DEV=0"
     assert got["card"] == "2"
     assert got["kind"] == "card"
 
@@ -100,21 +100,21 @@ def test_pi4_pifi_dac_wins_and_reports_detection(tmp_path):
         '  "expect_card": true,\n  "cards": ""\n}\n'
     )
     got = _run(tmp_path, PI4 + PIFI, {1: "disconnected", 2: "disconnected"})
-    assert got["pcm"] == "default:CARD=sndrpihifiberry"
+    assert got["pcm"] == "hw:CARD=sndrpihifiberry,DEV=0"
     assert got["cards"] == "Headphones, vc4hdmi0, vc4hdmi1, sndrpihifiberry"
     assert got["detected"].startswith("PCM512x/TAS5756 at 0x4d")
 
 
 def test_pi4_without_dac_uses_headphone_jack_not_null(tmp_path):
     got = _run(tmp_path, PI4, {1: "disconnected", 2: "disconnected"})
-    assert got["pcm"] == "default:CARD=Headphones"
+    assert got["pcm"] == "hw:CARD=Headphones,DEV=0"
     assert got["kind"] == "analog"
 
 
 def test_usb_card_is_picked(tmp_path):
     usb = " 3 [Device         ]: USB-Audio - USB Audio Device\n"
     got = _run(tmp_path, PI4 + usb, {1: "connected"})
-    assert got["pcm"] == "default:CARD=Device"
+    assert got["pcm"] == "hw:CARD=Device,DEV=0"
 
 
 def test_waits_for_an_expected_dac_early_in_boot(tmp_path):
@@ -133,10 +133,33 @@ def test_waits_for_an_expected_dac_early_in_boot(tmp_path):
     )
     assert time.monotonic() - start >= 1.8
     # The DAC never came: the headphone jack, not the null sink.
-    assert got["pcm"] == "default:CARD=Headphones"
+    assert got["pcm"] == "hw:CARD=Headphones,DEV=0"
 
 
 def test_no_cards_reason_says_kernel_listed_none(tmp_path):
     got = _run(tmp_path, "--- no soundcards ---\n", {}, {"FREESOUNDER_CARD_WAIT": "0"})
     assert got["pcm"] == "null"
     assert "kernel listed none" in got["reason"]
+
+
+PIFI_CARDS = (
+    " 0 [Headphones     ]: bcm2835_headphonbcm2835 Headphones - bcm2835 Headphones\n"
+    " 1 [sndrpihifiberry]: HifiberryDacp - snd_rpi_hifiberry_dacplus\n"
+)
+
+
+def test_check_ok_is_recorded(tmp_path):
+    got = _run(tmp_path, PIFI_CARDS, {}, {"FREESOUNDER_PROBE_RESULT": "ok"})
+    assert got["pcm"] == "hw:CARD=sndrpihifiberry,DEV=0"
+    assert got["check"] == "ok"
+    assert "direct" not in got
+
+
+def test_failed_open_records_the_exact_aplay_error(tmp_path):
+    err = (
+        "aplay: pcm_params.c:170: snd1_pcm_hw_param_get_min: "
+        "Assertion `!snd_interval_empty(i)' failed."
+    )
+    got = _run(tmp_path, PIFI_CARDS, {}, {"FREESOUNDER_PROBE_RESULT": "fail:" + err})
+    assert got["check"] == "failed: " + err
+    assert "direct" not in got

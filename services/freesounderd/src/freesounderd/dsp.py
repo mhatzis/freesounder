@@ -15,6 +15,7 @@ need a snapclient restart to change).
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from freesounderd.models import PlayerSettings
@@ -82,6 +83,9 @@ def read_audio_output(path: Path = AUDIO_OUTPUT_FILE) -> dict[str, str]:
         "format": "",
         "channels": "",
         "codec": "",
+        # Result of select-audio-output's short silent write: "ok" or the
+        # exact aplay error; direct=1 when only the plain path opened.
+        "check": "",
         "direct": "",
     }
     try:
@@ -163,8 +167,29 @@ def _hw_block(name: str, slave_pcm: str, kind: str, bt: dict[str, str] | None = 
 }}"""
     return f"""pcm.{name} {{
     type plug
-    slave.pcm "{slave_pcm}"
+    slave.pcm "{card_hw_pcm(slave_pcm)}"
 }}"""
+
+
+_DEFAULT_CARD_RE = re.compile(r"^default:CARD=([A-Za-z0-9_]+)$")
+
+
+def card_hw_pcm(slave_pcm: str) -> str:
+    """The raw hw device under our own plug.
+
+    ``default:CARD=X`` is itself plug -> hw for a card without its own ALSA
+    profile (DAC HATs). Our chain (plug -> fsdsp FLOAT -> plug) on top of a
+    second plug fails hw-params negotiation on a PCM5122 card:
+    ``snd_pcm_hw_param_get_min: Assertion `!snd_interval_empty(i)'``. So the
+    plug sits directly on ``hw:CARD=X,DEV=0``.
+    """
+
+    m = _DEFAULT_CARD_RE.match(slave_pcm)
+    if m:
+        return f"hw:CARD={m.group(1)},DEV=0"
+    if slave_pcm == "default":
+        return "hw:0,0"
+    return slave_pcm
 
 
 def render_alsa_conf(
@@ -176,8 +201,12 @@ def render_alsa_conf(
     live: bool = True,
     params_path: Path = PARAMS_FILE,
     bt: dict[str, str] | None = None,
+    direct: bool = False,
 ) -> str:
     """ALSA PCM `freesounder` plus `freesounder_selftest` (same chain into null).
+
+    direct=True (set by select-audio-output when the full chain would not open
+    on the device): one plug straight into the output, no tone controls.
 
     With live=True the text does not depend on the tone settings at all.
     """
@@ -206,6 +235,8 @@ def render_alsa_conf(
 }}"""
 
     def chain(prefix: str, out: str) -> str:
+        if direct and prefix == "freesounder":
+            return entry(prefix, out)
         if live:
             return f"""{entry(prefix, prefix + "_dsp")}
 
@@ -229,6 +260,8 @@ pcm.{prefix}_bal {{
         if live
         else "FALLBACK: static balance, no tone controls (fsdsp failed its self-test)"
     )
+    if direct:
+        mode = "DIRECT: no tone controls (the full chain would not open on this device)"
     if bluetooth and (bt or {}).get("direct") == "1":
         # The full chain would not open on this speaker: plug straight into
         # bluealsa (no live tone controls), which is the most compatible.
@@ -375,6 +408,7 @@ def write_dsp_configs(
         live=live,
         params_path=params_path,
         bt=output if output["kind"] == "bluetooth" else None,
+        direct=output.get("direct") == "1",
     )
     camilla_path.parent.mkdir(parents=True, exist_ok=True)
     camilla_path.write_text(render_camilla_yaml(settings))

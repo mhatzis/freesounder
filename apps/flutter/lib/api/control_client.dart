@@ -137,6 +137,12 @@ class ControlApiClient {
     await _send('POST', '/api/v2/rooms/$playerId/reboot');
   }
 
+  /// Software factory reset: the player forgets Wi-Fi, the home and the
+  /// room, then restarts into Bluetooth setup mode.
+  Future<void> factoryResetPlayer(String playerId) async {
+    await _send('POST', '/api/v2/rooms/$playerId/factory-reset', {'confirm': true});
+  }
+
   /// Active output device, EQ chain self-test, snapclient and stream state.
   Future<Map<String, dynamic>> roomAudio(String playerId) async {
     final data = await _send('GET', '/api/v2/rooms/$playerId/audio');

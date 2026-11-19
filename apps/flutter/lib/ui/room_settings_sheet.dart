@@ -222,6 +222,58 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
   }
 
   var _rebooting = false;
+  var _resetting = false;
+
+  Future<void> _factoryReset() async {
+    final scheme = Theme.of(context).colorScheme;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (dialog) => AlertDialog(
+        key: const Key('factory-reset-dialog'),
+        icon: Icon(Icons.warning_amber_rounded, color: scheme.error),
+        title: const Text('Factory reset this player?'),
+        content: const Text(
+          'It forgets its Wi-Fi, its home, its room name and all room settings, then restarts '
+          'in Bluetooth setup mode so you can add it again. This cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            key: const Key('factory-reset-cancel'),
+            onPressed: () => Navigator.of(dialog).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            key: const Key('factory-reset-confirm'),
+            style: FilledButton.styleFrom(backgroundColor: scheme.error, foregroundColor: scheme.onError),
+            onPressed: () => Navigator.of(dialog).pop(true),
+            child: const Text('Factory reset'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) {
+      return;
+    }
+    setState(() => _resetting = true);
+    try {
+      await ref.read(playbackProvider.notifier).factoryResetPlayer(widget.roomId);
+      if (!mounted) {
+        return;
+      }
+      final messenger = ScaffoldMessenger.maybeOf(context);
+      Navigator.of(context).maybePop();
+      messenger?.showSnackBar(
+        const SnackBar(content: Text('Resetting the player. It restarts in setup mode in about a minute.')),
+      );
+    } on Object catch (err) {
+      if (mounted) {
+        setState(() {
+          _resetting = false;
+          _error = userMessageFor(err);
+        });
+      }
+    }
+  }
 
   Future<void> _reboot() async {
     setState(() => _rebooting = true);
@@ -469,7 +521,7 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
                         icon: _toneBusy
                             ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
                             : const Icon(Icons.graphic_eq),
-                        label: Text(_toneBusy ? 'Playing test tone…' : 'Play test tone'),
+                        label: Text(_toneBusy ? 'Playing test sound…' : 'Play test sound'),
                       ),
                       if (_toneResult != null) ...[
                         const SizedBox(height: 8),
@@ -480,6 +532,17 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
                         for (final line in _audioLines!)
                           Text(line, style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant)),
                       ],
+                      const SizedBox(height: 24),
+                      OutlinedButton.icon(
+                        key: const Key('factory-reset-button'),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: scheme.error,
+                          side: BorderSide(color: scheme.error),
+                        ),
+                        onPressed: _resetting ? null : _factoryReset,
+                        icon: const Icon(Icons.restart_alt),
+                        label: Text(_resetting ? 'Resetting…' : 'Factory reset'),
+                      ),
                       const SizedBox(height: 20),
                       GestureDetector(
                         key: const Key('player-version-tap'),

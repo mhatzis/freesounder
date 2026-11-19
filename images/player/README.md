@@ -80,7 +80,7 @@ plug in powered speakers (DAC+) or passives (DigiAMP+; check PSU needs).
 
 **Audio board auto-detection (0.6.9).** With the audio board on **Auto**
 (the default), `freesounder-audio-detect.service` runs early at every boot,
-before snapclient and the GPIO button:
+before snapclient:
 
 - A HAT with an ID EEPROM loads its own overlay (firmware).
 - Otherwise the I2C bus on GPIO2/3 is probed (switched on for the probe only):
@@ -97,9 +97,15 @@ before snapclient and the GPIO button:
   intentional reboot does not count towards the power-cycle reset).
 - USB audio cards are used as they are.
 - MAX98357A and PCM5102A boards have no I2C. Pick them in the app.
-- While a DAC overlay is set, the optional wired GPIO3 button stays off:
-  claiming GPIO3 as an input takes the I2C clock line away from the codec,
-  which leaves the card listed but silent.
+- There is no wired GPIO button any more (0.6.11): a button on GPIO3 took
+  the I2C clock line away from the codec, which left the card listed but
+  silent. Reset from the app instead (docs/reset.md).
+- Card outputs are opened as `hw:CARD=<id>,DEV=0` under one plug (0.6.11).
+  `default:CARD=<id>` stacked a second plug under the FreeSounder chain, and
+  that failed hw-params on a PCM5122 (`snd_interval_empty` assertion).
+  `select-audio-output` checks the chain with 1 s of silence (`check=` in
+  `/etc/freesounder/audio-output`, shown in Room settings) and falls back to
+  a plain plug without tone controls (`direct=1`) if only that opens.
 
 The DAC block always sits under `[all]` and keeps `dtparam=audio=on`, so the
 Pi 4 headphone jack and HDMI remain fallbacks. `select-audio-output` waits up

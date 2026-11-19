@@ -267,8 +267,15 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byKey(const Key('ssh-developer-switch')), findsOneWidget);
+    await tester.ensureVisible(find.byKey(const Key('ssh-developer-switch')));
+    await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('ssh-developer-switch')));
     await tester.pumpAndSettle();
+    await tester.dragUntilVisible(
+      find.textContaining('demo-ssh-password'),
+      find.byKey(const Key('room-settings-scroll')),
+      const Offset(0, -200),
+    );
     expect(find.textContaining('demo-ssh-password'), findsOneWidget);
     expect(find.textContaining('ssh developer@freesounder-demo.local'), findsOneWidget);
   });
