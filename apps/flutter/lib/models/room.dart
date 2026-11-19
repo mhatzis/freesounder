@@ -14,6 +14,7 @@ class Room {
     this.relayingFor,
     this.source,
     this.url,
+    this.version,
     this.nowTitle,
     this.nowArtist,
     this.nowImageUrl,
@@ -45,6 +46,9 @@ class Room {
   final String? source;
   final String? url;
 
+  /// The player's software version (e.g. "0.6.15").
+  final String? version;
+
   bool get isGrouped => memberIds.length > 1;
 
   factory Room.fromJson(Map<String, dynamic> json) {
@@ -65,6 +69,7 @@ class Room {
       relayingFor: json['relaying_for'] as String?,
       source: json['source'] as String?,
       url: json['url'] as String?,
+      version: json['version'] as String?,
       nowTitle: (json['now_playing'] as Map?)?['title'] as String?,
       nowArtist: (json['now_playing'] as Map?)?['artist'] as String?,
       nowImageUrl: (json['now_playing'] as Map?)?['image_url'] as String?,
@@ -94,6 +99,7 @@ class Room {
       relayingFor: relayingFor,
       source: source,
       url: url,
+      version: version,
       nowTitle: nowTitle,
       nowArtist: nowArtist,
       nowImageUrl: nowImageUrl,

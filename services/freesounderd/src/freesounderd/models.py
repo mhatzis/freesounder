@@ -266,6 +266,24 @@ class SshDeveloperStatus(BaseModel):
     warning: str = SSH_API_WARNING
 
 
+# Bluetooth speaker output (experimental feature).
+class BtScanBody(BaseModel):
+    seconds: float = Field(default=8.0, ge=2, le=20)
+
+
+class BtConnectBody(BaseModel):
+    mac: str = Field(min_length=17, max_length=17)
+    name: str | None = Field(default=None, max_length=80)
+
+
+class BtOutputBody(BaseModel):
+    enabled: bool
+
+
+class BtLatencyBody(BaseModel):
+    latency_ms: int = Field(ge=0, le=1000)
+
+
 class LibraryShareBody(BaseModel):
     kind: str = Field(max_length=8)
     host: str | None = Field(default=None, max_length=253)

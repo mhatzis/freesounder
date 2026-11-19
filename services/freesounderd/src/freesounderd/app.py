@@ -24,6 +24,10 @@ from freesounderd.library import LibraryError
 from freesounderd.models import (
     AdoptBody,
     AirplayVolumeBody,
+    BtConnectBody,
+    BtLatencyBody,
+    BtOutputBody,
+    BtScanBody,
     GroupMembersBody,
     Health,
     JoinBody,
@@ -49,6 +53,7 @@ from freesounderd.ssh import ssh_set, ssh_status
 from freesounderd.store import Store, detected_hat, hostname
 
 logger = logging.getLogger(__name__)
+BT_STATUS_WAIT = 6.0  # s: GET /bluetooth always answers well inside the app timeout
 
 
 FACTORY_RESET = "/usr/lib/freesounder/factory-reset"
@@ -695,6 +700,89 @@ def create_app(
         if rid != engine.id:
             return await engine.forward(rid, "GET", f"/api/v2/rooms/{rid}/audio")
         return engine._audio_status()
+
+    # ---------------------------------- EXPERIMENTAL: Bluetooth speaker output
+    def _bt() -> Any:
+        if engine.bt is None:
+            raise HTTPException(
+                status_code=503, detail="Bluetooth output is not available on this player"
+            )
+        return engine.bt
+
+    async def _bt_call(work: Any) -> Any:
+        from freesounderd.bluetooth import BtError
+
+        try:
+            return await work
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except BtError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/api/v2/rooms/{rid}/bluetooth")
+    async def bt_status(rid: str) -> Any:
+        """Experimental: the room's Bluetooth speaker output."""
+        if rid != engine.id:
+            return await engine.forward(rid, "GET", f"/api/v2/rooms/{rid}/bluetooth")
+        if engine.bt is None:
+            return {
+                "experimental": True,
+                "available": False,
+                "reason": "Bluetooth output is not running on this player",
+                "enabled": False,
+                "active": False,
+            }
+        try:
+            status = await asyncio.wait_for(engine.bt.status(), BT_STATUS_WAIT)
+        except Exception as exc:  # noqa: BLE001 - always answer with JSON, never drop the request
+            logger.warning("bluetooth status failed", exc_info=True)
+            return {
+                "experimental": True,
+                "available": False,
+                "reason": f"Bluetooth status failed: {exc or type(exc).__name__}",
+                "enabled": False,
+                "active": False,
+            }
+        status["output"] = engine.output_kind()
+        return status
+
+    @app.post("/api/v2/rooms/{rid}/bluetooth/scan")
+    async def bt_scan(rid: str, body: BtScanBody) -> Any:
+        if rid != engine.id:
+            return await engine.forward(
+                rid, "POST", f"/api/v2/rooms/{rid}/bluetooth/scan", body.model_dump(), wait=40
+            )
+        return {"speakers": await _bt_call(_bt().scan(body.seconds))}
+
+    @app.post("/api/v2/rooms/{rid}/bluetooth/connect")
+    async def bt_connect(rid: str, body: BtConnectBody) -> Any:
+        if rid != engine.id:
+            return await engine.forward(
+                rid, "POST", f"/api/v2/rooms/{rid}/bluetooth/connect", body.model_dump(), wait=90
+            )
+        return await _bt_call(_bt().use(body.mac, body.name))
+
+    @app.post("/api/v2/rooms/{rid}/bluetooth/output")
+    async def bt_output(rid: str, body: BtOutputBody) -> Any:
+        if rid != engine.id:
+            return await engine.forward(
+                rid, "POST", f"/api/v2/rooms/{rid}/bluetooth/output", body.model_dump(), wait=40
+            )
+        return await _bt_call(_bt().set_enabled(body.enabled))
+
+    @app.post("/api/v2/rooms/{rid}/bluetooth/latency")
+    async def bt_latency(rid: str, body: BtLatencyBody) -> Any:
+        if rid != engine.id:
+            return await engine.forward(
+                rid, "POST", f"/api/v2/rooms/{rid}/bluetooth/latency", body.model_dump()
+            )
+        return await _bt_call(_bt().set_latency(body.latency_ms))
+
+    @app.delete("/api/v2/rooms/{rid}/bluetooth")
+    async def bt_forget(rid: str) -> Any:
+        if rid != engine.id:
+            return await engine.forward(rid, "DELETE", f"/api/v2/rooms/{rid}/bluetooth", wait=40)
+        return await _bt_call(_bt().forget())
 
     @app.get("/api/v2/rooms/{rid}/developer/ssh", response_model=SshDeveloperStatus)
     async def get_ssh(rid: str) -> Any:

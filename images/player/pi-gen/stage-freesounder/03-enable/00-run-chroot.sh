@@ -20,15 +20,14 @@ install -d -m 0755 /var/lib/freesounder/music
 install -d -m 0755 -o mpd -g audio /var/lib/freesounder/mpd
 # AirPlay 2 timing helper (only present with the AirPlay 2 build).
 systemctl enable nqptp.service 2>/dev/null || true
-# Onboard Bluetooth for Improv Wi-Fi setup. No A2DP / Bluetooth audio is registered.
+# Onboard Bluetooth for Improv Wi-Fi setup.
 systemctl enable bluetooth.service || true
-# Leftover from an experimental Bluetooth-speaker build in a reused rootfs
-# (that branch installs the bluealsa drop-in; without it, remove bluez-alsa).
-if [ ! -d /etc/systemd/system/bluealsa.service.d ] && dpkg -s bluez-alsa-utils >/dev/null 2>&1; then
-	systemctl unmask bluealsa-aplay.service 2>/dev/null || true
-	apt-get purge -y bluez-alsa-utils libasound2-plugin-bluez || true
-	rm -f /etc/freesounder/bt-output
-fi
+# Bluetooth speaker output (every player since 0.6.15): bluealsa (A2DP source for a Bluetooth
+# speaker) is started by freesounderd only once a speaker is set up in the app.
+# bluealsa-aplay (A2DP sink playback) is never used.
+systemctl disable bluealsa.service 2>/dev/null || true
+systemctl disable bluealsa-aplay.service 2>/dev/null || true
+systemctl mask bluealsa-aplay.service 2>/dev/null || true
 systemctl enable NetworkManager.service || true
 systemctl enable freesounder-ble-provisioning.service
 systemctl enable freesounder-boot-doctor.timer

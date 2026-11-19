@@ -2,6 +2,11 @@ name: iOS TestFlight
 
 on:
   workflow_dispatch:
+    inputs:
+      what_to_test:
+        description: "TestFlight 'What to Test' text for this build (optional)"
+        required: false
+        default: ""
   push:
     tags:
       # App releases only (v0.5.0). Image tags like v0.4.0-alpha-image are excluded.
@@ -125,6 +130,7 @@ jobs:
           ASC_BETA_GROUP_ID: f9da97e0-7e7a-4483-8744-5715c49260f0
           BUNDLE_ID: com.mhatzis.freesounder
           BUILD_NUMBER: ${{ github.run_number }}
+          WHAT_TO_TEST: ${{ inputs.what_to_test }}
         run: |
           set -euo pipefail
           python3 -m venv "$RUNNER_TEMP/asc-venv"
@@ -208,4 +214,40 @@ jobs:
           if add.status_code not in {200, 201, 204, 409}:
               raise SystemExit(f"Could not add build to group: {add.status_code} {add.text}")
           print(f"Added build {build_id} to Internal group {group} (HTTP {add.status_code})")
+          notes = (os.environ.get("WHAT_TO_TEST") or "").strip()
+          if notes:
+              locs = requests.get(
+                  f"{base}/builds/{build_id}/betaBuildLocalizations", headers=headers(), timeout=60
+              )
+              existing = (locs.json().get("data") or []) if locs.ok else []
+              if existing:
+                  res = requests.patch(
+                      f"{base}/betaBuildLocalizations/{existing[0]['id']}",
+                      headers=headers(),
+                      json={
+                          "data": {
+                              "type": "betaBuildLocalizations",
+                              "id": existing[0]["id"],
+                              "attributes": {"whatsNew": notes},
+                          }
+                      },
+                      timeout=60,
+                  )
+              else:
+                  res = requests.post(
+                      f"{base}/betaBuildLocalizations",
+                      headers=headers(),
+                      json={
+                          "data": {
+                              "type": "betaBuildLocalizations",
+                              "attributes": {"locale": "en-US", "whatsNew": notes},
+                              "relationships": {"build": {"data": {"type": "builds", "id": build_id}}},
+                          }
+                      },
+                      timeout=60,
+                  )
+              if res.status_code in {200, 201}:
+                  print(f"What to Test set (HTTP {res.status_code})")
+              else:
+                  print(f"::warning::Could not set What to Test: {res.status_code} {res.text[:300]}")
           PY

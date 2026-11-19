@@ -1,6 +1,10 @@
 #!/bin/bash
 # Pick the ALSA device the `freesounder` chain plays to, so snapclient can
 # always open a device:
+#   0. Bluetooth speaker output (experimental feature): the Bluetooth speaker chosen in the
+#      app (/etc/freesounder/bt-output), only while bluealsa has its A2DP PCM
+#      with a configured transport AND a real open of the chain works;
+#      otherwise the wired choice below,
 #   1. a DAC/HAT or USB card (anything that is not vc4-hdmi),
 #   2. the HDMI port with a display connected (Pi 5: vc4hdmi0 = HDMI0,
 #      vc4hdmi1 = HDMI1; there is no analog jack),
@@ -164,6 +168,78 @@ if [[ $kind != null && -z "${FREESOUNDER_NO_RENDER:-}" ]]; then
 fi
 
 old_out=$(cat "$OUT" 2>/dev/null)
+# ---- Bluetooth speaker (A2DP source via bluealsa), EXPERIMENTAL.
+BT_OUTPUT=${FREESOUNDER_BT_OUTPUT:-/etc/freesounder/bt-output}
+bt_mac=""
+bt_enabled=0
+bt_name=""
+bt_extra=""
+if [[ -r "$BT_OUTPUT" ]]; then
+	while IFS='=' read -r key value; do
+		case "$key" in
+			mac) bt_mac=${value^^} ;;
+			enabled) bt_enabled=$value ;;
+			name) bt_name=$value ;;
+		esac
+	done < "$BT_OUTPUT"
+fi
+bluealsa_pcms() {
+	if [[ -n "${FREESOUNDER_BLUEALSA_PCMS:-}" ]]; then
+		cat "$FREESOUNDER_BLUEALSA_PCMS" 2>/dev/null
+	elif command -v bluealsa-cli >/dev/null 2>&1; then
+		timeout 5 bluealsa-cli list-pcms 2>/dev/null
+	fi
+}
+bluealsa_info() {
+	if [[ -n "${FREESOUNDER_BLUEALSA_INFO:-}" ]]; then
+		cat "$FREESOUNDER_BLUEALSA_INFO" 2>/dev/null
+	else
+		timeout 5 bluealsa-cli info "$1" 2>/dev/null
+	fi
+}
+# Open the real chain for a moment (snapclient is not holding it here).
+bt_probe() {
+	[[ -n "${FREESOUNDER_NO_RENDER:-}" ]] && return 0
+	command -v aplay >/dev/null 2>&1 || return 0
+	bt_probe_err=$(timeout 12 aplay -q -D freesounder -t raw -f S16_LE -r 48000 -c 2 -d 1 /dev/zero 2>&1 >/dev/null)
+	local rc=$?
+	bt_probe_err=$(printf '%s' "$bt_probe_err" | tail -1)
+	return $rc
+}
+bt_state=""
+if [[ "$bt_enabled" == 1 && "$bt_mac" =~ ^([0-9A-F]{2}:){5}[0-9A-F]{2}$ ]]; then
+	bt_path=$(bluealsa_pcms | grep -i "/dev_${bt_mac//:/_}/a2dpsrc/sink" | head -1)
+	if [[ -n "$bt_path" ]]; then
+		# The PCM appears with the A2DP transport; wait (briefly) until its
+		# codec, rate and channels are configured. An unconfigured transport
+		# is what makes ALSA fail with an empty hw-params interval.
+		bt_rate="" bt_channels="" bt_format="" bt_codec=""
+		for _ in 1 2 3 4 5 6; do
+			info=$(bluealsa_info "$bt_path")
+			bt_rate=$(sed -n -E 's/^(Rate|Sampling):[[:space:]]*([0-9]+).*/\2/p' <<<"$info" | head -1)
+			bt_channels=$(sed -n -E 's/^Channels:[[:space:]]*([0-9]+).*/\1/p' <<<"$info" | head -1)
+			bt_format=$(sed -n -E 's/^Format:[[:space:]]*([A-Z0-9_]+).*/\1/p' <<<"$info" | head -1)
+			bt_codec=$(sed -n -E 's/^(Selected codec|Codec):[[:space:]]*([A-Za-z0-9_-]+).*/\2/p' <<<"$info" | head -1)
+			[[ -n "$bt_rate" && "$bt_rate" != 0 && -n "$bt_codec" ]] && break
+			[[ -n "${FREESOUNDER_BLUEALSA_INFO:-}" ]] && break
+			sleep 1
+		done
+		bt_state="ready"
+		[[ -z "$bt_rate" || "$bt_rate" == 0 ]] && bt_state="unconfigured"
+		bt_rate=${bt_rate:-44100}; [[ "$bt_rate" == 0 ]] && bt_rate=44100
+		bt_channels=${bt_channels:-2}; [[ "$bt_channels" == 0 ]] && bt_channels=2
+		bt_format=${bt_format:-S16_LE}
+		w_pcm=$pcm w_card=$card w_kind=$kind w_reason=$reason
+		pcm="bluealsa:DEV=${bt_mac},PROFILE=a2dp"
+		kind=bluetooth
+		reason="Bluetooth speaker ${bt_name:-$bt_mac} (experimental, ${bt_codec:-codec ?} ${bt_rate} Hz)"
+		bt_extra=$(printf '\nrate=%s\nformat=%s\nchannels=%s\ncodec=%s' \
+			"$bt_rate" "$bt_format" "$bt_channels" "${bt_codec:-}")
+	else
+		reason="${reason}; Bluetooth speaker ${bt_name:-$bt_mac} not connected"
+	fi
+fi
+
 write_output() {
 	new=$(printf 'pcm=%s\ncard=%s\nkind=%s\nreason=%s\ncards=%s\ndetected=%s%s' \
 		"$pcm" "$card" "$kind" "$reason" "${card_list:-none}" "${detected:-}" "$1")
@@ -200,44 +276,75 @@ pcm_free() {
 	status=$(cat "/proc/asound/card$card/pcm0p/sub0/status" 2>/dev/null) || return 0
 	[[ "$status" == closed ]]
 }
-check=""
-last_check=$(sed -n 's/^check=//p' <<<"$old_out")
-last_direct=$(sed -n 's/^direct=//p' <<<"$old_out")
-same_pcm=0
-[[ "$(sed -n 's/^pcm=//p' <<<"$old_out")" == "$pcm" && "$(sed -n 's/^cards=//p' <<<"$old_out")" == "${card_list:-none}" ]] && same_pcm=1
-write_output ""
-render
-if [[ $kind != null && ! ( $same_pcm == 1 && $last_check == ok ) ]] && pcm_free; then
-	if probe freesounder; then
-		check=ok
-	else
-		first_err=$probe_err
-		echo "full chain would not open on $pcm: $first_err" >&2
-		write_output $'\n'"direct=1"
+if [[ $kind == bluetooth ]]; then
+	write_output "$bt_extra"
+	render
+	# Verify with a real open: first the full chain (tone controls), then a
+	# direct plug into bluealsa, else back to the wired output.
+	if ! { [[ "$(cat "$OUT" 2>/dev/null)" == "$old_out" ]] && systemctl -q is-active snapclient.service 2>/dev/null; } && ! bt_probe; then
+		first_err=$bt_probe_err
+		write_output "${bt_extra}"$'\n'"direct=1"
 		render
-		if probe freesounder; then
-			check="full chain failed ($first_err); playing without tone controls"
-			write_output $'\n'"check=$check"$'\n'"direct=1"
-		else
-			check="failed: ${probe_err:-$first_err}"
-			echo "output $pcm would not open: $probe_err" >&2
-			write_output $'\n'"check=$check"
+		if ! bt_probe; then
+			echo "Bluetooth speaker would not open: ${first_err} / ${bt_probe_err}" >&2
+			pcm=$w_pcm card=$w_card kind=$w_kind
+			reason="${w_reason}; Bluetooth speaker ${bt_name:-$bt_mac} would not play (${bt_probe_err:-$first_err})"
+			write_output ""
 			render
 		fi
 	fi
-	[[ $check == ok ]] && write_output $'\n'"check=ok"
 else
-	# Already checked, in use (snapclient is playing on it), or the null
-	# sink: keep the last check for the same device.
-	if [[ $kind != null && -n "$last_check" && $same_pcm == 1 ]]; then
-		extra=$'\n'"check=$last_check"
-		[[ "$last_direct" == 1 ]] && extra+=$'\n'"direct=1"
-		write_output "$extra"
-		render
+	check=""
+	last_check=$(sed -n 's/^check=//p' <<<"$old_out")
+	last_direct=$(sed -n 's/^direct=//p' <<<"$old_out")
+	same_pcm=0
+	[[ "$(sed -n 's/^pcm=//p' <<<"$old_out")" == "$pcm" && "$(sed -n 's/^cards=//p' <<<"$old_out")" == "${card_list:-none}" ]] && same_pcm=1
+	write_output ""
+	render
+	if [[ $kind != null && ! ( $same_pcm == 1 && $last_check == ok ) ]] && pcm_free; then
+		if probe freesounder; then
+			check=ok
+		else
+			first_err=$probe_err
+			echo "full chain would not open on $pcm: $first_err" >&2
+			write_output $'\n'"direct=1"
+			render
+			if probe freesounder; then
+				check="full chain failed ($first_err); playing without tone controls"
+				write_output $'\n'"check=$check"$'\n'"direct=1"
+			else
+				check="failed: ${probe_err:-$first_err}"
+				echo "output $pcm would not open: $probe_err" >&2
+				write_output $'\n'"check=$check"
+				render
+			fi
+		fi
+		[[ $check == ok ]] && write_output $'\n'"check=ok"
+	else
+		# Already checked, in use (snapclient is playing on it), or the null
+		# sink: keep the last check for the same device.
+		if [[ $kind != null && -n "$last_check" && $same_pcm == 1 ]]; then
+			extra=$'\n'"check=$last_check"
+			[[ "$last_direct" == 1 ]] && extra+=$'\n'"direct=1"
+			write_output "$extra"
+			render
+		fi
 	fi
+fi
+# snapclient's own ALSA buffer: 80 ms by default, too little for bluealsa
+# (the BT link stalls for tens of ms while the shared radio serves Wi-Fi).
+PLAYER_ENV=${FREESOUNDER_PLAYER_ENV:-/run/freesounder/snapclient-player.env}
+player='SNAPCLIENT_PLAYER='
+if [[ $kind == bluetooth ]]; then
+	player="SNAPCLIENT_PLAYER=\"--player alsa:buffer_time=${FREESOUNDER_BT_BUFFER_MS:-400},fragments=${FREESOUNDER_BT_FRAGMENTS:-8}\""
 fi
 changed=0
 [[ "$(cat "$OUT" 2>/dev/null)" != "$old_out" ]] && changed=1
+if [[ "$(cat "$PLAYER_ENV" 2>/dev/null)" != "$player" ]]; then
+	install -d "$(dirname "$PLAYER_ENV")"
+	printf '%s\n' "$player" > "$PLAYER_ENV"
+	changed=1
+fi
 echo "freesounder audio output: $pcm ($reason)${check:+; check: $check}"
 # Hotplug (udev): only bounce snapclient when the device actually changed.
 if [[ "${1:-}" == "--restart-if-changed" && $changed == 1 ]]; then

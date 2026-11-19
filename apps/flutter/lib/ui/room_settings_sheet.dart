@@ -11,6 +11,7 @@ import '../app_version.dart';
 import '../models/player_settings.dart';
 import '../state/playback_store.dart';
 import 'audio_board_picker.dart';
+import 'bluetooth_output_section.dart';
 
 /// Boards that drive speakers directly; they start with a safe volume limit.
 const ampDacs = {
@@ -312,6 +313,19 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
     });
   }
 
+  /// "Kitchen · 192.168.1.27 · 0.6.15" for the room's own player.
+  String? _playerLabel() {
+    final room = ref.read(playbackProvider).rooms.where((r) => r.id == widget.roomId).firstOrNull;
+    if (room == null) return null;
+    final host = Uri.tryParse(room.url ?? '')?.host;
+    return [
+      room.name,
+      if (host != null && host.isNotEmpty) host,
+      if (room.version != null) room.version!,
+      if (!room.available) 'offline',
+    ].join(' · ');
+  }
+
   void _onVersionTap() {
     setState(() {
       _versionTaps += 1;
@@ -508,6 +522,13 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
                             ),
                           ),
                         ],
+                      ],
+                      if (ref.read(playbackProvider.notifier).client case final client?) ...[
+                        const SizedBox(height: 20),
+                        BluetoothOutputSection(
+                          api: ClientBtOutputApi(client, widget.roomId),
+                          player: _playerLabel(),
+                        ),
                       ],
                       const SizedBox(height: 16),
                       OutlinedButton.icon(
@@ -827,6 +848,13 @@ String formatDiagnostics(Map<String, dynamic> d) {
     if (d['boots_in_journal'] != null) 'Boots in journal: ${d['boots_in_journal']}',
     if (history.isNotEmpty) ...['', 'Power flag history:', ...history.map(hist)],
     if (lines(d['power_log']).isNotEmpty) ...['', 'Power & button log:', ...lines(d['power_log'])],
+    if (d.containsKey('bt_adapters')) ...[
+      '',
+      'Bluetooth: adapters ${lines(d['bt_adapters']).isEmpty ? 'none' : lines(d['bt_adapters']).join(', ')}, '
+          'bluetoothd ${d['bt_bluetoothd'] ?? '?'}, daemon started ${d['daemon_starts_this_boot'] ?? '?'}× this boot',
+      ...lines(d['bt_rfkill']).map((l) => 'rfkill: $l'),
+      ...lines(d['bt_log']),
+    ],
     if (lines(d['previous_boot_errors']).isNotEmpty) ...[
       '',
       'Previous boot warnings/errors:',

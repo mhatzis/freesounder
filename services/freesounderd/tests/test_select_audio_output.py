@@ -42,6 +42,7 @@ def _run(
         "FREESOUNDER_UPTIME": "999",
         "FREESOUNDER_AUDIO_DETECT": str(tmp_path / "detect.json"),
         "FREESOUNDER_BOOT_CONFIG": str(tmp_path / "config.txt"),
+        "FREESOUNDER_PLAYER_ENV": str(tmp_path / "player.env"),
         **(extra or {}),
     }
     subprocess.run(["bash", "-c", script], check=True, env=env, capture_output=True)

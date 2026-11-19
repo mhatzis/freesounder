@@ -15,11 +15,11 @@ void main() {
         if (calls == 1) {
           throw http.ClientException('Connection reset by peer', r.url);
         }
-        return http.Response(jsonEncode({'name': 'Patio', 'volume_limit': 100, 'bass': 0, 'treble': 0, 'balance': 0, 'dac': 'auto'}), 200);
+        return http.Response(jsonEncode({'experimental': true, 'available': true}), 200);
       }),
     );
-    final st = await client.getSettings('patio');
-    expect(st.name, 'Patio');
+    final st = await client.bluetoothStatus('patio');
+    expect(st.available, isTrue);
     expect(calls, 2);
   });
 
@@ -32,7 +32,7 @@ void main() {
         throw http.ClientException('Connection refused', r.url);
       }),
     );
-    await expectLater(client.getSettings('patio'), throwsA(anything));
+    await expectLater(client.bluetoothStatus('patio'), throwsA(anything));
     expect(calls, 1);
   });
 

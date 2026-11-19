@@ -1,8 +1,6 @@
 #!/bin/bash -e
 # Install freesounder filesystem overlay.
-# A reused rootfs may carry the experimental Bluetooth-speaker build
-# (exp/bt-transmitter): drop its bluealsa drop-in (that branch re-installs it
-# below); 03-enable purges the package when the drop-in is absent.
+# Reinstall the bluealsa drop-in from scratch (installed again below).
 rm -rf "${ROOTFS_DIR}/etc/systemd/system/bluealsa.service.d"
 # 0.6.11: the wired GPIO3 button is gone (it shared the I2C clock line).
 rm -f "${ROOTFS_DIR}/etc/freesounder/button"
@@ -49,6 +47,10 @@ install -m 0644 files/etc/systemd/system/freesounder-mpd.service "${ROOTFS_DIR}/
 install -m 0644 files/etc/systemd/system/freesounder-upnp.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-upnp.service"
 install -m 0644 files/etc/systemd/system/freesounder-ble-provisioning.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-ble-provisioning.service"
 install -d "${ROOTFS_DIR}/etc/systemd/system/bluetooth.service.d"
+# Bluetooth speaker output: bluealsa as A2DP source only.
+install -d "${ROOTFS_DIR}/etc/systemd/system/bluealsa.service.d"
+install -m 0644 files/etc/systemd/system/bluealsa.service.d/10-freesounder.conf \
+	"${ROOTFS_DIR}/etc/systemd/system/bluealsa.service.d/10-freesounder.conf"
 install -m 0644 files/etc/systemd/system/bluetooth.service.d/10-freesounder-experimental.conf \
 	"${ROOTFS_DIR}/etc/systemd/system/bluetooth.service.d/10-freesounder-experimental.conf"
 install -m 0644 files/etc/systemd/system/freesounder-boot-doctor.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-boot-doctor.service"
