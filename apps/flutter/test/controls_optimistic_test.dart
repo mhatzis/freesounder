@@ -18,6 +18,7 @@ class SlowPlayer {
   var npDelay = Duration.zero;
   var dropNextControl = false;
   var pauseDelay = const Duration(milliseconds: 200);
+  var timeoutNextPause = false;
   final streams = <StreamController<Map<String, dynamic>>>[];
 
   Map<String, dynamic> room() => {
@@ -62,6 +63,10 @@ class SlowPlayer {
             }
             await Future<void>.delayed(pauseDelay);
             state = 'paused';
+            if (timeoutNextPause) {
+              timeoutNextPause = false; // it landed, but the answer never came
+              throw TimeoutException('POST pause did not answer within 15s');
+            }
             return http.Response('{"ok":true}', 200);
           case '/health':
             return http.Response(jsonEncode({'status': 'ok', 'version': '0.6.7'}), 200);
@@ -227,6 +232,37 @@ void main() {
     // One press resumes.
     await store.togglePlayPause();
     expect(player.controls, ['pause', 'play']);
+    expect(player.state, 'playing');
+    expect(s().nowPlaying?.state, 'playing');
+  });
+
+  test('a pause that timed out is never sent again after the user pressed play', () async {
+    // 0.6.15: the app re-sent a pause whose answer was late, seconds after
+    // the user had pressed play: the music played ~2 s and stopped again.
+    player.timeoutNextPause = true;
+    await expectLater(store.togglePlayPause(), throwsA(isA<TimeoutException>()));
+    expect(player.controls, ['pause'], reason: 'a timeout may have landed: not sent again');
+    await store.togglePlayPause();
+    await Future<void>.delayed(const Duration(milliseconds: 600));
+    expect(player.controls, ['pause', 'play']);
+    expect(player.state, 'playing');
+    expect(s().nowPlaying?.state, 'playing');
+    // And again later: one press each.
+    await store.togglePlayPause();
+    await store.togglePlayPause();
+    expect(player.controls, ['pause', 'play', 'pause', 'play']);
+    expect(player.state, 'playing');
+  });
+
+  test('a dead-socket retry is dropped once the user tapped again', () async {
+    player.dropNextControl = true; // the pause dies on a closed socket
+    final pause = store.togglePlayPause();
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    expect(s().nowPlaying?.state, 'paused');
+    await store.togglePlayPause(); // play, before the retry would go out
+    await pause;
+    await Future<void>.delayed(const Duration(milliseconds: 400));
+    expect(player.controls, ['pause', 'play'], reason: 'no stale pause after the play');
     expect(player.state, 'playing');
     expect(s().nowPlaying?.state, 'playing');
   });

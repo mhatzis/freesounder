@@ -79,6 +79,7 @@ PAUSE_MUTE_MAX = 15.0
 # A play/pause just sent is what the player reports until a source read taken
 # after the command agrees (or this long), so a stale read can't flip it back.
 CMD_STATE_HOLD = 6.0
+CONTROL_WAIT = 12.0  # s a play/pause waits for the one before it, at most
 
 
 class EngineError(Exception):
@@ -204,6 +205,12 @@ class Engine:
         # systemctl/status calls); they only queue behind each other.
         self._control_lock = asyncio.Lock()
         self._cmd_state: tuple[str, float, str] | None = None
+        # Every play/pause gets a number; one still queued when a newer one
+        # arrived is dropped (the newest intent wins, a stale pause can't
+        # land after a play). Mute/unmute calls go out one at a time, so a
+        # pause's mute can never reach snapserver after a play's unmute.
+        self._cmd_seq = 0
+        self._mute_lock = asyncio.Lock()
         self._tail_mute: dict[str, Any] | None = None
         self._sources_read_at = 0.0
         self._kick = asyncio.Event()
@@ -1070,10 +1077,13 @@ class Engine:
         tm = self._tail_mute
         if tm is None:
             # Not muted by a pause: no group stays muted (e.g. after a restart).
-            for group in self._server_status.get("groups", []):
-                if group.get("muted") and self._tail_mute is None:
-                    with contextlib.suppress(SnapcastError):
-                        await self.snap_local.set_group_mute(group["id"], False)
+            stuck = [g["id"] for g in self._server_status.get("groups", []) if g.get("muted")]
+            if stuck and not self._mute_lock.locked():
+                async with self._mute_lock:
+                    if self._tail_mute is None:
+                        for gid in stuck:
+                            with contextlib.suppress(SnapcastError):
+                                await self.snap_local.set_group_mute(gid, False)
             return
         actual = self._source_state()
         if self.source != tm["source"]:
@@ -1090,32 +1100,58 @@ class Engine:
             logger.warning("%s did not confirm the pause; unmuting the room", self.source)
             await self._unmute_tail()
 
-    async def _mute_tail(self) -> None:
-        stream = SOURCE_STREAM.get(self.source)
-        groups = self._server_status.get("groups", [])
-        gids = [g["id"] for g in groups if stream and g.get("stream_id") == stream]
-        if not gids:
-            return
-        self._tail_mute = {
-            "gids": gids,
-            "at": time.monotonic(),
-            "source": self.source,
-            "seen_paused": False,
-        }
-        results = await asyncio.gather(
-            *(self.snap_local.set_group_mute(g, True) for g in gids), return_exceptions=True
-        )
-        if any(isinstance(r, BaseException) for r in results):
-            logger.info("muting the paused room failed: %s", results)
+    async def _mute_tail(self, seq: int) -> None:
+        async with self._mute_lock:
+            if seq != self._cmd_seq:
+                return  # a play came in first: never mute after it
+            stream = SOURCE_STREAM.get(self.source)
+            groups = self._server_status.get("groups", [])
+            gids = [g["id"] for g in groups if stream and g.get("stream_id") == stream]
+            if not gids:
+                return
+            self._tail_mute = {
+                "gids": gids,
+                "at": time.monotonic(),
+                "source": self.source,
+                "seen_paused": False,
+                "seq": seq,
+            }
+            results = await asyncio.gather(
+                *(self.snap_local.set_group_mute(g, True) for g in gids), return_exceptions=True
+            )
+            if any(isinstance(r, BaseException) for r in results):
+                logger.info("muting the paused room failed: %s", results)
 
     async def _unmute_tail(self) -> None:
-        tm, self._tail_mute = self._tail_mute, None
-        if tm is None:
-            return
-        await asyncio.gather(
-            *(self.snap_local.set_group_mute(g, False) for g in tm["gids"]),
-            return_exceptions=True,
-        )
+        """The paused room's tail has drained: lift the pause mute."""
+
+        async with self._mute_lock:
+            tm, self._tail_mute = self._tail_mute, None
+            if tm is None:
+                return
+            await asyncio.gather(
+                *(self.snap_local.set_group_mute(g, False) for g in tm["gids"]),
+                return_exceptions=True,
+            )
+
+    async def _unmute_all(self) -> None:
+        """Play: no pause mute may survive, on any group of this server."""
+
+        async with self._mute_lock:
+            tm, self._tail_mute = self._tail_mute, None
+            gids = set(tm["gids"]) if tm else set()
+            try:
+                server = await self.snap_local.status()
+            except SnapcastError:
+                server = self._server_status
+            gids |= {g["id"] for g in server.get("groups", []) if g.get("muted")}
+            if not gids:
+                return
+            results = await asyncio.gather(
+                *(self.snap_local.set_group_mute(g, False) for g in gids), return_exceptions=True
+            )
+            if any(isinstance(r, BaseException) for r in results):
+                logger.warning("unmuting the room failed: %s", results)
 
     async def _switch_source(self, new: str) -> None:
         if new == self.source:
@@ -1765,30 +1801,54 @@ class Engine:
         self.kick()
 
     async def _play_pause(self, action: str) -> None:
-        """Play/pause without waiting for a tick; pause silences the room at once."""
+        """Play/pause without waiting for a tick; pause silences the room at once.
+
+        Play always unmutes every muted group and clears any pending pause,
+        whatever state an earlier command left behind.
+        """
 
         if action == "toggle":
             action = "pause" if self.play_state() == "playing" else "play"
         pause = action == "pause"
         source = self.source
+        self._cmd_seq += 1
+        seq = self._cmd_seq
         self._cmd_state = ("paused" if pause else "playing", time.monotonic(), source)
         if pause:
-            await self._mute_tail()
+            await self._mute_tail(seq)
         else:
-            await self._unmute_tail()
+            await self._unmute_all()
         self.broadcast_if_changed()
         try:
-            async with self._control_lock:
+            try:
+                await asyncio.wait_for(self._control_lock.acquire(), timeout=CONTROL_WAIT)
+            except TimeoutError as exc:
+                raise EngineError(503, "The player is busy; try again.") from exc
+            try:
+                if seq != self._cmd_seq:
+                    return  # a newer play/pause came in meanwhile: it decides
                 if source == "radio":
                     # ffmpeg start/stop must not race the tick's radio watchdog.
-                    async with self._lock:
-                        await self._local_control(action)
+                    try:
+                        await asyncio.wait_for(self._lock.acquire(), timeout=CONTROL_WAIT)
+                    except TimeoutError as exc:
+                        raise EngineError(503, "The player is busy; try again.") from exc
+                    try:
+                        if seq == self._cmd_seq:
+                            await self._local_control(action)
+                    finally:
+                        self._lock.release()
                 else:
                     await self._local_control(action)
+            finally:
+                self._control_lock.release()
+            if not pause and seq == self._cmd_seq:
+                await self._unmute_all()  # self-heal: nothing stays muted after a play
         except Exception:
-            self._cmd_state = None
-            await self._unmute_tail()
-            self.broadcast_if_changed()
+            if seq == self._cmd_seq:
+                self._cmd_state = None
+                await self._unmute_all()
+                self.broadcast_if_changed()
             raise
         finally:
             self.kick()

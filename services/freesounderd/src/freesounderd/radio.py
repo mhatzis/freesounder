@@ -127,6 +127,21 @@ def describe_error(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {text or 'no detail'}"[:160]
 
 
+CLOSE_WAIT = 1.0  # s for a station connection to close before it is cut
+TASK_WAIT = 2.0  # s for a cancelled stream task to finish
+
+
+async def _settle(task: asyncio.Task[Any]) -> None:
+    """Wait a little for a cancelled task; never block a pause on it."""
+
+    done, _ = await asyncio.wait({task}, timeout=TASK_WAIT)
+    if not done:
+        logger.warning("radio task did not stop within %.0f s; leaving it", TASK_WAIT)
+        return
+    with contextlib.suppress(asyncio.CancelledError, Exception):
+        task.result()
+
+
 class IcyStream:
     """An open HTTP/ICY connection positioned at the start of the body."""
 
@@ -149,9 +164,17 @@ class IcyStream:
             self.metaint = 0
 
     async def close(self) -> None:
+        # Never wait long: an HTTPS station that does not answer the TLS
+        # close kept wait_closed() (and so a radio pause, under the engine
+        # lock) busy for up to 30 s.
         self.writer.close()
-        with contextlib.suppress(Exception):
-            await self.writer.wait_closed()
+        try:
+            await asyncio.wait_for(self.writer.wait_closed(), timeout=CLOSE_WAIT)
+        except asyncio.CancelledError:
+            self.writer.transport.abort()
+            raise
+        except Exception:  # noqa: BLE001 - TimeoutError, SSL errors, reset
+            self.writer.transport.abort()
 
 
 async def open_icy(url: str, user_agent: str = "FreeSounder", wait: float = 10.0) -> IcyStream:
@@ -599,6 +622,8 @@ class RadioPlayer:
                 self._set_title(title)
 
     async def pause(self) -> None:
+        # Paused first, so nothing restarts ffmpeg while it is being stopped.
+        self.paused = self.station is not None
         await self.stop(keep_station=True)
         self.paused = self.station is not None
 
@@ -612,8 +637,7 @@ class RadioPlayer:
             self._titles = None
         if self._pump is not None:
             self._pump.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await self._pump
+            await _settle(self._pump)
             self._pump = None
         proc, self._proc = self._proc, None
         if proc is not None and proc.returncode is None:
@@ -624,8 +648,7 @@ class RadioPlayer:
                 proc.kill()
         if self._reader is not None:
             self._reader.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await self._reader
+            await _settle(self._reader)
             self._reader = None
 
     async def watchdog(self) -> None:

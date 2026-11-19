@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:http/http.dart' as http;
 
 import '../api/connection_prefs.dart';
 import '../api/control_client.dart';
@@ -905,15 +906,23 @@ class PlaybackStore extends Notifier<PlaybackState> {
     state = state; // shows the new play/pause state at once
     _playInFlight[room.id] = (_playInFlight[room.id] ?? 0) + 1;
     try {
-      await _transport(room.id, shouldPause ? 'pause' : 'play', retryLink: true);
+      // Retries and the Spotify fallback only while this is still the
+      // latest tap: a pause sent again after the user pressed play stopped
+      // the music again in 0.6.15.
+      await _transport(
+        room.id,
+        shouldPause ? 'pause' : 'play',
+        retryLink: true,
+        stillWanted: () => identical(_lastPlayCommand[room.id]?.at, now),
+      );
       final h = _playHolds[room.id];
       final after = DateTime.now().add(playHoldAfterReply);
-      if (h != null && h.state == wanted && h.until.isBefore(after)) {
+      if (h != null && identical(_lastPlayCommand[room.id]?.at, now) && h.until.isBefore(after)) {
         _playHolds[room.id] = (state: h.state, until: after, since: h.since);
       }
     } on Object {
-      if (_playHolds[room.id]?.state == wanted) {
-        _playHolds.remove(room.id);
+      if (identical(_lastPlayCommand[room.id]?.at, now)) {
+        _playHolds.remove(room.id); // only the latest tap's hold: a newer tap keeps its own
         _lastPlayCommand.remove(room.id);
       }
       state = state;
@@ -1335,7 +1344,14 @@ class PlaybackStore extends Notifier<PlaybackState> {
   }
 
   /// Player first; for Spotify, the Web API when the player can't.
-  Future<void> _transport(String roomId, String action, {int? positionMs, bool retryLink = false}) async {
+  Future<void> _transport(
+    String roomId,
+    String action, {
+    int? positionMs,
+    bool retryLink = false,
+    bool Function()? stillWanted,
+  }) async {
+    bool wanted() => stillWanted == null || stillWanted();
     final client = _client;
     if (client == null) {
       return;
@@ -1346,11 +1362,18 @@ class PlaybackStore extends Notifier<PlaybackState> {
         // can die on a socket iOS closed while suspended, so try once more.
         try {
           await _transportOnce(client, roomId, action, positionMs);
-        } on Object catch (e) {
-          if (e is ControlApiException && e.statusCode != null) {
-            rethrow; // the player answered: a real error, not a dead socket
+        } on http.ClientException {
+          // A dead socket (iOS closed it while suspended) is tried once more,
+          // only while this is still the latest tap. A timeout is not retried:
+          // it may have landed already, and sending it again seconds later
+          // could undo a newer tap.
+          if (!wanted()) {
+            rethrow;
           }
           await Future<void>.delayed(const Duration(milliseconds: 250));
+          if (!wanted()) {
+            return;
+          }
           await _transportOnce(client, roomId, action, positionMs);
         }
         return;
@@ -1358,7 +1381,7 @@ class PlaybackStore extends Notifier<PlaybackState> {
       await _transportOnce(client, roomId, action, positionMs);
     } on Object {
       final source = nowPlayingFor(roomId)?.source ?? state.activeRoom?.source;
-      if (source != 'spotify' || !ref.read(spotifyProvider).signedIn) {
+      if (source != 'spotify' || !ref.read(spotifyProvider).signedIn || !wanted()) {
         rethrow;
       }
       await ref.read(spotifyProvider.notifier).webControl(roomId, action, positionMs: positionMs);
