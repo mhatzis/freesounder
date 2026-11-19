@@ -267,6 +267,18 @@ if [[ $kind == bluetooth ]]; then
 		fi
 	fi
 fi
+# snapclient's own ALSA buffer: 80 ms by default, too little for bluealsa
+# (the BT link stalls for tens of ms while the shared radio serves Wi-Fi).
+PLAYER_ENV=${FREESOUNDER_PLAYER_ENV:-/run/freesounder/snapclient-player.env}
+player='SNAPCLIENT_PLAYER='
+if [[ $kind == bluetooth ]]; then
+	player="SNAPCLIENT_PLAYER=\"--player alsa:buffer_time=${FREESOUNDER_BT_BUFFER_MS:-400},fragments=${FREESOUNDER_BT_FRAGMENTS:-8}\""
+fi
+if [[ "$(cat "$PLAYER_ENV" 2>/dev/null)" != "$player" ]]; then
+	install -d "$(dirname "$PLAYER_ENV")"
+	printf '%s\n' "$player" > "$PLAYER_ENV"
+	changed=1
+fi
 echo "freesounder audio output: $pcm ($reason)"
 # Hotplug (udev): only bounce snapclient when the device actually changed.
 if [[ "${1:-}" == "--restart-if-changed" && $changed == 1 ]]; then

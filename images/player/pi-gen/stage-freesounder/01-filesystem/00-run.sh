@@ -113,6 +113,9 @@ if [ -f "${CMDLINE}" ]; then
 	sed -i -e 's/[[:space:]]*cfg80211\.ieee80211_regdom=[^[:space:]]*//g' \
 		-e "1s/\$/ cfg80211.ieee80211_regdom=${WIFI_COUNTRY}/" "${CMDLINE}"
 fi
+install -d "${ROOTFS_DIR}/etc/NetworkManager/conf.d"
+install -m 0644 files/etc/NetworkManager/conf.d/20-freesounder-wifi-powersave.conf \
+	"${ROOTFS_DIR}/etc/NetworkManager/conf.d/20-freesounder-wifi-powersave.conf"
 install -d "${ROOTFS_DIR}/var/lib/NetworkManager"
 printf '[main]\nWirelessEnabled=true\n' > "${ROOTFS_DIR}/var/lib/NetworkManager/NetworkManager.state"
 install -d "${ROOTFS_DIR}/var/lib/systemd/rfkill"

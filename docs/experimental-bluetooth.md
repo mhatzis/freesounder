@@ -37,6 +37,20 @@ It lives only on `exp/bt-transmitter`, so it can be dropped easily.
 - **BLE setup:** Improv BLE setup is unchanged. The adapter is only made
   pairable while a speaker is being paired.
 
+## Dropouts (patchy sound)
+
+- snapclient plays to Bluetooth with a 400 ms ALSA buffer in 8 periods
+  (`--player alsa:buffer_time=400,fragments=8`, written by
+  `select-audio-output` to `/run/freesounder/snapclient-player.env`); the
+  default 80 ms is too short for the Bluetooth link's stalls.
+- bluealsa runs its IO threads real-time (`--io-rt-priority=40`).
+- Wi-Fi power saving is off (`/etc/NetworkManager/conf.d/20-freesounder-wifi-powersave.conf`).
+- Wi-Fi on 2.4 GHz shares the Pi's radio with Bluetooth. Use 5 GHz Wi-Fi or
+  Ethernet where you can.
+- Diagnostics → `audio.link`: Wi-Fi band/signal/power save, the Bluetooth
+  RSSI (`btmgmt conn-info`), the transport (codec, rate), and counts of
+  snapclient ALSA underruns versus network gaps.
+
 ## API (per room, forwarded to the room's player)
 
 | Method | Path | Body |

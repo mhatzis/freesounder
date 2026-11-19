@@ -313,6 +313,7 @@ def _select(
         "FREESOUNDER_BT_OUTPUT": str(tmp_path / "bt-output"),
         "FREESOUNDER_BLUEALSA_PCMS": str(tmp_path / "pcms"),
         "FREESOUNDER_BLUEALSA_INFO": str(tmp_path / "info"),
+        "FREESOUNDER_PLAYER_ENV": str(tmp_path / "player.env"),
         "FREESOUNDER_UPTIME": "999",
     }
     (tmp_path / "info").write_text(info)
@@ -346,6 +347,15 @@ def test_select_records_the_transport_params(tmp_path: Path) -> None:
     # Not configured yet: still picked, with safe defaults.
     got = _select(tmp_path, f"mac={SPEAKER}\nenabled=1\n", CONNECTED, "Format: S16_LE\n")
     assert got["kind"] == "bluetooth" and got["rate"] == "44100"
+
+
+@needs_bash
+def test_select_gives_snapclient_a_bigger_buffer_for_bluetooth(tmp_path: Path) -> None:
+    _select(tmp_path, f"mac={SPEAKER}\nenabled=1\n", CONNECTED)
+    env = (tmp_path / "player.env").read_text()
+    assert env == 'SNAPCLIENT_PLAYER="--player alsa:buffer_time=400,fragments=8"\n'
+    _select(tmp_path, f"mac={SPEAKER}\nenabled=0\n", CONNECTED)
+    assert (tmp_path / "player.env").read_text() == "SNAPCLIENT_PLAYER=\n"
 
 
 @needs_bash

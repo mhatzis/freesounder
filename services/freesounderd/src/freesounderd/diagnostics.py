@@ -259,7 +259,9 @@ async def audio_info() -> dict[str, Any]:
     except Exception:  # noqa: BLE001 - diagnostics must not fail
         button = "?"
     kernel = await _run("journalctl", "-k", "-b", "--no-pager", "-q", "-o", "cat")
+    link = await link_info(read("/etc/freesounder/bt-output"))
     return {
+        "link": link,
         "output": out_kv,
         "dac_choice": read("/etc/freesounder/dac").strip(),
         "detect": read_json(Path("/run/freesounder/audio-detect.json")),
@@ -289,3 +291,43 @@ async def audio_info() -> dict[str, Any]:
             )
         ).splitlines(),
     }
+
+
+# snapclient log lines: local ALSA underruns (the Bluetooth/ALSA side could not
+# keep up) versus chunks that arrived late or not at all (the network side).
+XRUN_RE = re.compile(r"xrun|underrun|broken pipe|EPIPE", re.I)
+NET_RE = re.compile(
+    r"no chunks|chunk.*(late|old|dropped)|playing silence|buffer.*empty|disconnect|reconnect",
+    re.I,
+)
+
+
+async def link_info(bt_output: str) -> dict[str, Any]:
+    """Wi-Fi band/signal/power save and the Bluetooth link, to tell a Wi-Fi
+    dropout from a Bluetooth one."""
+
+    mac = ""
+    for line in bt_output.splitlines():
+        if line.startswith("mac="):
+            mac = line.split("=", 1)[1].strip().upper()
+    wifi = (await _run("iw", "dev", "wlan0", "link")).splitlines()
+    snap = await _run(
+        "journalctl", "-b", "-u", "snapclient.service", "--no-pager", "-q", "-o", "cat"
+    )
+    out: dict[str, Any] = {
+        "wifi_link": [
+            ln.strip()
+            for ln in wifi
+            if re.search(r"freq|signal|bitrate|Connected|Not connected", ln)
+        ],
+        "wifi_power_save": (await _run("iw", "dev", "wlan0", "get", "power_save")).strip(),
+        "snapclient_alsa_underruns": sum(1 for ln in snap.splitlines() if XRUN_RE.search(ln)),
+        "snapclient_network_gaps": sum(1 for ln in snap.splitlines() if NET_RE.search(ln)),
+        "snapclient_restarts": snap.count("Started snapclient") if snap else 0,
+    }
+    if re.fullmatch(r"([0-9A-F]{2}:){5}[0-9A-F]{2}", mac):
+        info = await _run("btmgmt", "conn-info", mac)
+        out["bt_conn_info"] = info.strip().splitlines()[-3:]
+        pcm = f"/org/bluealsa/hci0/dev_{mac.replace(':', '_')}/a2dpsrc/sink"
+        out["bt_transport"] = (await _run("bluealsa-cli", "info", pcm)).strip().splitlines()
+    return out
