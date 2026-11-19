@@ -45,6 +45,8 @@ class FakeSnapserver:
             result = {"server": {"groups": self.groups, "streams": self.streams}}
         elif method == "Client.SetVolume":
             self.clients[params["id"]]["config"]["volume"] = params["volume"]
+        elif method == "Client.SetLatency":
+            self.clients[params["id"]]["config"]["latency"] = params["latency"]
         elif method == "Group.SetStream":
             for group in self.groups:
                 if group["id"] == params["id"]:

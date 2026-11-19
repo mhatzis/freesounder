@@ -12,8 +12,14 @@ systemctl disable shairport-sync.service 2>/dev/null || true
 systemctl mask shairport-sync.service 2>/dev/null || true
 # AirPlay 2 timing helper (only present with the AirPlay 2 build).
 systemctl enable nqptp.service 2>/dev/null || true
-# Onboard Bluetooth for Improv Wi-Fi setup. No A2DP / Bluetooth audio is registered.
+# Onboard Bluetooth for Improv Wi-Fi setup.
 systemctl enable bluetooth.service || true
+# EXPERIMENTAL (exp/bt-transmitter): bluealsa (A2DP source for a Bluetooth
+# speaker) is started by freesounderd only once a speaker is set up in the app.
+# bluealsa-aplay (A2DP sink playback) is never used.
+systemctl disable bluealsa.service 2>/dev/null || true
+systemctl disable bluealsa-aplay.service 2>/dev/null || true
+systemctl mask bluealsa-aplay.service 2>/dev/null || true
 systemctl enable NetworkManager.service || true
 systemctl enable freesounder-ble-provisioning.service
 systemctl enable freesounder-boot-doctor.timer

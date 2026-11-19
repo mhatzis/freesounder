@@ -24,8 +24,10 @@ import httpx
 from freesounderd import __version__, peers
 from freesounderd.artwork import AirplayArt, ArtLookup, split_stream_title
 from freesounderd.audio import audio_state, play_tone
+from freesounderd.bluetooth import BluezBackend, BtOutput
 from freesounderd.config import DaemonSettings
 from freesounderd.discovery import Discovery, local_ip
+from freesounderd.dsp import read_audio_output
 from freesounderd.radio import RadioBrowser, RadioPlayer
 from freesounderd.snapcast import (
     SOURCE_STREAM,
@@ -183,6 +185,8 @@ class Engine:
         self._server_status: dict[str, Any] = {}
         self._spotify_status: dict[str, Any] | None = None
         self._net = "unknown"
+        # EXPERIMENTAL Bluetooth speaker output (exp/bt-transmitter); set in start().
+        self.bt: BtOutput | None = None
         self._net_iface: str | None = None
         self._net_at = -NET_PROBE_EVERY
         self._model = board_model()
@@ -519,9 +523,58 @@ class Engine:
             capped = apply_amp_default(current, detected_hat())
             if capped is not current:
                 self.store.save_settings(capped)
+        if self.bt is None and self.settings.manage_system:
+            self.bt = BtOutput(
+                BluezBackend(),
+                reselect=self._reselect_output,
+                unit=self._bt_unit,
+                on_change=self.kick,
+                model=self._model,
+                net=lambda: self._net,
+            )
+        if self.bt is not None:
+            self.bt.start()
         self._task = asyncio.create_task(self._loop())
 
+    async def _bt_unit(self, action: str, unit: str) -> None:
+        if action == "start":
+            await self.system.ensure_active(unit)
+        else:
+            await self.system.ensure_stopped(unit)
+
+    async def _reselect_output(self) -> None:
+        """Re-pick the ALSA output (Bluetooth speaker or wired) and bounce
+        snapclient only if it changed."""
+
+        if not self.settings.manage_system:
+            self.system.calls.append(("select-audio-output",))
+            return
+        proc = await asyncio.create_subprocess_exec(
+            "/usr/lib/freesounder/select-audio-output",
+            "--restart-if-changed",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=30)
+        except TimeoutError:
+            proc.kill()
+        self.system._active_cache.pop(SNAPCLIENT_UNIT, None)
+
+    def output_kind(self) -> str:
+        path = self.settings.config_dir / "audio-output"
+        return self.store._cached("audio-output", (path,), lambda: read_audio_output(path))["kind"]
+
+    def output_latency_ms(self) -> int:
+        """Snapcast client latency for the active output (only Bluetooth needs one)."""
+
+        if self.bt is not None and self.output_kind() == "bluetooth":
+            return self.bt.latency_ms()
+        return 0
+
     async def stop(self) -> None:
+        if self.bt is not None:
+            await self.bt.stop()
         if self._task:
             self._task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -1115,6 +1168,9 @@ class Engine:
                 if vol.get("percent") != percent or bool(vol.get("muted")) != muted:
                     await rpc.set_client_volume(self.id, percent, muted)
                 self._applied_volume = (percent, muted)
+                latency = self.output_latency_ms()
+                if int((client.get("config") or {}).get("latency") or 0) != latency:
+                    await rpc.set_client_latency(self.id, latency)
         except SnapcastError:
             return
 

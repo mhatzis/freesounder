@@ -1,6 +1,9 @@
 #!/bin/bash
 # Pick the ALSA device the `freesounder` chain plays to, so snapclient can
 # always open a device:
+#   0. EXPERIMENTAL (exp/bt-transmitter): the Bluetooth speaker chosen in the
+#      app (/etc/freesounder/bt-output), only while bluealsa has its A2DP PCM
+#      (i.e. it is connected); otherwise the wired choice below,
 #   1. a DAC/HAT or USB card (anything that is not vc4-hdmi),
 #   2. the HDMI port with a display connected (Pi 5: vc4hdmi0 = HDMI0,
 #      vc4hdmi1 = HDMI1; there is no analog jack),
@@ -95,8 +98,40 @@ unmute_card() {
 			amixer -q -c "$c" sset "$control" unmute 2>/dev/null || true
 	done < <(amixer -c "$c" scontrols 2>/dev/null)
 }
-if [[ $kind != null && -z "${FREESOUNDER_NO_RENDER:-}" ]]; then
+if [[ $kind != null && $kind != bluetooth && -z "${FREESOUNDER_NO_RENDER:-}" ]]; then
 	unmute_card "$card"
+fi
+
+# Bluetooth speaker (A2DP source via bluealsa). The wired pick above stays the
+# fallback whenever the speaker is not connected.
+BT_OUTPUT=${FREESOUNDER_BT_OUTPUT:-/etc/freesounder/bt-output}
+bt_mac=""
+bt_enabled=0
+bt_name=""
+if [[ -r "$BT_OUTPUT" ]]; then
+	while IFS='=' read -r key value; do
+		case "$key" in
+			mac) bt_mac=${value^^} ;;
+			enabled) bt_enabled=$value ;;
+			name) bt_name=$value ;;
+		esac
+	done < "$BT_OUTPUT"
+fi
+bluealsa_pcms() {
+	if [[ -n "${FREESOUNDER_BLUEALSA_PCMS:-}" ]]; then
+		cat "$FREESOUNDER_BLUEALSA_PCMS" 2>/dev/null
+	elif command -v bluealsa-cli >/dev/null 2>&1; then
+		timeout 5 bluealsa-cli list-pcms 2>/dev/null
+	fi
+}
+if [[ "$bt_enabled" == 1 && "$bt_mac" =~ ^([0-9A-F]{2}:){5}[0-9A-F]{2}$ ]]; then
+	if bluealsa_pcms | grep -qi "/dev_${bt_mac//:/_}/a2dpsrc"; then
+		pcm="bluealsa:DEV=${bt_mac},PROFILE=a2dp"
+		kind=bluetooth
+		reason="Bluetooth speaker ${bt_name:-$bt_mac} (experimental)"
+	else
+		reason="${reason}; Bluetooth speaker ${bt_name:-$bt_mac} not connected"
+	fi
 fi
 
 new=$(printf 'pcm=%s\ncard=%s\nkind=%s\nreason=%s' "$pcm" "$card" "$kind" "$reason")

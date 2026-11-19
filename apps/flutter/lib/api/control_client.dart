@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+import '../models/bluetooth_output.dart';
 import '../models/now_playing.dart';
 import '../models/player_settings.dart';
 import '../models/radio_station.dart';
@@ -136,6 +137,40 @@ class ControlApiClient {
     final data = await _send('GET', '/api/v2/rooms/$playerId/audio');
     return (data as Map?)?.cast<String, dynamic>() ?? const {};
   }
+
+  // ------------------------------------------- EXPERIMENTAL: Bluetooth speaker output
+  Future<BtOutputStatus> bluetoothStatus(String playerId) async =>
+      BtOutputStatus.fromJson(await _getJson('/api/v2/rooms/$playerId/bluetooth') as Map<String, dynamic>);
+
+  /// Classic Bluetooth discovery on the player (about 8 s).
+  Future<List<BtSpeaker>> bluetoothScan(String playerId, {double seconds = 8}) async {
+    final data = await _send('POST', '/api/v2/rooms/$playerId/bluetooth/scan', {'seconds': seconds}, true);
+    final list = (data as Map?)?['speakers'];
+    return [
+      if (list is List)
+        for (final item in list) BtSpeaker.fromJson(Map<String, dynamic>.from(item as Map)),
+    ];
+  }
+
+  /// Pair (if needed), trust, connect and use the speaker as the room's output.
+  Future<BtOutputStatus> bluetoothConnect(String playerId, BtSpeaker speaker) async => BtOutputStatus.fromJson(
+        await _send('POST', '/api/v2/rooms/$playerId/bluetooth/connect', {'mac': speaker.mac, 'name': speaker.name}, true)
+            as Map<String, dynamic>,
+      );
+
+  Future<BtOutputStatus> bluetoothUse(String playerId, {required bool enabled}) async => BtOutputStatus.fromJson(
+        await _send('POST', '/api/v2/rooms/$playerId/bluetooth/output', {'enabled': enabled}, true)
+            as Map<String, dynamic>,
+      );
+
+  Future<BtOutputStatus> bluetoothLatency(String playerId, int latencyMs) async => BtOutputStatus.fromJson(
+        await _send('POST', '/api/v2/rooms/$playerId/bluetooth/latency', {'latency_ms': latencyMs})
+            as Map<String, dynamic>,
+      );
+
+  Future<BtOutputStatus> bluetoothForget(String playerId) async => BtOutputStatus.fromJson(
+        await _send('DELETE', '/api/v2/rooms/$playerId/bluetooth', null, true) as Map<String, dynamic>,
+      );
 
   Future<void> seek(String roomOrGroupId, int positionMs) =>
       _send('POST', '/api/v2/groups/$roomOrGroupId/seek', {'position_ms': positionMs});

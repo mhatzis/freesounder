@@ -64,7 +64,13 @@ if [[ -d /var/lib/freesounder ]]; then
 fi
 rm -f /etc/freesounder/name /etc/freesounder/configured /etc/freesounder/hostname \
 	/etc/freesounder/player-id /etc/freesounder/audio-output /etc/freesounder/ma-token \
-	/etc/freesounder/ma-admin.json
+	/etc/freesounder/ma-admin.json /etc/freesounder/bt-output
+
+# EXPERIMENTAL Bluetooth speaker output: forget paired speakers (BlueZ bonds).
+systemctl stop bluealsa.service >/dev/null 2>&1 || true
+for dev in /var/lib/bluetooth/*/[0-9A-F][0-9A-F]:*; do
+	[[ -d "$dev" ]] && rm -rf "$dev"
+done
 
 # Wi-Fi: every saved connection (the image ships none).
 if [[ $early -eq 0 ]] && command -v nmcli >/dev/null; then

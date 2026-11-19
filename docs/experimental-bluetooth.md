@@ -1,0 +1,49 @@
+# Experimental: Bluetooth speaker output (branch `exp/bt-transmitter`)
+
+This is a spin-off. A player can send its room's audio to a Bluetooth
+speaker (A2DP source) instead of its wired output (HDMI, DAC or amp board).
+It lives only on `exp/bt-transmitter`, so it can be dropped easily.
+
+## How it works
+
+- **Player:** `bluez-alsa-utils` (bluealsa) runs only the `a2dp-source`
+  profile. It is not started at boot. freesounderd starts it once a speaker
+  is chosen.
+- **Output:** `select-audio-output` picks
+  `bluealsa:DEV=<mac>,PROFILE=a2dp` when `/etc/freesounder/bt-output` is
+  enabled and bluealsa has a PCM for that speaker. Otherwise it uses the
+  wired output. The fsdsp chain (EQ, limiter) and the room volume still
+  apply. snapclient restarts when the output changes.
+- **freesounderd (`bluetooth.py`):**
+  - Scans BR/EDR only, and pairs with a one-shot agent that accepts just
+    the chosen speaker.
+  - Trusts and connects the speaker, then reconnects with backoff
+    (10 s → 2 min) on boot or when the speaker comes back.
+  - Falls back to wired while the speaker is away.
+- **Latency:** Bluetooth adds a delay. The room's Snapcast client latency is
+  set to the speaker latency, 200 ms by default. You can change it in the
+  app from 0 to 500 ms, and the API accepts up to 1000 ms. Wired output uses
+  0.
+- **BLE setup:** Improv BLE setup is unchanged. The adapter is only made
+  pairable while a speaker is being paired.
+
+## API (per room, forwarded to the room's player)
+
+| Method | Path | Body |
+|---|---|---|
+| GET | `/api/v2/rooms/{id}/bluetooth` | status |
+| POST | `/api/v2/rooms/{id}/bluetooth/scan` | `{"seconds": 8}` |
+| POST | `/api/v2/rooms/{id}/bluetooth/connect` | `{"mac": "AA:BB:…", "name": "…"}` |
+| POST | `/api/v2/rooms/{id}/bluetooth/output` | `{"enabled": true}` (false = wired) |
+| POST | `/api/v2/rooms/{id}/bluetooth/latency` | `{"latency_ms": 200}` |
+| DELETE | `/api/v2/rooms/{id}/bluetooth` | forget the speaker |
+
+## Known limits
+
+- **Codec:** Debian's bluealsa has no AAC (fdk-aac is non-free), so speakers
+  use SBC. aptX and LDAC are built in, but only some speakers support them.
+- **Radio:** The Pi Zero 2 W and Pi 3 share one 2.4 GHz radio for Wi-Fi and
+  Bluetooth, so audio may drop out. 5 GHz Wi-Fi (Pi 3B+, 4 and 5) or
+  Ethernet helps. The app shows a warning on those models.
+- **Speakers:** Each room has one speaker. Speakers that need a PIN other
+  than 0000 are not supported.

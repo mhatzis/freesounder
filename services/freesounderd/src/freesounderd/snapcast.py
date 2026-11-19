@@ -48,6 +48,11 @@ class SnapcastRpc:
             {"id": client_id, "volume": {"muted": muted, "percent": int(percent)}},
         )
 
+    async def set_client_latency(self, client_id: str, latency_ms: int) -> None:
+        """Extra output delay the client compensates for (e.g. a Bluetooth speaker)."""
+
+        await self.call("Client.SetLatency", {"id": client_id, "latency": int(latency_ms)})
+
     async def set_group_stream(self, group_id: str, stream_id: str) -> None:
         await self.call("Group.SetStream", {"id": group_id, "stream_id": stream_id})
 

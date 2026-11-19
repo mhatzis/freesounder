@@ -10,6 +10,7 @@ import '../api/errors.dart';
 import '../app_version.dart';
 import '../models/player_settings.dart';
 import '../state/playback_store.dart';
+import 'bluetooth_output_section.dart';
 
 const dacOptions = <(String, String)>[
   ('auto', 'Automatic (HDMI, USB or a HAT that identifies itself)'),
@@ -403,6 +404,10 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
                         style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
                       ),
                     ],
+                  ],
+                  if (ref.read(playbackProvider.notifier).client case final client?) ...[
+                    const SizedBox(height: 20),
+                    BluetoothOutputSection(api: ClientBtOutputApi(client, widget.roomId)),
                   ],
                   const SizedBox(height: 16),
                   OutlinedButton.icon(

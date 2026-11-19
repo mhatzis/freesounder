@@ -1,6 +1,6 @@
 [project]
 name = "freesounderd"
-version = "0.6.8"
+version = "0.6.8+btexp"
 description = "FreeSounder player daemon: one equal service per speaker (setup, rooms, groups, sources, DSP)."
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -13,6 +13,7 @@ dependencies = [
   "pydantic-settings>=2.6",
   "zeroconf>=0.136",
   "httpx>=0.27",
+  "dbus-next>=0.2.3",
 ]
 
 [dependency-groups]
