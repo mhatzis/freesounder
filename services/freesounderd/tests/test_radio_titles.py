@@ -231,3 +231,36 @@ async def test_titles_come_from_the_playing_stream(tmp_path) -> None:
         await radio.stop()
     data = out.read_bytes()
     assert data and set(data) == {0xAA}, "only audio reaches ffmpeg"
+
+
+async def test_stderr_reader_survives_progress_flood() -> None:
+    """ffmpeg's "\\r" progress lines must never kill the stderr reader.
+
+    With readline(), 64 KiB without "\\n" raised ValueError, the reader
+    task died and the full pipe later blocked ffmpeg (radio went silent).
+    """
+
+    script = (
+        "import sys\n"
+        "w = sys.stderr.buffer\n"
+        "for i in range(3000):\n"
+        "    w.write(b'size=  %d KiB time=00:00:01 bitrate=1411.2kbits/s speed=1x    \\r' % i)\n"
+        "w.write(b'x' * 100000 + b'\\n')\n"
+        'w.write(b"    StreamTitle     : Artist - Song\\n")\n'
+        "w.flush()\n"
+    )
+    import sys
+
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable, "-c", script, stderr=asyncio.subprocess.PIPE
+    )
+    radio = RadioPlayer("ffmpeg", "/dev/null", managed=True)
+    await asyncio.wait_for(radio._read_stderr(proc), timeout=10)
+    await proc.wait()
+    assert radio.stream_title == "Artist - Song"
+
+
+def test_ffmpeg_commands_have_no_progress_output() -> None:
+    radio = RadioPlayer("ffmpeg", "/tmp/x.fifo", managed=True)
+    assert "-nostats" in radio.command("http://example.invalid/s")
+    assert "-nostats" in radio.pipe_command()

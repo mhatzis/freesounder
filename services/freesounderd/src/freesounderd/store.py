@@ -34,6 +34,14 @@ def _read_text(path: Path) -> str | None:
     return text or None
 
 
+def _stat_key(path: Path) -> tuple[int, int, int] | None:
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size, st.st_ino)
+
+
 def _write_atomic(path: Path, text: str, mode: int = 0o644) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
@@ -54,7 +62,7 @@ class Store:
     @property
     def player_id(self) -> str:
         path = self.settings.config_dir / "player-id"
-        existing = _read_text(path)
+        existing = self._cached("player-id", (path,), lambda: _read_text(path))
         if existing:
             return existing
         value = str(uuid.uuid4())
@@ -67,6 +75,10 @@ class Store:
         return self.settings.state_dir / "household.json"
 
     def household(self) -> HouseholdSecret | None:
+        found = self._cached("household", (self.household_path,), self._load_household)
+        return None if found is None else found.model_copy()
+
+    def _load_household(self) -> HouseholdSecret | None:
         try:
             raw = json.loads(self.household_path.read_text(encoding="utf-8"))
             return HouseholdSecret.model_validate(raw)
@@ -181,6 +193,30 @@ class Store:
         return self.settings.state_dir / "settings.json"
 
     def load_settings(self) -> PlayerSettings:
+        # The engine reads settings many times per tick; only parse the
+        # files again when one of them changed (mtime, size or inode).
+        return self._cached("settings", self._settings_files(), self._load_settings).model_copy()
+
+    def _cached(self, name: str, paths: tuple[Path, ...], load: Any) -> Any:
+        """``load()``, re-run only when one of ``paths`` changed on disk."""
+
+        key = tuple(_stat_key(p) for p in paths)
+        cache: dict[str, tuple[Any, Any]] = self.__dict__.setdefault("_file_cache", {})
+        hit = cache.get(name)
+        if hit is not None and hit[0] == key:
+            return hit[1]
+        value = load()
+        cache[name] = (key, value)
+        return value
+
+    def _settings_files(self) -> tuple[Path, Path, Path]:
+        return (
+            self.settings.config_dir / "name",
+            self.settings.config_dir / "dac",
+            self.settings_path(),
+        )
+
+    def _load_settings(self) -> PlayerSettings:
         name = _read_text(self.settings.config_dir / "name") or "FreeSounder"
         dac = _read_text(self.settings.config_dir / "dac") or "auto"
         if dac not in DAC_CHOICES:

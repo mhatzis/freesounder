@@ -576,8 +576,13 @@ String formatDiagnostics(Map<String, dynamic> d) {
         ? DateTime.fromMillisecondsSinceEpoch(((e['time'] as num) * 1000).round()).toLocal().toString().substring(0, 19)
         : '?';
     final up = e['uptime'] is num ? ' up ${((e['uptime'] as num) / 60).toStringAsFixed(1)} min' : '';
-    return '$t$up  ${e['throttled']}  ${e['ext5v'] ?? '?'} V  ${e['temp'] ?? '?'}°C';
+    final mhz = e['cpu_mhz'] != null ? '  ${e['cpu_mhz']} MHz' : '';
+    final top = topLine(e['top']);
+    return '$t$up  ${e['throttled']}  ${e['ext5v'] ?? '?'} V  ${e['temp'] ?? '?'}°C$mhz'
+        '${top.isEmpty ? '' : '  top: $top'}';
   }
+
+  String load(Object? v) => v is List ? v.map((x) => x is num ? x.toStringAsFixed(2) : '$x').join(' / ') : '?';
 
   return [
     'Previous boot ended: ${d['previous_boot_ended'] ?? 'unknown'}',
@@ -587,6 +592,10 @@ String formatDiagnostics(Map<String, dynamic> d) {
       'Input voltage then: ${prev['ext5v_last'] ?? '?'} V, lowest ${prev['ext5v_min'] ?? '?'} V',
       'Power flags then: ${prev['throttled'] ?? '?'}'
           '${lines(prev['throttled_flags']).isEmpty ? '' : ' (${lines(prev['throttled_flags']).join(', ')})'}',
+      if (prev['temp'] != null || prev['load'] != null)
+        'CPU then: ${prev['temp'] ?? '?'}°C, ${prev['cpu_mhz'] ?? '?'} MHz'
+            '${prev['clock_capped'] == true ? ' (capped)' : ''}, load ${load(prev['load'])}',
+      if (topLine(prev['top']).isNotEmpty) 'Top processes then: ${topLine(prev['top'])}',
     ],
     if (d['pmic_reset'] != null)
       'Pi 5 PMIC reset reason: ${d['pmic_reset']} (${reset.isEmpty ? 'none' : reset.join(', ')})',
@@ -600,6 +609,12 @@ String formatDiagnostics(Map<String, dynamic> d) {
       'Input voltage: ${d['input_voltage']}'
           '${d['input_voltage_min_this_boot'] != null ? ', lowest this boot ${d['input_voltage_min_this_boot']} V' : ''}',
     if (d['temperature'] != null) 'Temperature: ${d['temperature']}',
+    if (d['cpu_load'] != null) 'CPU load (1/5/15 min): ${load(d['cpu_load'])}${d['cpu_busy'] != null ? ', busy ${d['cpu_busy']}' : ''}',
+    if (d['cpu_mhz'] != null)
+      'CPU clock: ${d['cpu_mhz']} MHz (max ${d['cpu_max_mhz'] ?? '?'} of ${d['cpu_hw_max_mhz'] ?? '?'} MHz, '
+          '${d['cpu_governor'] ?? '?'}${d['cpu_clock_capped'] == true ? ', capped for heat' : ''}'
+          '${d['cpu_mode'] != null && d['cpu_mode'] != 'auto' ? ', mode ${d['cpu_mode']}' : ''})',
+    if (topLine(d['top_processes']).isNotEmpty) 'Top processes: ${topLine(d['top_processes'])}',
     if (d['boots_in_journal'] != null) 'Boots in journal: ${d['boots_in_journal']}',
     if (history.isNotEmpty) ...['', 'Power flag history:', ...history.map(hist)],
     if (lines(d['power_log']).isNotEmpty) ...['', 'Power & button log:', ...lines(d['power_log'])],
@@ -614,4 +629,13 @@ String formatDiagnostics(Map<String, dynamic> d) {
       ...lines(d['previous_boot_tail']),
     ],
   ].join('\n');
+}
+
+/// "snapserver 3.1%, ffmpeg 1.2%" from the daemon's top-process list (% of one core).
+String topLine(Object? v) {
+  if (v is! List) return '';
+  return [
+    for (final p in v)
+      if (p is Map) '${p['name'] ?? '?'} ${p['cpu'] ?? '?'}%',
+  ].join(', ');
 }

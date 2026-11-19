@@ -6,3 +6,5 @@ Wants=freesounder-ble-provisioning.service
 [Service]
 Type=oneshot
 ExecStart=/usr/lib/freesounder/run-boot-doctor
+Nice=10
+IOSchedulingClass=idle

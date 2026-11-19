@@ -26,7 +26,7 @@ class System:
         # times (~50 ms each on a Pi), holding the engine lock that room
         # controls wait for. start/stop/restart invalidate it.
         self._active_cache: dict[str, tuple[float, bool]] = {}
-        self.active_ttl = 10.0
+        self.active_ttl = 30.0
 
     async def systemctl(self, *args: str) -> int:
         self.calls.append(("systemctl", *args))

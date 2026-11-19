@@ -1,9 +1,11 @@
 [Unit]
-Description=Run FreeSounder doctor after boot and every 5 minutes
+Description=Run FreeSounder doctor after boot and every 30 minutes
 
 [Timer]
 OnBootSec=1min
-OnUnitActiveSec=5min
+# Was 5 min: each run spawns ~15 processes (8 journalctl, Python, curl) and
+# rewrites a file on the FAT boot partition; 30 min is plenty for a report.
+OnUnitActiveSec=30min
 AccuracySec=5s
 Persistent=false
 Unit=freesounder-boot-doctor.service

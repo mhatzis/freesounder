@@ -27,6 +27,7 @@ FALLBACK_SERVERS = (
     "fi1.api.radio-browser.info",
 )
 _STREAM_TITLE = re.compile(r"StreamTitle\s*:\s*(.*)$")
+_STDERR_LINE_MAX = 8192
 
 
 def _discover_servers() -> list[str]:
@@ -346,6 +347,9 @@ class RadioPlayer:
             self.ffmpeg,
             "-nostdin",
             "-hide_banner",
+            # No progress line: it is noise, and ffmpeg rewrites it with
+            # "\r" about once a second for as long as the station plays.
+            "-nostats",
             "-loglevel",
             "info",
             "-reconnect",
@@ -367,8 +371,10 @@ class RadioPlayer:
         return [
             self.ffmpeg,
             "-hide_banner",
+            "-nostats",
+            # Titles come from our own ICY demuxer here, so only warnings.
             "-loglevel",
-            "info",
+            "warning",
             "-i",
             "pipe:0",
             *self._output(),
@@ -501,15 +507,37 @@ class RadioPlayer:
                 await stream.close()
 
     async def _read_stderr(self, proc: asyncio.subprocess.Process) -> None:
+        """Drain ffmpeg's stderr for as long as it runs.
+
+        Reads chunks and splits on both "\r" and "\n": a ``readline()``
+        loop dies with ValueError once 64 KiB arrive without a newline
+        (ffmpeg's progress line only uses "\r"), and then the full pipe
+        blocks ffmpeg. Overlong lines are cut, never fatal.
+        """
+
         assert proc.stderr is not None
+        pending = b""
         while True:
-            line = await proc.stderr.readline()
-            if not line:
+            chunk = await proc.stderr.read(4096)
+            if not chunk:
                 break
-            text = line.decode(errors="replace").strip()
-            match = _STREAM_TITLE.search(text)
-            if match:
-                self._set_title(match.group(1).strip() or None)
+            pending += chunk
+            *lines, pending = re.split(rb"[\r\n]", pending)
+            if len(pending) > _STDERR_LINE_MAX:
+                lines.append(pending)
+                pending = b""
+            for line in lines:
+                self._stderr_line(line)
+        if pending:
+            self._stderr_line(pending)
+
+    def _stderr_line(self, line: bytes) -> None:
+        text = line[:_STDERR_LINE_MAX].decode(errors="replace").strip()
+        if not text:
+            return
+        match = _STREAM_TITLE.search(text)
+        if match:
+            self._set_title(match.group(1).strip() or None)
 
     def _set_title(self, title: str | None) -> None:
         if title != self.stream_title:

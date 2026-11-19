@@ -69,18 +69,29 @@ class EngineError(Exception):
         self.detail = detail
 
 
-def net_kind() -> str:
-    """eth, wifi5, wifi24 or unknown, from the default route's interface."""
+NET_PROBE_EVERY = 60.0  # s between `iw link` probes on an unchanged route
 
-    iface = ""
+
+def default_iface() -> str | None:
+    """The default route's interface ("" if none, None if unreadable)."""
+
     try:
         with open("/proc/net/route", encoding="utf-8") as fh:
             for line in fh.readlines()[1:]:
                 parts = line.split()
                 if len(parts) > 2 and parts[1] == "00000000":
-                    iface = parts[0]
-                    break
+                    return parts[0]
     except OSError:
+        return None
+    return ""
+
+
+def net_kind(iface: str | None = None) -> str:
+    """eth, wifi5, wifi24 or unknown, from the default route's interface."""
+
+    if iface is None:
+        iface = default_iface()
+    if iface is None:
         return "unknown"
     if iface.startswith(("eth", "en")):
         return "eth"
@@ -172,6 +183,8 @@ class Engine:
         self._server_status: dict[str, Any] = {}
         self._spotify_status: dict[str, Any] | None = None
         self._net = "unknown"
+        self._net_iface: str | None = None
+        self._net_at = -NET_PROBE_EVERY
         self._model = board_model()
         self._task: asyncio.Task[None] | None = None
         self.notices: list[dict[str, Any]] = []
@@ -528,8 +541,25 @@ class Engine:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._kick.wait(), timeout=self.settings.poll_interval)
 
+    async def _refresh_net(self) -> None:
+        """Network kind, re-probed only when the route changes or every 60 s.
+
+        On Wi-Fi this runs `iw dev wlan0 link`; doing that every 2 s tick
+        cost a process spawn (and a Wi-Fi firmware query) each time.
+        """
+
+        iface = default_iface()
+        now = time.monotonic()
+        if iface == self._net_iface and now - self._net_at < NET_PROBE_EVERY:
+            return
+        self._net = await asyncio.to_thread(net_kind, iface)
+        self._net_iface, self._net_at = iface, now
+
     async def tick(self) -> None:
-        self._net = await asyncio.to_thread(net_kind) if self.settings.manage_system else "unknown"
+        if self.settings.manage_system:
+            await self._refresh_net()
+        else:
+            self._net = "unknown"
         await self.poll_peers()
         async with self._lock:
             if self.ready:

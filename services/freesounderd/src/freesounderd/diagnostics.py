@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from freesounderd.cpu import ProcSampler, ThermalGuard, freq_info, loadavg
 from freesounderd.power import STATE, boot_id, cpu_temp, ext5v, pi5_power_info, read_json
 from freesounderd.reset import decode_throttled
 
@@ -115,6 +116,10 @@ def describe_last_boot(last: Any) -> dict[str, Any] | None:
         if last.get("throttled")
         else [],
         "temp": last.get("temp"),
+        "load": last.get("load"),
+        "cpu_mhz": last.get("cpu_mhz"),
+        "clock_capped": last.get("clock_capped"),
+        "top": last.get("top") or [],
     }
 
 
@@ -173,6 +178,11 @@ async def collect(state: Path = STATE) -> dict[str, Any]:
             else f"stopped without a clean shutdown around {last['last_heartbeat']} "
             f"(up {last['uptime_at_end_min']} min)"
         )
+    sampler = ProcSampler()
+    sampler.sample()
+    await asyncio.sleep(1.0)
+    usage = sampler.sample() or {}
+    freq = freq_info()
     history = read_json(state / "power-history.json")
     hb = read_json(state / "heartbeat.json")
     volts = ext5v()
@@ -186,6 +196,16 @@ async def collect(state: Path = STATE) -> dict[str, Any]:
         "input_voltage_min_this_boot": (hb or {}).get("min_ext5v")
         if isinstance(hb, dict)
         else None,
+        "cpu_load": loadavg(),
+        "cpu_busy": f"{usage['cpu_busy']}%" if "cpu_busy" in usage else None,
+        "cpu_mhz": freq.get("cur_mhz"),
+        "cpu_max_mhz": freq.get("max_mhz"),
+        "cpu_hw_max_mhz": freq.get("hw_max_mhz"),
+        "cpu_governor": freq.get("governor"),
+        "cpu_clock_capped": ThermalGuard().capped if freq else None,
+        "cpu_mode": ThermalGuard().mode() if freq else None,
+        "top_processes": usage.get("top", []),
+        "heartbeat_top": (hb or {}).get("top", []) if isinstance(hb, dict) else [],
         **pi5_power_info(),
         "power_history": (history if isinstance(history, list) else [])[-20:],
         "boots_in_journal": len(json.loads(boots_json))

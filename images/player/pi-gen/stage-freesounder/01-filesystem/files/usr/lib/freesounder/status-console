@@ -1,5 +1,6 @@
 #!/bin/bash
-# HDMI status screen on tty1. No login prompt; refreshes every few seconds.
+# HDMI status screen on tty1. No login prompt; refreshes every 15 s while a
+# screen is connected (and only checks for one, cheaply, when none is).
 set +e
 exec >/dev/tty1 2>&1
 printf '\033[?25l' 2>/dev/null
@@ -241,14 +242,36 @@ reset_line() {
 	fi
 }
 
+# Is anything plugged into an HDMI port? Without a screen, nobody sees tty1,
+# and a full refresh spawns about 15 processes (4 Pythons, systemctl,
+# journalctl, nmcli, busctl...), which costs a Pi 5 roughly a tenth of a core.
+# No KMS connector info at all (fbdev only): assume a screen.
+screen_connected() {
+	local found=0 st
+	for st in /sys/class/drm/card*-HDMI-A-*/status; do
+		[[ -r "$st" ]] || continue
+		found=1
+		[[ "$(<"$st")" == connected ]] && return 0
+	done
+	((found == 0))
+}
+
+REFRESH=15     # seconds between refreshes with a screen attached
+NO_SCREEN=30   # seconds between checks for a screen
+last=""
+first=1
 while true; do
+	if ((first == 0)) && ! screen_connected; then
+		last=""
+		sleep "$NO_SCREEN"
+		continue
+	fi
+	first=0
 	host=$(hostname -s 2>/dev/null || echo fs-new)
 	pretty=$(room_name)
 	addr=$(ips)
 	[[ -n "$addr" ]] || addr="no network"
-	clear 2>/dev/null
-	printf '\033[H'
-	cat <<STATUS
+	screen=$(cat <<STATUS
 FreeSounder
 -----------
 $(reset_line)
@@ -278,5 +301,12 @@ Factory reset: press the power button 5 times quickly (Pi 5), tap a GPIO3
 button 5 times, or see docs/reset.md (power-cycle 5 times).
 Doctor report: /boot/firmware/freesounder-doctor.txt
 STATUS
-	sleep 5
+)
+	# Redraw only when something changed (no flicker, no console work).
+	if [[ "$screen" != "$last" ]]; then
+		clear 2>/dev/null
+		printf '\033[H%s\n' "$screen"
+		last=$screen
+	fi
+	sleep "$REFRESH"
 done

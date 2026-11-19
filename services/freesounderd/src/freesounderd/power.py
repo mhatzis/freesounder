@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from freesounderd.cpu import TOP_LOG_AT, ProcSampler, ThermalGuard, format_top, freq_info, loadavg
 from freesounderd.reset import _fsync_write, decode_throttled, throttled, uptime
 
 HEARTBEAT = 15.0
@@ -29,6 +30,7 @@ STATE = Path("/var/lib/freesounder")
 DT_POWER = Path("/proc/device-tree/chosen/power")
 DT_BOOTLOADER = Path("/proc/device-tree/chosen/bootloader")
 HISTORY_MAX = 100
+CPU_LOG_EVERY = 20  # beats: a "cpu:" journal line every 5 min (every beat while hot)
 LOW_EXT5V = 4.75  # Pi 5 starts to brown out a little below this
 
 # Raspberry Pi 5 PMIC reset reason bits (chosen/power/power_reset).
@@ -134,6 +136,12 @@ class Watch:
         self.read_flags = throttled
         self.read_ext5v = ext5v
         self.read_temp = cpu_temp
+        self.sampler = ProcSampler()
+        self.guard = ThermalGuard()
+        self.read_load = loadavg
+        self.read_freq = freq_info
+        self.beats = 0
+        self.next_cpu_log = 0
 
     @property
     def heartbeat_path(self) -> Path:
@@ -173,6 +181,10 @@ class Watch:
         volts = self.read_ext5v()
         temp = self.read_temp()
         now = time.time()
+        load = self.read_load()
+        usage = self.sampler.sample()
+        top = (usage or {}).get("top", [])
+        freq = self.read_freq()
         if volts is not None:
             self.min_ext5v = volts if self.min_ext5v is None else min(self.min_ext5v, volts)
         if flags is not None and flags != self.last_flags:
@@ -181,7 +193,10 @@ class Watch:
             if new_uv:
                 _warn(f"UNDER-VOLTAGE: throttled=0x{flags:x} ({', '.join(words)}), input {volts} V")
             elif flags & 0xE:
-                _warn(f"THROTTLING: throttled=0x{flags:x} ({', '.join(words)}), {temp} C")
+                _warn(
+                    f"THROTTLING: throttled=0x{flags:x} ({', '.join(words)}), {temp} C, "
+                    f"{freq.get('cur_mhz')} MHz, load {load}, top: {format_top(top)}"
+                )
             else:
                 _log(f"power flags: throttled=0x{flags:x} ({', '.join(words) or 'ok'})")
             self._history(
@@ -191,6 +206,9 @@ class Watch:
                     "throttled": f"0x{flags:x}",
                     "ext5v": volts,
                     "temp": temp,
+                    "load": load,
+                    "cpu_mhz": freq.get("cur_mhz"),
+                    "top": top[:3],
                 }
             )
             self.last_flags = flags
@@ -202,11 +220,17 @@ class Watch:
             _warn(f"LOW INPUT VOLTAGE: {volts} V (a Pi 5 needs about 5.0 V)")
             self.low_logged = volts
         if temp is not None:
-            if temp >= 80 and not self.hot:
-                _warn(f"HOT: CPU {temp:.1f} C (throttles at 85 C)")
+            if temp >= TOP_LOG_AT and not self.hot:
+                _warn(
+                    f"HOT: CPU {temp:.1f} C (firmware soft limit at 80 C), load {load}, "
+                    f"top: {format_top(top)}"
+                )
                 self.hot = True
             elif temp < 75:
                 self.hot = False
+        change = self.guard.update(temp)
+        if change:
+            _warn(f"{change}; load {load}, top: {format_top(top)}")
         record = {
             "boot_id": self.boot,
             "time": now,
@@ -216,10 +240,25 @@ class Watch:
             "min_ext5v": self.min_ext5v,
             "temp": temp,
             "throttled": None if flags is None else f"0x{flags:x}",
+            "load": load,
+            "cpu_busy": (usage or {}).get("cpu_busy"),
+            "cpu_mhz": freq.get("cur_mhz"),
+            "cpu_max_mhz": freq.get("max_mhz"),
+            "governor": freq.get("governor"),
+            "clock_capped": self.guard.capped,
+            "top": top,
             "clean": clean,
         }
         if shutdown:
             record["shutdown"] = shutdown
+        self.beats += 1
+        if usage is not None and (self.hot or self.beats >= self.next_cpu_log):
+            _log(
+                f"cpu: {temp} C, {freq.get('cur_mhz')}/{freq.get('max_mhz')} MHz "
+                f"({freq.get('governor')}{', capped' if self.guard.capped else ''}), "
+                f"load {load}, busy {usage.get('cpu_busy')}%, top: {format_top(top)}"
+            )
+            self.next_cpu_log = self.beats + CPU_LOG_EVERY
         _fsync_write(self.heartbeat_path, json.dumps(record) + "\n")
         return record
 
@@ -253,19 +292,15 @@ def run_heartbeat(argv: list[str]) -> int:
             f"({', '.join(info['pmic_reset_reason']) or 'none'}), "
             f"PSU max current {info.get('psu_max_current_ma')} mA"
         )
-    stopping = {"now": False}
-
-    def on_term(signum: int, frame: Any) -> None:
-        stopping["now"] = True
-
-    signal.signal(signal.SIGTERM, on_term)
-    while not stopping["now"]:
+    # SIGTERM is taken synchronously: one wake-up per beat (the old loop
+    # woke 10 times a second to check a flag) and still a prompt stop.
+    signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM, signal.SIGINT})
+    while True:
         with contextlib.suppress(OSError):
             watch.beat()
-        for _ in range(int(HEARTBEAT * 10)):
-            if stopping["now"]:
-                break
-            time.sleep(0.1)
+        if signal.sigtimedwait({signal.SIGTERM, signal.SIGINT}, HEARTBEAT) is not None:
+            break
+    watch.guard.release()
     kind = shutdown_kind()
     _log(f"CLEAN SHUTDOWN started: {kind} (after {uptime() / 60:.1f} min up)")
     with contextlib.suppress(OSError):

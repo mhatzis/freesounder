@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from freesounderd import diagnostics, power
+from freesounderd import cpu, diagnostics, power
+from freesounderd.cpu import ProcSampler, ThermalGuard
 
 
 def test_pmic_reset_bits_follow_raspberry_pi_docs() -> None:
@@ -48,6 +49,7 @@ def _watch(tmp_path: Path, boot: str) -> power.Watch:
     w.read_flags = lambda: 0
     w.read_ext5v = lambda: 5.1
     w.read_temp = lambda: 50.0
+    w.guard = ThermalGuard(policy=tmp_path / "no-cpufreq", mode_file=tmp_path / "no-mode")
     return w
 
 
@@ -129,3 +131,110 @@ def test_heartbeat_ending_beats_empty_journal(
     data = asyncio.run(diagnostics.collect(tmp_path))
     assert data["previous_boot_ended"].startswith("stopped without a clean shutdown around")
     assert data["previous_boot"]["clean_shutdown"] is False
+
+
+def _policy(tmp_path: Path, cur: int = 2_400_000) -> Path:
+    pol = tmp_path / "policy0"
+    pol.mkdir()
+    for name, value in (
+        ("cpuinfo_min_freq", 1_500_000),
+        ("cpuinfo_max_freq", 2_400_000),
+        ("scaling_max_freq", cur),
+        ("scaling_cur_freq", 1_500_000),
+    ):
+        (pol / name).write_text(f"{value}\n")
+    (pol / "scaling_governor").write_text("ondemand\n")
+    return pol
+
+
+def test_thermal_guard_caps_when_hot_and_restores_when_cool(tmp_path: Path) -> None:
+    pol = _policy(tmp_path)
+    guard = ThermalGuard(policy=pol, mode_file=tmp_path / "mode")
+    assert guard.update(60.0) is None
+    line = guard.update(76.0)
+    assert line and "capped at 1500 MHz" in line
+    assert (pol / "scaling_max_freq").read_text().strip() == "1500000"
+    assert guard.update(70.0) is None  # hysteresis: stays capped
+    line = guard.update(64.0)
+    assert line and "back to 2400 MHz" in line
+    assert (pol / "scaling_max_freq").read_text().strip() == "2400000"
+
+
+def test_thermal_guard_never_caps_below_the_hardware_minimum(tmp_path: Path) -> None:
+    pol = _policy(tmp_path)
+    (pol / "cpuinfo_min_freq").write_text("1800000\n")
+    guard = ThermalGuard(policy=pol, mode_file=tmp_path / "mode")
+    guard.update(90.0)
+    assert int((pol / "scaling_max_freq").read_text()) >= 1_800_000
+    assert cpu.CAP_KHZ >= 1_500_000
+
+
+def test_thermal_guard_modes_and_restart(tmp_path: Path) -> None:
+    pol = _policy(tmp_path, cur=1_500_000)
+    mode = tmp_path / "mode"
+    mode.write_text("off\n")
+    guard = ThermalGuard(policy=pol, mode_file=mode)
+    assert guard.capped  # left capped by a previous run: restore it
+    assert "back to" in (guard.update(90.0) or "")
+    mode.write_text("cool\n")
+    assert "capped" in (guard.update(40.0) or "")
+    guard.release()
+    assert (pol / "scaling_max_freq").read_text().strip() == "2400000"
+
+
+def _fake_proc(root: Path, procs: dict[int, tuple[str, int]], total: int, idle: int) -> None:
+    root.mkdir(exist_ok=True)
+    (root / "stat").write_text(f"cpu  {total - idle} 0 0 {idle} 0 0 0 0 0 0\n")
+    (root / "loadavg").write_text("0.52 0.40 0.31 1/123 4567\n")
+    for pid, (name, ticks) in procs.items():
+        d = root / str(pid)
+        d.mkdir(exist_ok=True)
+        rest = " ".join(["S"] + ["0"] * 10 + [str(ticks), "0"] + ["0"] * 30)
+        (d / "stat").write_text(f"{pid} ({name}) {rest}\n")
+
+
+def test_top_processes_are_percent_of_one_core(tmp_path: Path) -> None:
+    root = tmp_path / "proc"
+    _fake_proc(
+        root, {10: ("snapserver", 100), 11: ("ffmpeg", 50), 12: ("my (odd) name", 0)}, 4000, 3800
+    )
+    s = ProcSampler(proc=root, ncpu=4)
+    assert s.sample() is None
+    # 400 ticks over 4 cores = 100 ticks of wall time per core.
+    _fake_proc(
+        root, {10: ("snapserver", 150), 11: ("ffmpeg", 60), 12: ("my (odd) name", 5)}, 4400, 4100
+    )
+    out = s.sample()
+    assert out is not None
+    assert [p["name"] for p in out["top"]] == ["snapserver", "ffmpeg", "my (odd) name"]
+    assert out["top"][0]["cpu"] == 50.0  # 50 ticks of 100 per core
+    assert out["cpu_busy"] == 25.0  # busy 200 -> 300: 100 of 400 ticks
+    assert cpu.loadavg(root) == [0.52, 0.40, 0.31]
+    assert cpu.freq_info(_policy(tmp_path)) == {
+        "cur_mhz": 1500,
+        "max_mhz": 2400,
+        "hw_min_mhz": 1500,
+        "hw_max_mhz": 2400,
+        "governor": "ondemand",
+    }
+
+
+def test_heartbeat_records_cpu_and_logs_top_when_hot(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    w = _watch(tmp_path, "boot-x")
+    root = tmp_path / "proc"
+    _fake_proc(root, {10: ("snapclient", 10)}, 1000, 900)
+    w.sampler = ProcSampler(proc=root, ncpu=1)
+    w.read_freq = lambda: {"cur_mhz": 2400, "max_mhz": 2400, "governor": "ondemand"}
+    w.read_load = lambda: [1.0, 0.5, 0.2]
+    w.beat()
+    _fake_proc(root, {10: ("snapclient", 40)}, 1100, 950)
+    w.read_temp = lambda: 81.0
+    rec = w.beat()
+    assert rec["load"] == [1.0, 0.5, 0.2] and rec["cpu_mhz"] == 2400
+    assert rec["top"][0] == {"pid": 10, "name": "snapclient", "cpu": 30.0}
+    out = capsys.readouterr().out
+    assert "HOT: CPU 81.0 C" in out and "snapclient 30.0%" in out
+    saved = json.loads((tmp_path / "heartbeat.json").read_text())
+    assert saved["top"][0]["name"] == "snapclient"

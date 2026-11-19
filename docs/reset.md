@@ -150,6 +150,21 @@ and marks the heartbeat clean. At the next boot the old heartbeat becomes
 `last-boot.json`; if it was not clean it logs `PREVIOUS BOOT DID NOT SHUT DOWN CLEANLY`
 with the last-seen time and uptime.
 
+**CPU and heat** (0.6.8). Each heartbeat also records the load average
+(1/5/15 min), total CPU busy %, the CPU clock (`scaling_cur_freq`, max,
+governor) and the top 5 processes by CPU over the last 15 s (% of one core,
+like `top`), all read from /proc and /sys. A `cpu:` line with the same facts
+is logged every 5 min, and every beat while the CPU is at or above 80 C; the
+`HOT` and `THROTTLING` warnings include the top processes. `last-boot.json`
+keeps them, so Diagnostics can show what was running before a crash.
+
+**Thermal safeguard.** From 75 C the heartbeat lowers the cpufreq maximum
+(`scaling_max_freq`) to 1.5 GHz (never below the board's own minimum; the Pi 5
+minimum is 1.5 GHz) and restores the full clock below 65 C, logging
+`THERMAL: CPU clock capped ...` / `... back to ...`. Audio needs a few percent
+of one core, so this never affects playback. `/etc/freesounder/cpu` can hold
+`auto` (default), `cool` (always capped) or `off` (never touch the clock).
+
 **Buttons.** Each press logs `POWER BUTTON pressed (n/5 to reset)` (or
 `WIRED BUTTON pressed`); a single press logs
 `POWER BUTTON: clean shutdown requested by the power button`.
