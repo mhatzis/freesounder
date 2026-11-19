@@ -7,9 +7,10 @@ import '../api/errors.dart';
 import '../models/library.dart';
 import '../state/playback_store.dart';
 import 'artwork.dart';
+import 'music_nav.dart';
 
 Future<void> showLibraryScreen(BuildContext context) {
-  return Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const LibraryScreen()));
+  return pushMusic<void>(context, 'library', (_) => const LibraryScreen());
 }
 
 String _targetName(WidgetRef ref) {
@@ -140,7 +141,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
   }
 
   Future<void> _manageShares() async {
-    await Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const LibrarySharesScreen()));
+    await pushMusic<void>(context, 'library/shares', (_) => const LibrarySharesScreen());
     await _load();
   }
 
@@ -161,6 +162,7 @@ class _LibraryScreenState extends ConsumerState<LibraryScreen> {
             icon: const Icon(Icons.dns_outlined),
             onPressed: _manageShares,
           ),
+          const MusicCloseButton(),
         ],
         bottom: PreferredSize(
           preferredSize: const Size.fromHeight(28),
@@ -310,11 +312,7 @@ List<Widget> _folderTiles(BuildContext context, LibraryListing listing) => [
       leading: const Icon(Icons.folder_rounded),
       title: Text(f.name, maxLines: 1, overflow: TextOverflow.ellipsis),
       trailing: const Icon(Icons.chevron_right),
-      onTap: () => Navigator.of(context).push(
-        MaterialPageRoute<void>(
-          builder: (_) => FolderScreen(path: f.path, title: f.name),
-        ),
-      ),
+      onTap: () => pushMusic<void>(context, 'library/folder', (_) => FolderScreen(path: f.path, title: f.name)),
     ),
 ];
 
@@ -381,7 +379,7 @@ class _ArtistTile extends ConsumerWidget {
       leading: const CircleAvatar(child: Icon(Icons.person_rounded)),
       title: Text(artist, maxLines: 1, overflow: TextOverflow.ellipsis),
       trailing: const Icon(Icons.chevron_right),
-      onTap: () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => ArtistScreen(artist: artist))),
+      onTap: () => pushMusic<void>(context, 'library/artist', (_) => ArtistScreen(artist: artist)),
     );
   }
 }
@@ -411,7 +409,7 @@ class AlbumGrid extends ConsumerWidget {
           return InkWell(
             key: Key('library-album-${a.album}'),
             borderRadius: BorderRadius.circular(12),
-            onTap: () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => AlbumScreen(album: a))),
+            onTap: () => pushMusic<void>(context, 'library/album', (_) => AlbumScreen(album: a)),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -509,7 +507,10 @@ class _TrackListScreenState extends ConsumerState<_TrackListScreen> {
     final listing = _listing;
     final text = Theme.of(context).textTheme;
     return Scaffold(
-      appBar: AppBar(title: Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis)),
+      appBar: AppBar(
+        title: Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+        actions: const [MusicCloseButton()],
+      ),
       body: listing == null
           ? Center(child: _error == null ? const CircularProgressIndicator() : Text(_error!))
           : ListView(
@@ -629,7 +630,7 @@ class _ArtistScreenState extends ConsumerState<ArtistScreen> {
   Widget build(BuildContext context) {
     final albums = _albums;
     return Scaffold(
-      appBar: AppBar(title: Text(widget.artist)),
+      appBar: AppBar(title: Text(widget.artist), actions: const [MusicCloseButton()]),
       body: albums == null
           ? Center(child: _error == null ? const CircularProgressIndicator() : Text(_error!))
           : CustomScrollView(
@@ -727,13 +728,13 @@ class _LibrarySharesScreenState extends ConsumerState<LibrarySharesScreen> {
         actions: [
           if (summary != null && summary.shares.isNotEmpty)
             IconButton(tooltip: 'Rescan', icon: const Icon(Icons.refresh_rounded), onPressed: _rescan),
+          const MusicCloseButton(),
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
         key: const Key('library-add-share'),
         onPressed: () async {
-          final added = await Navigator.of(context)
-              .push<bool>(MaterialPageRoute<bool>(builder: (_) => const AddShareScreen(), fullscreenDialog: true));
+          final added = await pushMusic<bool>(context, 'library/add-share', (_) => const AddShareScreen());
           if (added == true) {
             await _load();
           }
@@ -861,7 +862,7 @@ class _AddShareScreenState extends ConsumerState<AddShareScreen> {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     return Scaffold(
-      appBar: AppBar(title: const Text('Add music')),
+      appBar: AppBar(title: const Text('Add music'), actions: const [MusicCloseButton()]),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
