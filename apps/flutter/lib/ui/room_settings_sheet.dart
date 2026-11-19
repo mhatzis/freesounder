@@ -313,6 +313,19 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
     });
   }
 
+  /// "Kitchen · 192.168.1.27 · 0.6.14+btexp" for the room's own player.
+  String? _playerLabel() {
+    final room = ref.read(playbackProvider).rooms.where((r) => r.id == widget.roomId).firstOrNull;
+    if (room == null) return null;
+    final host = Uri.tryParse(room.url ?? '')?.host;
+    return [
+      room.name,
+      if (host != null && host.isNotEmpty) host,
+      if (room.version != null) room.version!,
+      if (!room.available) 'offline',
+    ].join(' · ');
+  }
+
   void _onVersionTap() {
     setState(() {
       _versionTaps += 1;
@@ -512,7 +525,10 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
                       ],
                       if (ref.read(playbackProvider.notifier).client case final client?) ...[
                         const SizedBox(height: 20),
-                        BluetoothOutputSection(api: ClientBtOutputApi(client, widget.roomId)),
+                        BluetoothOutputSection(
+                          api: ClientBtOutputApi(client, widget.roomId),
+                          player: _playerLabel(),
+                        ),
                       ],
                       const SizedBox(height: 16),
                       OutlinedButton.icon(

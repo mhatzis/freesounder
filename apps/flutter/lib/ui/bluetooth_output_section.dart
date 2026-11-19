@@ -36,9 +36,38 @@ class ClientBtOutputApi implements BtOutputApi {
   Future<BtOutputStatus> forget() => client.bluetoothForget(roomId);
 }
 
+/// What to say when the Bluetooth status request fails. Only a missing route
+/// ("Not Found") means the player has no Bluetooth output; a 404 such as
+/// "Unknown player …" means the player the app talks to could not reach the
+/// room's own player, which 0.6.14 wrongly reported as "needs the BT image".
+String btErrorText(Object err, [String? player]) {
+  final where = player == null ? '' : ' ($player)';
+  if (err is ControlApiException && err.statusCode == 404) {
+    final detail = err.detail ?? '';
+    if (detail.isEmpty || detail == 'Not Found') {
+      return 'This room\'s player$where has no Bluetooth output: it needs the BT image.';
+    }
+    if (detail.startsWith('Unknown player')) {
+      return 'The player the app is connected to cannot reach this room\'s player$where right now. '
+          'Check that it is switched on and on the same network, then try again.';
+    }
+    return '$detail$where';
+  }
+  final text = userMessageFor(err);
+  return where.isEmpty ? text : '$text$where';
+}
+
 /// EXPERIMENTAL: room settings "Output" — wired, or a paired Bluetooth speaker.
 class BluetoothOutputSection extends StatefulWidget {
-  const BluetoothOutputSection({super.key, required this.api, this.refreshEvery = const Duration(seconds: 5)});
+  const BluetoothOutputSection({
+    super.key,
+    required this.api,
+    this.refreshEvery = const Duration(seconds: 5),
+    this.player,
+  });
+
+  /// Which player serves the room, for error messages ("Kitchen · 192.168.1.27 · 0.6.14").
+  final String? player;
 
   final BtOutputApi api;
   final Duration refreshEvery;
@@ -81,8 +110,7 @@ class _BluetoothOutputSectionState extends State<BluetoothOutputSection> {
       }
     } on Object catch (err) {
       if (mounted && _status == null) {
-        final noBt = err is ControlApiException && err.statusCode == 404;
-        setState(() => _error = noBt ? 'Bluetooth needs the BT image on this player.' : userMessageFor(err));
+        setState(() => _error = btErrorText(err, widget.player));
       }
     }
   }

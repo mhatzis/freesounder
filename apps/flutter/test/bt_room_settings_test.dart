@@ -13,6 +13,8 @@ import 'package:http/testing.dart';
 
 // What the player says about Bluetooth for the room (per test).
 var btStatus = <String, dynamic>{};
+// When set, the bluetooth GET answers 404 with this detail.
+String? bt404;
 
 MockClient player() => MockClient((r) async {
   switch (r.url.path) {
@@ -26,6 +28,7 @@ MockClient player() => MockClient((r) async {
             'volume': 20,
             'source': 'radio',
             'url': 'http://10.0.0.2:8080',
+            'version': '0.6.14+btexp',
           },
         ]),
         200,
@@ -41,7 +44,7 @@ MockClient player() => MockClient((r) async {
         200,
       );
     case '/api/v2/rooms/patio/bluetooth':
-      if (btStatus.isEmpty) return http.Response('{"detail":"Not Found"}', 404); // a non-BT image
+      if (bt404 != null) return http.Response(jsonEncode({'detail': bt404}), 404);
       return http.Response(jsonEncode(btStatus), 200);
     case '/health':
       return http.Response(jsonEncode({'status': 'ok', 'version': '0.6.12+btexp'}), 200);
@@ -132,10 +135,22 @@ void main() {
   });
 
   testWidgets('room settings on a BT build talking to a non-BT player says so', (tester) async {
-    btStatus = {};
+    bt404 = 'Not Found'; // FastAPI: no such route on a non-BT image
+    addTearDown(() => bt404 = null);
     await openRoomSettings(tester);
     expect(find.byKey(const Key('bt-output-section')), findsOneWidget);
-    expect(find.text('Bluetooth needs the BT image on this player.'), findsOneWidget);
+    expect(find.textContaining('has no Bluetooth output: it needs the BT image'), findsOneWidget);
+    expect(find.byKey(const Key('bt-retry')), findsOneWidget);
+  });
+
+  testWidgets('0.6.14 regression: "Unknown player" 404 is not reported as "needs the BT image"', (tester) async {
+    // The player the app talks to only remembered the room's player (no
+    // recent beacon) and answered 404 "Unknown player <id>".
+    bt404 = 'Unknown player patio';
+    addTearDown(() => bt404 = null);
+    await openRoomSettings(tester);
+    expect(find.textContaining('needs the BT image'), findsNothing);
+    expect(find.textContaining('cannot reach this room\'s player (Patio · 10.0.0.2 · 0.6.14+btexp)'), findsOneWidget);
     expect(find.byKey(const Key('bt-retry')), findsOneWidget);
   });
 }
