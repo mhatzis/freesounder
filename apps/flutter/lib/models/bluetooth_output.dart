@@ -32,6 +32,7 @@ class BtOutputStatus {
     this.defaultLatencyMs = 200,
     this.busy,
     this.lastError,
+    this.reason,
     this.warning,
     this.output,
   });
@@ -50,6 +51,9 @@ class BtOutputStatus {
   final int defaultLatencyMs;
   final String? busy;
   final String? lastError;
+
+  /// Why [available] is false (no adapter, BlueZ unreachable, ...).
+  final String? reason;
   final String? warning;
   final String? output;
 
@@ -65,6 +69,7 @@ class BtOutputStatus {
       defaultLatencyMs: (json['default_latency_ms'] as num?)?.toInt() ?? 200,
       busy: json['busy'] as String?,
       lastError: json['last_error'] as String?,
+      reason: json['reason'] as String?,
       warning: json['warning'] as String?,
       output: json['output'] as String?,
     );

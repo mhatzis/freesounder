@@ -24,7 +24,7 @@ import httpx
 from freesounderd import __version__, peers
 from freesounderd.artwork import AirplayArt, ArtLookup, split_stream_title
 from freesounderd.audio import audio_state, play_tone
-from freesounderd.bluetooth import BluezBackend, BtOutput
+from freesounderd.bluetooth import BluezBackend, BtOutput, unblock_bluetooth
 from freesounderd.config import DaemonSettings
 from freesounderd.discovery import Discovery, local_ip
 from freesounderd.dsp import read_audio_output
@@ -562,6 +562,7 @@ class Engine:
         if self.bt is None and self.settings.manage_system:
             self.bt = BtOutput(
                 BluezBackend(),
+                bring_up=unblock_bluetooth,
                 reselect=self._reselect_output,
                 unit=self._bt_unit,
                 on_change=self.kick,

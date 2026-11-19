@@ -71,10 +71,29 @@ Future<void> pump(WidgetTester tester, FakeApi api) async {
 }
 
 void main() {
-  testWidgets('hidden when the player has no Bluetooth output', (tester) async {
-    await pump(tester, FakeApi(const BtOutputStatus()));
+  testWidgets('no adapter: the section stays, says why, and can retry', (tester) async {
+    // 0.6.12+btexp: the section used to vanish (SizedBox.shrink) whenever the
+    // player reported available:false, so "bt setup is no longer there".
+    final api = FakeApi(const BtOutputStatus(reason: 'No Bluetooth adapter found on this player'));
+    await pump(tester, api);
     expect(find.byKey(const Key('bt-unavailable')), findsOneWidget);
-    expect(find.text('Output'), findsNothing);
+    expect(find.text('Output'), findsOneWidget);
+    expect(find.byKey(const Key('bt-experimental-badge')), findsOneWidget);
+    expect(find.text('No Bluetooth adapter found on this player'), findsOneWidget);
+    expect(find.byKey(const Key('bt-scan-button')), findsNothing);
+
+    // The player brought its adapter up: Try again shows the full section.
+    api.current = const BtOutputStatus(available: true);
+    await tester.tap(find.byKey(const Key('bt-retry')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('bt-unavailable')), findsNothing);
+    expect(find.byKey(const Key('bt-output-section')), findsOneWidget);
+  });
+
+  test('status reads the reason', () {
+    final s = BtOutputStatus.fromJson({'available': false, 'reason': 'BlueZ not reachable: x'});
+    expect(s.available, isFalse);
+    expect(s.reason, 'BlueZ not reachable: x');
   });
 
   testWidgets('find, pick and use a speaker, then adjust the delay', (tester) async {

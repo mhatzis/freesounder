@@ -79,6 +79,14 @@ class _BluetoothOutputSectionState extends State<BluetoothOutputSection> {
     }
   }
 
+  bool _retrying = false;
+
+  Future<void> _retry() async {
+    setState(() => _retrying = true);
+    await _refresh();
+    if (mounted) setState(() => _retrying = false);
+  }
+
   Future<void> _run(String busy, Future<void> Function() work) async {
     setState(() {
       _busy = busy;
@@ -94,24 +102,24 @@ class _BluetoothOutputSectionState extends State<BluetoothOutputSection> {
   }
 
   Future<void> _scan() => _run('scan', () async {
-        final found = await widget.api.scan();
-        if (mounted) setState(() => _found = found);
-      });
+    final found = await widget.api.scan();
+    if (mounted) setState(() => _found = found);
+  });
 
   Future<void> _connect(BtSpeaker speaker) => _run('connect:${speaker.mac}', () async {
-        final status = await widget.api.connect(speaker);
-        if (mounted) {
-          setState(() {
-            _status = status;
-            _found = null;
-          });
-        }
+    final status = await widget.api.connect(speaker);
+    if (mounted) {
+      setState(() {
+        _status = status;
+        _found = null;
       });
+    }
+  });
 
   Future<void> _use(bool enabled) => _run('use', () async {
-        final status = await widget.api.use(enabled: enabled);
-        if (mounted) setState(() => _status = status);
-      });
+    final status = await widget.api.use(enabled: enabled);
+    if (mounted) setState(() => _status = status);
+  });
 
   Future<void> _forget() async {
     final ok = await showDialog<bool>(
@@ -161,8 +169,50 @@ class _BluetoothOutputSectionState extends State<BluetoothOutputSection> {
     final scheme = Theme.of(context).colorScheme;
     final text = Theme.of(context).textTheme;
     final status = _status;
+    final header = Row(
+      children: [
+        Text('Output', style: text.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
+        const SizedBox(width: 8),
+        Container(
+          key: const Key('bt-experimental-badge'),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+          decoration: BoxDecoration(color: scheme.tertiaryContainer, borderRadius: BorderRadius.circular(999)),
+          child: Text('Experimental', style: text.labelSmall?.copyWith(color: scheme.onTertiaryContainer)),
+        ),
+      ],
+    );
     if (status != null && !status.available) {
-      return const SizedBox.shrink(key: Key('bt-unavailable'));
+      // Never hide the section: say why there is no Bluetooth and let the
+      // user retry (the player tries to bring its adapter up on each check).
+      return Column(
+        key: const Key('bt-unavailable'),
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          header,
+          const SizedBox(height: 4),
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.bluetooth_disabled_rounded, color: scheme.error),
+            title: const Text('Bluetooth speakers unavailable on this player'),
+            subtitle: Text(
+              status.reason ?? status.lastError ?? 'The player did not find its Bluetooth adapter.',
+              key: const Key('bt-unavailable-reason'),
+              style: TextStyle(color: scheme.onSurfaceVariant),
+            ),
+          ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: OutlinedButton.icon(
+              key: const Key('bt-retry'),
+              onPressed: _retrying ? null : _retry,
+              icon: _retrying
+                  ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                  : const Icon(Icons.refresh_rounded),
+              label: const Text('Try again'),
+            ),
+          ),
+        ],
+      );
     }
     final speaker = status?.speaker;
     final busy = _busy != null || status?.busy != null;
@@ -173,24 +223,13 @@ class _BluetoothOutputSectionState extends State<BluetoothOutputSection> {
       key: const Key('bt-output-section'),
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Row(
-          children: [
-            Text('Output', style: text.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
-            const SizedBox(width: 8),
-            Container(
-              key: const Key('bt-experimental-badge'),
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-              decoration: BoxDecoration(
-                color: scheme.tertiaryContainer,
-                borderRadius: BorderRadius.circular(999),
-              ),
-              child: Text('Experimental', style: text.labelSmall?.copyWith(color: scheme.onTertiaryContainer)),
-            ),
-          ],
-        ),
+        header,
         const SizedBox(height: 4),
         if (status == null)
-          const Padding(padding: EdgeInsets.all(12), child: Center(child: CircularProgressIndicator(strokeWidth: 2)))
+          const Padding(
+            padding: EdgeInsets.all(12),
+            child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+          )
         else ...[
           RadioGroup<bool>(
             groupValue: useBt,
@@ -244,11 +283,13 @@ class _BluetoothOutputSectionState extends State<BluetoothOutputSection> {
                 icon: _busy == 'scan'
                     ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
                     : const Icon(Icons.bluetooth_searching),
-                label: Text(_busy == 'scan'
-                    ? 'Looking for speakers…'
-                    : speaker == null
-                        ? 'Find speakers'
-                        : 'Use another speaker'),
+                label: Text(
+                  _busy == 'scan'
+                      ? 'Looking for speakers…'
+                      : speaker == null
+                      ? 'Find speakers'
+                      : 'Use another speaker',
+                ),
               ),
               if (speaker != null)
                 TextButton(

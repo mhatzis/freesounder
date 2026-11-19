@@ -724,7 +724,13 @@ def create_app(
         if rid != engine.id:
             return await engine.forward(rid, "GET", f"/api/v2/rooms/{rid}/bluetooth")
         if engine.bt is None:
-            return {"experimental": True, "available": False, "enabled": False, "active": False}
+            return {
+                "experimental": True,
+                "available": False,
+                "reason": "Bluetooth output is not running on this player",
+                "enabled": False,
+                "active": False,
+            }
         status = await engine.bt.status()
         status["output"] = engine.output_kind()
         return status

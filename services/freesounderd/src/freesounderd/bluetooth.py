@@ -44,6 +44,8 @@ A2DP_SINK_UUID = "0000110b-0000-1000-8000-00805f9b34fb"
 DEFAULT_LATENCY_MS = 200  # typical SBC speaker delay that is not reported to ALSA
 MAX_LATENCY_MS = 1000
 MAC_RE = re.compile(r"^([0-9A-F]{2}:){5}[0-9A-F]{2}$")
+BRING_UP_EVERY = 30.0  # s: how often a missing adapter triggers a bring-up attempt
+CONTROLLER_UNITS = ("hciuart.service", "bluetooth.service")
 RETRY_MIN = 10.0  # s: first reconnect retry, doubling up to RETRY_MAX
 RETRY_MAX = 120.0
 WATCH_CONFIGURED = 5.0  # s between connection checks with a speaker set up
@@ -201,7 +203,11 @@ class BluezBackend:
     ) -> list[Any]:
         from dbus_next import Message, MessageType
 
-        bus = await self._conn()
+        try:
+            bus = await self._conn()
+        except Exception as exc:  # noqa: BLE001 - no system bus / dbus-daemon restarting
+            self.reset()
+            raise BtError(f"system D-Bus unavailable: {exc or type(exc).__name__}") from exc
         msg = Message(
             destination=dest,
             path=path,
@@ -213,11 +219,22 @@ class BluezBackend:
         try:
             reply = await asyncio.wait_for(bus.call(msg), wait)
         except TimeoutError as exc:
+            self.reset()
             raise BtError(f"{member} timed out after {wait:.0f} s") from exc
+        except Exception as exc:  # noqa: BLE001 - dropped connection etc.
+            self.reset()
+            raise BtError(f"{member}: {exc or type(exc).__name__}") from exc
         if reply.message_type == MessageType.ERROR:
             detail = reply.body[0] if reply.body else ""
             raise BtError(f"{member}: {reply.error_name} {detail}".strip())
         return list(reply.body)
+
+    def reset(self) -> None:
+        """Forget the bus connection and adapter; the next call reconnects."""
+        bus, self._bus, self._adapter_path = self._bus, None, None
+        if bus is not None:
+            with contextlib.suppress(Exception):
+                bus.disconnect()
 
     async def _objects(self, dest: str = BLUEZ, path: str = "/") -> dict[str, Any]:
         body = await self._call(dest, path, OM, "GetManagedObjects")
@@ -377,6 +394,28 @@ class BluezBackend:
 
 
 # ------------------------------------------------------------------ manager
+async def unblock_bluetooth() -> None:
+    """Best effort: clear an rfkill soft block and attach the UART controller.
+
+    The setup (BLE provisioning) service does this before advertising, but
+    once a player is set up it no longer runs, so a soft-blocked radio or a
+    controller that did not attach at boot left no adapter for the speaker
+    output, and the app hid the whole Bluetooth section.
+    """
+    for argv in (
+        ["rfkill", "unblock", "bluetooth"],
+        ["modprobe", "btbcm"],
+        ["modprobe", "hci_uart"],
+    ):
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL
+            )
+            await asyncio.wait_for(proc.wait(), 10)
+        except Exception:  # noqa: BLE001
+            logger.debug("bluetooth bring-up: %s failed", argv[0], exc_info=True)
+
+
 class BtOutput:
     """Pairing, the chosen speaker, reconnects and the wired fallback."""
 
@@ -391,8 +430,12 @@ class BtOutput:
         model: str = "unknown",
         net: Callable[[], str] = lambda: "unknown",
         clock: Callable[[], float] = time.monotonic,
+        bring_up: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self.backend = backend
+        self.bring_up = bring_up
+        self._bring_up_at = 0.0
+        self.reason: str | None = None  # why there is no adapter, for the app
         self.config_path = config_path
         self.reselect = reselect
         self.unit = unit
@@ -443,13 +486,50 @@ class BtOutput:
         logger.warning("bluetooth %s", text)
         return text
 
+    async def _lookup_adapter(self) -> tuple[dict[str, Any] | None, str | None]:
+        try:
+            adapter = await self.backend.adapter()
+        except Exception as exc:  # noqa: BLE001
+            return None, f"BlueZ not reachable: {exc or type(exc).__name__}"
+        if adapter is None:
+            return (
+                None,
+                "No Bluetooth adapter found on this player (radio off or controller missing)",
+            )
+        return adapter, None
+
+    async def find_adapter(self) -> dict[str, Any] | None:
+        """The adapter, bringing the controller up (at most every 30 s) if missing."""
+        adapter, reason = await self._lookup_adapter()
+        if adapter is None and self.clock() >= self._bring_up_at:
+            self._bring_up_at = self.clock() + BRING_UP_EVERY
+            logger.warning("bluetooth: %s; trying to bring the controller up", reason)
+            if self.bring_up is not None:
+                with contextlib.suppress(Exception):
+                    await self.bring_up()
+            if self.unit is not None:
+                for unit in CONTROLLER_UNITS:
+                    with contextlib.suppress(Exception):
+                        await self.unit("start", unit)
+            reset = getattr(self.backend, "reset", None)
+            if callable(reset):
+                reset()
+            for _ in range(5):  # bluetoothd needs a moment to register hci0
+                adapter, reason = await self._lookup_adapter()
+                if adapter is not None:
+                    logger.info("bluetooth: adapter %s is back", adapter.get("path"))
+                    break
+                await asyncio.sleep(0.5)
+        self.reason = reason
+        return adapter
+
     # -- API
     async def status(self) -> dict[str, Any]:
         cfg = self.config()
         adapter: dict[str, Any] | None = None
         speaker: dict[str, Any] | None = None
         try:
-            adapter = await self.backend.adapter()
+            adapter = await self.find_adapter()
             if cfg["mac"]:
                 devs = {d["mac"]: d for d in await self.backend.devices()}
                 dev = devs.get(cfg["mac"])
@@ -464,6 +544,7 @@ class BtOutput:
         return {
             "experimental": True,
             "available": adapter is not None,
+            "reason": None if adapter is not None else self.reason,
             "enabled": bool(cfg["enabled"]),
             "active": self.active(),
             "speaker": speaker,

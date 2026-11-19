@@ -397,11 +397,75 @@ async def test_bluetooth_output_sets_snapcast_latency(lan: Lan, make_player, tmp
     assert server.clients[a.id]["config"]["latency"] == 0
 
 
+async def test_missing_adapter_is_brought_up_and_explained(tmp_path: Path) -> None:
+    """0.6.12+btexp: no adapter at runtime hid the whole Bluetooth section.
+
+    Now status() tries to bring the controller up (rfkill unblock, start
+    bluetooth.service) at most every 30 s and says why when it can't.
+    """
+    out, fake, _e, units, clock = make_output(tmp_path)
+    brought_up: list[str] = []
+
+    async def bring_up() -> None:
+        brought_up.append("up")
+        fake.has_adapter = True  # rfkill unblock made hci0 appear
+
+    out.bring_up = bring_up
+    fake.has_adapter = False
+    st = await out.status()
+    assert st["available"] is True and st["reason"] is None
+    assert brought_up == ["up"]
+    assert ("start", "bluetooth.service") in units
+
+    # Still missing: explained, and not retried more than every 30 s.
+    async def no_luck() -> None:
+        brought_up.append("again")
+
+    out.bring_up = no_luck
+    fake.has_adapter = False
+    clock.now += 31
+    st = await out.status()
+    assert st["available"] is False
+    assert "No Bluetooth adapter" in st["reason"]
+    st = await out.status()
+    assert brought_up == ["up", "again"]
+
+    # BlueZ itself unreachable: the error is the reason.
+    async def broken() -> dict[str, Any] | None:
+        raise BtError("system D-Bus unavailable: no socket")
+
+    fake.adapter = broken  # type: ignore[method-assign]
+    st = await out.status()
+    assert st["available"] is False and "BlueZ not reachable" in st["reason"]
+
+
+async def test_bluez_backend_reconnects_after_a_dropped_bus() -> None:
+    backend = bt.BluezBackend()
+    calls: list[str] = []
+
+    class DeadBus:
+        connected = True
+
+        async def call(self, msg: Any) -> Any:
+            raise EOFError("connection closed")
+
+        def disconnect(self) -> None:
+            calls.append("disconnect")
+
+    backend._bus = DeadBus()
+    backend._adapter_path = "/org/bluez/hci0"
+    with pytest.raises(BtError):
+        await backend.adapter()
+    assert backend._bus is None and backend._adapter_path is None
+    assert calls == ["disconnect"]
+
+
 async def test_api_through_another_room(lan: Lan, make_player, tmp_path) -> None:
     a, b = await setup_household(make_player, ("10.0.0.1", "Pi 5"), ("10.0.0.2", "Pi Zero 2 W"))
     await settle(lan, [a, b])
     none = (await a.client.get(f"/api/v2/rooms/{a.id}/bluetooth")).json()
     assert none["available"] is False and none["experimental"] is True
+    assert none["reason"]
     assert (await a.client.post(f"/api/v2/rooms/{a.id}/bluetooth/scan", json={})).status_code == 503
     out, fake, _e, _u, _ = make_output(tmp_path, model="Raspberry Pi Zero 2 W Rev 1.0")
     b.engine.bt = out
