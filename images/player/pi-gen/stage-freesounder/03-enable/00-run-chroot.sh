@@ -14,6 +14,13 @@ systemctl mask shairport-sync.service 2>/dev/null || true
 systemctl enable nqptp.service 2>/dev/null || true
 # Onboard Bluetooth for Improv Wi-Fi setup. No A2DP / Bluetooth audio is registered.
 systemctl enable bluetooth.service || true
+# Leftover from an experimental Bluetooth-speaker build in a reused rootfs
+# (that branch installs the bluealsa drop-in; without it, remove bluez-alsa).
+if [ ! -d /etc/systemd/system/bluealsa.service.d ] && dpkg -s bluez-alsa-utils >/dev/null 2>&1; then
+	systemctl unmask bluealsa-aplay.service 2>/dev/null || true
+	apt-get purge -y bluez-alsa-utils libasound2-plugin-bluez || true
+	rm -f /etc/freesounder/bt-output
+fi
 systemctl enable NetworkManager.service || true
 systemctl enable freesounder-ble-provisioning.service
 systemctl enable freesounder-boot-doctor.timer
