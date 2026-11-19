@@ -10,6 +10,14 @@ systemctl disable snapserver.service 2>/dev/null || true
 # snapserver launches shairport-sync itself (one AirPlay receiver per group).
 systemctl disable shairport-sync.service 2>/dev/null || true
 systemctl mask shairport-sync.service 2>/dev/null || true
+# MPD runs on every player (library index, podcasts, UPnP); upmpdcli only on
+# group leaders (started by freesounderd). Debian's own units stay off.
+systemctl disable mpd.service mpd.socket upmpdcli.service 2>/dev/null || true
+systemctl mask mpd.service mpd.socket upmpdcli.service 2>/dev/null || true
+systemctl enable freesounder-mpd.service
+systemctl disable freesounder-upnp.service 2>/dev/null || true
+install -d -m 0755 /var/lib/freesounder/music
+install -d -m 0755 -o mpd -g audio /var/lib/freesounder/mpd
 # AirPlay 2 timing helper (only present with the AirPlay 2 build).
 systemctl enable nqptp.service 2>/dev/null || true
 # Onboard Bluetooth for Improv Wi-Fi setup.

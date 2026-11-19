@@ -338,7 +338,7 @@ filters:
     type: Biquad
     parameters:
       type: Lowshelf
-      freq: 120
+      freq: 150
       slope: 6
       gain: {bass}
   treble:

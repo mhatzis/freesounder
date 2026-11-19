@@ -21,6 +21,12 @@ Details, hardware prices and sources: [docs/architecture.md](docs/architecture.m
 
 Design research Page: [freesounder – Architecture Research & Recommended Stack](https://cursor.com/canvas/store-1e1f00a9-5a68-4935-844e-05e60d7c3684/36256424-0c34-4af8-91ca-18271424bb71).
 
+## Sources
+
+Radio, Spotify Connect, AirPlay, your own music on a NAS (SMB / NFS) or USB
+drive, podcasts, and UPnP / DLNA (OpenHome) renderers per group. See
+[docs/sources.md](docs/sources.md).
+
 ## Factory reset
 
 Reset a player (forget Wi-Fi, home and room; back to Bluetooth setup as

@@ -6,11 +6,17 @@
  * re-read whenever it changes, so tone changes apply while audio plays: no
  * ALSA re-open, no snapclient restart. Each change crossfades over ~46 ms
  * (2048 frames); a change that arrives mid-fade waits for that fade to end
- * (latest value wins), so rapid slider moves never jump. Half of the
- * largest boost is taken back by a pre-gain and a stereo-linked peak limiter
- * (ceiling -0.5 dBFS, instant attack, ~80 ms release) catches the rest, so
- * the output never clips (safe for amplifier HATs). With every setting flat
- * the samples pass through unchanged.
+ * (latest value wins), so rapid slider moves never jump.
+ *
+ * Bass: low shelf at 150 Hz. Treble: high shelf at 4 kHz. Loudness ("Bass
+ * boost"): +6 dB low shelf at 100 Hz plus +1.5 dB air at 12 kHz; bass and
+ * loudness together are capped at +12 dB. There is no fixed pre-gain: a
+ * fixed cut of half the boost made everything the speaker can actually play
+ * (100 Hz and up) quieter, so bass and loudness sounded like less bass.
+ * snapclient's software volume already leaves headroom below 100 %, and a
+ * stereo-linked peak limiter (ceiling -0.5 dBFS, instant attack, ~80 ms
+ * release) catches the rest, so the output never clips (safe for amplifier
+ * HATs). With every setting flat the samples pass through unchanged.
  *
  * Params file (one line, whitespace separated, missing fields = 0):
  *   fsdsp1 <bass dB> <treble dB> <balance -10..10> <loudness 0|1>
@@ -102,21 +108,33 @@ static void shelf(coef_t *c, int high, double f0, double gain_db, double fs)
 	c->a1 = a1 / a0; c->a2 = a2 / a0;
 }
 
+#define BASS_HZ 150.0
+#define TREBLE_HZ 4000.0
+#define LOUD_LOW_HZ 100.0
+#define LOUD_LOW_DB 6.0
+#define LOUD_AIR_HZ 12000.0
+#define LOUD_AIR_DB 1.5
+#define MAX_LOW_DB 12.0 /* bass + loudness together */
+
 static void design(fsdsp_t *d)
 {
 	double fs = d->rate ? d->rate : 44100;
 	double bass = d->p.bass, treble = d->p.treble;
-	shelf(&d->cur[0], 0, 120.0, bass, fs);
-	shelf(&d->cur[1], 1, 4000.0, treble, fs);
-	shelf(&d->cur[2], 0, 60.0, d->p.loudness ? 6.0 : 0.0, fs);
-	shelf(&d->cur[3], 1, 12000.0, d->p.loudness ? 1.5 : 0.0, fs);
-	/* Headroom: take back half of the largest boost; the limiter in
-	 * transfer() keeps whatever is left below full scale. */
-	double boost = 0.0;
-	double lows = (bass > 0 ? bass : 0) + (d->p.loudness ? 6.0 : 0.0);
-	double highs = (treble > 0 ? treble : 0) + (d->p.loudness ? 1.5 : 0.0);
-	boost = lows > highs ? lows : highs;
-	d->pre = pow(10.0, -0.5 * boost / 20.0);
+	double loud_low = 0.0;
+	if (d->p.loudness) {
+		loud_low = LOUD_LOW_DB;
+		if (bass > 0 && bass + loud_low > MAX_LOW_DB)
+			loud_low = MAX_LOW_DB - bass;
+		if (loud_low < 0)
+			loud_low = 0;
+	}
+	shelf(&d->cur[0], 0, BASS_HZ, bass, fs);
+	shelf(&d->cur[1], 1, TREBLE_HZ, treble, fs);
+	shelf(&d->cur[2], 0, LOUD_LOW_HZ, loud_low, fs);
+	shelf(&d->cur[3], 1, LOUD_AIR_HZ, d->p.loudness ? LOUD_AIR_DB : 0.0, fs);
+	/* No fixed pre-gain (see the top of this file): the limiter in
+	 * transfer() keeps peaks below full scale. */
+	d->pre = 1.0;
 	double b = d->p.balance;
 	if (b < -10) b = -10;
 	if (b > 10) b = 10;

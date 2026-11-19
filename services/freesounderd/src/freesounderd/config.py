@@ -32,6 +32,10 @@ class DaemonSettings(BaseSettings):
     librespot_api: str = "http://127.0.0.1:3678"
     snapserver_rpc: str = "http://127.0.0.1:1780/jsonrpc"
     ffmpeg_bin: str = "ffmpeg"
+    # MPD (music library, podcasts, UPnP/DLNA via upmpdcli); local only.
+    mpd_host: str = "127.0.0.1"
+    mpd_port: int = 6600
+    music_dir: Path = Path("/var/lib/freesounder/music")
     radio_browser_base: str | None = None
     # Look up album art for radio "Artist - Title" via the free iTunes Search API.
     radio_art_lookup: bool = True

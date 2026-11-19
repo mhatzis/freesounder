@@ -28,6 +28,10 @@ from freesounderd.bluetooth import BluezBackend, BtOutput
 from freesounderd.config import DaemonSettings
 from freesounderd.discovery import Discovery, local_ip
 from freesounderd.dsp import read_audio_output
+from freesounderd.library import Library
+from freesounderd.media import MEDIA_SOURCES, MediaPlayer
+from freesounderd.mpd import MpdClient, MpdError
+from freesounderd.podcasts import Podcasts
 from freesounderd.radio import RadioBrowser, RadioPlayer
 from freesounderd.snapcast import (
     SOURCE_STREAM,
@@ -52,6 +56,9 @@ from freesounderd.spotify import (
 )
 from freesounderd.store import Store, apply_amp_default, board_model, detected_hat, hostname
 from freesounderd.system import System
+from freesounderd.upnp import UNIT as UPNP_UNIT
+from freesounderd.upnp import RendererInfo
+from freesounderd.upnp import render_conf as render_upnp_conf
 
 logger = logging.getLogger(__name__)
 
@@ -170,7 +177,14 @@ class Engine:
         self.clock_offset: dict[str, float] = {}
         self.source = "none"
         self.np: dict[str, Any] = {}
-        self._prev_playing = {"spotify": False, "airplay": False, "radio": False}
+        self._prev_playing = {
+            "spotify": False,
+            "airplay": False,
+            "radio": False,
+            "library": False,
+            "podcast": False,
+            "upnp": False,
+        }
         self._airplay_paused_since: float | None = None
         self._idle_since: float | None = None
         self._lost_since: float | None = None
@@ -219,6 +233,24 @@ class Engine:
         self._np_changed_at: float | None = None
         self._spotify_login_active = False
         self._spotify_login_lock = asyncio.Lock()
+        # MPD: music library, podcasts and the UPnP/DLNA renderer (upmpdcli).
+        self.media = MediaPlayer(MpdClient(settings.mpd_host, settings.mpd_port))
+        self.library = Library(
+            state_dir=settings.state_dir,
+            music_dir=settings.music_dir,
+            mpd=self.media.mpd,
+            managed=settings.manage_system,
+        )
+        self.podcasts = Podcasts(settings.state_dir, self.http)
+        self.renderer = RendererInfo(self.http, lambda: settings.advertise_ip or local_ip())
+        self._upnp_meta: dict[str, Any] = {}
+        self._upnp_meta_key: tuple[str, float] | None = None
+        self._media_vol_seen: int | None = None
+        self._media_vol_pushed: int | None = None
+        self._pod_saved: tuple[str, float] = ("", 0.0)
+        self._pod_last: tuple[str, float, float | None] | None = None
+        self._mount_task: asyncio.Task[None] | None = None
+        self._library_scan_at = time.monotonic()
         features = store.features()
         self.airplay_version = settings.airplay_version or int(features.get("airplay", 0) or 0)
 
@@ -257,6 +289,8 @@ class Engine:
             "volume": int(self.group.get("volume", 40)),
             "muted": bool(self.group.get("muted", False)),
             "available": True,
+            "library": len(self.library.shares()),
+            "pod_rev": self.podcasts.rev(),
             "known": {
                 pid: [r.get("ip"), int(r.get("port", 8080))]
                 for pid, r in self.peers.items()
@@ -279,6 +313,8 @@ class Engine:
             return "paused" if self.radio.paused else "playing"
         if self.source == "airplay":
             return "paused" if self._airplay_paused_since else "playing"
+        if self.source in MEDIA_SOURCES:
+            return "playing" if self.media.playing else "paused"
         return "idle"
 
     def records(self) -> dict[str, dict[str, Any]]:
@@ -535,6 +571,27 @@ class Engine:
         if self.bt is not None:
             self.bt.start()
         self._task = asyncio.create_task(self._loop())
+        if self.library.shares():
+            self._mount_task = asyncio.create_task(self._mount_library())
+
+    async def _mount_library(self) -> None:
+        """Mount this player's library shares (the NAS may still be waking)."""
+
+        for delay in (0, 20, 60, 180):
+            await asyncio.sleep(delay)
+            await self.library.mount_all()
+            if all(v.get("mounted") for v in self.library.status.values()):
+                break
+        self._library_scan_at = time.monotonic()
+        await self.library.rescan()
+
+    async def _library_rules(self) -> None:
+        """Re-index once a day (new albums on the NAS show up by themselves)."""
+
+        if self.library.shares() and time.monotonic() - self._library_scan_at > 24 * 3600:
+            self._library_scan_at = time.monotonic()
+            await self.library.mount_all()
+            await self.library.rescan()
 
     async def _bt_unit(self, action: str, unit: str) -> None:
         if action == "start":
@@ -622,6 +679,7 @@ class Engine:
             else:
                 await self._follow()
             await self._apply_volume()
+        await self._library_rules()
         pending, self._pending_group_volume = self._pending_group_volume, None
         if pending is not None:
             # Moved in the Spotify app: becomes this group's volume (outside the lock).
@@ -668,6 +726,8 @@ class Engine:
             rec["_seen"] = time.monotonic()
             rec["ip"] = rec.get("ip") or ip
             self.peers[pid] = rec
+            if float(rec.get("pod_rev") or 0) > self.podcasts.rev():
+                await self._pull_podcasts(pid, ip, port)
             self.peer_hints.pop(pid, None)
             try:
                 self.store.remember_peer(pid, ip, port, rec.get("room"))
@@ -687,6 +747,17 @@ class Engine:
         now = time.monotonic()
         for pid in [p for p, r in self.peers.items() if now - r.get("_seen", 0) > PEER_FORGET]:
             self.peers.pop(pid, None)
+
+    async def _pull_podcasts(self, pid: str, ip: str, port: int) -> None:
+        """A peer has newer podcast subscriptions or positions: merge them."""
+
+        path = "/api/v2/peer/podcasts"
+        try:
+            res = await self._signed(pid, "GET", f"http://{ip}:{port}{path}", path, b"", 4)
+            if res.status_code == 200:
+                self.podcasts.adopt(res.json())
+        except (httpx.HTTPError, ValueError, OSError):
+            logger.debug("podcast sync from %s failed", pid, exc_info=True)
 
     def peer_alive(self, pid: str) -> bool:
         rec = self.peers.get(pid)
@@ -821,9 +892,18 @@ class Engine:
                     if not await self.spotify.set_device_name(name):
                         await self.system.systemctl("restart", SPOTIFY_UNIT)
                 await self.system.ensure_active(SPOTIFY_UNIT)
+            upnp_conf = render_upnp_conf(name=name, cache_dir="/var/cache/upmpdcli")
+            upnp_path = run / "upmpdcli.conf"
+            # Like AirPlay: a rename restarts the renderer only when it is not playing.
+            if not (self.source == "upnp" and self.media.playing):
+                if self.system.write_if_changed(upnp_path, upnp_conf):
+                    if await self.system.is_active(UPNP_UNIT):
+                        await self.system.systemctl("restart", UPNP_UNIT)
+            await self.system.ensure_active(UPNP_UNIT)
         await self._target_snapclient("127.0.0.1")
         await self._update_sources()
         await self._sync_spotify_volume()
+        await self._sync_media_volume()
         await self._reconcile_snapcast()
         await self._relay_rules()
 
@@ -893,11 +973,16 @@ class Engine:
         except SnapcastError:
             self._server_status = {}
         await self.radio.watchdog()
+        await self.media.refresh()
         airplay = stream_status(self._server_status, "AirPlay") or {}
+        media = self.media.source if self.media.playing else None
         playing = {
             "spotify": is_playing(self._spotify_status),
             "airplay": airplay.get("status") == "playing",
             "radio": self.radio.running,
+            "library": media == "library",
+            "podcast": media == "podcast",
+            "upnp": media == "upnp",
         }
         started = [s for s, on in playing.items() if on and not self._prev_playing[s]]
         self._prev_playing = playing
@@ -921,10 +1006,16 @@ class Engine:
             and (self.radio.running or self.radio.paused or self.radio.restarts < 50)
         ):
             self.source = "none"
+        elif self.source in MEDIA_SOURCES and self.media.source != self.source:
+            # Finished (MPD stopped), or a UPnP controller replaced our queue.
+            self._track_podcast(final=True)
+            self.source = self.media.source or "none"
+        self._track_podcast()
         if self.source == "none":
             others = [s for s, on in playing.items() if on]
             if others:
                 await self._switch_source(others[0])
+        await self._refresh_upnp_meta()
         np = self._now_playing(airplay)
         if np:
             song = tuple(np.get(k) for k in ("title", "artist", "album", "image_url"))
@@ -946,6 +1037,9 @@ class Engine:
         if new != "airplay" and self.source == "airplay":
             with contextlib.suppress(SnapcastError):
                 await self.snap_local.stream_control("AirPlay", "pause")
+        if new not in MEDIA_SOURCES and self.media.state != "stop":
+            self._track_podcast(final=True)
+            await self.media.release()
         self.source = new
         self._airplay_paused_since = None
 
@@ -987,7 +1081,114 @@ class Engine:
                 "duration": meta.get("duration"),
                 "position": position if isinstance(position, int | float) else None,
             }
+        if self.source in MEDIA_SOURCES:
+            return self._media_now_playing()
         return {}
+
+    def _media_now_playing(self) -> dict[str, Any]:
+        media = self.media
+        base: dict[str, Any] = {
+            "position": media.elapsed,
+            "duration": media.duration,
+        }
+        track = media.current()
+        if track is not None:
+            base.update(
+                {
+                    "title": track.get("title"),
+                    "artist": track.get("artist"),
+                    "album": track.get("album"),
+                    "image_url": track.get("image_url"),
+                    "duration": track.get("duration") or media.duration,
+                    "uri": track.get("uri"),
+                    "context_name": track.get("context_name"),
+                }
+            )
+            return base
+        song = media.song
+        meta = self._upnp_meta
+        base.update(
+            {
+                "title": meta.get("title") or song.get("Title") or song.get("Name"),
+                "artist": meta.get("artist") or song.get("Artist"),
+                "album": meta.get("album") or song.get("Album"),
+                "image_url": meta.get("image_url"),
+            }
+        )
+        if not base["title"] and song.get("file"):
+            base["title"] = song["file"].rsplit("/", 1)[-1].split("?", 1)[0] or None
+        return base
+
+    async def _refresh_upnp_meta(self) -> None:
+        """Track details from our own renderer (the controller's DIDL-Lite)."""
+
+        if self.source != "upnp":
+            self._upnp_meta, self._upnp_meta_key = {}, None
+            return
+        key = (self.media.song.get("file", ""), time.monotonic() // 15)
+        if key == self._upnp_meta_key:
+            return
+        self._upnp_meta_key = key
+        try:
+            self._upnp_meta = await self.renderer.track()
+        except Exception:  # noqa: BLE001 - metadata is best effort
+            logger.debug("renderer metadata failed", exc_info=True)
+
+    def _track_podcast(self, final: bool = False) -> None:
+        """Remember where each podcast episode got to (shared by the household)."""
+
+        if final:
+            last = self._pod_last
+            if last is not None:
+                key, pos, dur = last
+                self.podcasts.set_position(key, pos, dur)
+                self._pod_saved = (key, time.monotonic())
+            self._pod_last = None
+            return
+        if self.source != "podcast":
+            return
+        track = self.media.current()
+        pos = self.media.elapsed
+        if not track or not track.get("episode_key") or pos is None:
+            return
+        key = str(track["episode_key"])
+        dur = track.get("duration") or self.media.duration
+        self._pod_last = (key, pos, dur)
+        saved_key, saved_at = self._pod_saved
+        if key != saved_key or time.monotonic() - saved_at > 15 or not self.media.playing:
+            self.podcasts.set_position(key, pos, dur)
+            self._pod_saved = (key, time.monotonic())
+
+    async def _sync_media_volume(self) -> None:
+        """UPnP controllers' volume slider <-> group volume (MPD's null mixer).
+
+        Works like Spotify Connect: the controller's first value of a session
+        is not applied (connecting must not jump the room).
+        """
+
+        vol = self.media.volume
+        if self.source != "upnp" or vol is None:
+            self._media_vol_seen = self._media_vol_pushed = None
+            return
+        group = self.group_for_room(self.id)
+        ours = int(group["volume"]) if group else int(self.group.get("volume", 40))
+        try:
+            if self._media_vol_seen is None:
+                if vol != ours:
+                    await self.media.set_volume(ours)
+                self._media_vol_seen = self._media_vol_pushed = ours
+                return
+            if vol != self._media_vol_seen and vol != self._media_vol_pushed:
+                self._media_vol_seen = self._media_vol_pushed = vol
+                if vol != ours:
+                    self._pending_group_volume = vol
+                return
+            self._media_vol_seen = vol
+            if ours != self._media_vol_pushed:
+                await self.media.set_volume(ours)
+                self._media_vol_seen = self._media_vol_pushed = ours
+        except MpdError:
+            logger.debug("MPD volume sync failed", exc_info=True)
 
     def base_url(self) -> str:
         return f"http://{self.settings.advertise_ip or local_ip()}:{self.settings.port}"
@@ -1069,7 +1270,7 @@ class Engine:
             self._set_group(relay=False)
         if not members:
             return
-        if playing and self.source in ("spotify", "airplay"):
+        if playing and self.source in ("spotify", "airplay", *MEDIA_SOURCES):
             for member in members:
                 await self._peer_command(member["id"], {"op": "solo"})
             self.kick()
@@ -1115,10 +1316,13 @@ class Engine:
         leader = self.peers.get(self.group["follow"])
         if self.radio.running or self.radio.paused:
             await self.radio.stop()
+        if self.source in MEDIA_SOURCES or self.media.playing:
+            await self.media.release()
         self.source = "none"
         self.np = {}
         if self.settings.manage_system:
             await self.system.ensure_stopped(SPOTIFY_UNIT)
+            await self.system.ensure_stopped(UPNP_UNIT)
             await self.system.ensure_stopped(SNAPSERVER_UNIT)
         if leader and leader.get("ip"):
             await self._target_snapclient(leader["ip"])
@@ -1490,6 +1694,24 @@ class Engine:
             if cmd:
                 with contextlib.suppress(SnapcastError):
                     await self.snap_local.stream_control("AirPlay", cmd)
+        elif src in MEDIA_SOURCES:
+            try:
+                if action == "pause" or (action == "toggle" and self.media.playing):
+                    await self.media.pause()
+                    self._track_podcast()
+                elif action in {"play", "toggle"}:
+                    await self.media.resume()
+                elif action == "stop":
+                    self._track_podcast(final=True)
+                    await self.media.stop()
+                    self.source = "none"
+                elif action == "next":
+                    await self.media.next()
+                elif action == "previous":
+                    await self.media.previous()
+                await self.media.refresh()
+            except MpdError as exc:
+                raise EngineError(502, f"The music player did not answer: {exc}") from exc
         elif action == "play":
             last = self.store.radio_favourites()
             station = self.radio.station or (last[0] if last else None)
@@ -1625,8 +1847,17 @@ class Engine:
                 leader, "POST", f"/api/v2/groups/{leader}/seek", {"position_ms": position_ms}
             )
             return
+        if self.source in MEDIA_SOURCES:
+            try:
+                await self.media.seek(position_ms / 1000)
+                await self.media.refresh()
+            except MpdError as exc:
+                raise EngineError(502, f"Could not seek: {exc}") from exc
+            self._track_podcast()
+            self.kick()
+            return
         if self.source != "spotify":
-            raise EngineError(409, "Seeking works for Spotify only.")
+            raise EngineError(409, "Seeking works for Spotify, the library and podcasts.")
         if not await self.spotify.seek(position_ms):
             raise EngineError(502, "Spotify player did not seek")
         self.kick()
@@ -1654,9 +1885,121 @@ class Engine:
         self.kick()
         return {"ok": True, "station": station}
 
+    # ------------------------------------------------------------------ library
+    def library_host(self) -> str:
+        """The player holding the music library (shares), else this player."""
+
+        if self.library.shares():
+            return self.id
+        hosts = [
+            r
+            for r in self.peers.values()
+            if int(r.get("library") or 0) > 0 and self.peer_alive(r["id"])
+        ]
+        return min(hosts, key=score)["id"] if hosts else self.id
+
+    def _addr(self, pid: str) -> tuple[str, int]:
+        if pid == self.id:
+            return (self.settings.advertise_ip or local_ip(), self.settings.port)
+        rec = self.peers.get(pid)
+        if rec is None or not rec.get("ip"):
+            raise EngineError(404, "The library player is offline.")
+        return (str(rec["ip"]), int(rec.get("port", 8080)))
+
+    def library_urls(self, host: str, uri: str) -> tuple[str, str]:
+        """Stream and cover URLs for one library file on its library player."""
+
+        hh = self.store.household()
+        if hh is None:
+            raise EngineError(409, "Set up this player first.")
+        from urllib.parse import quote
+
+        ip, port = self._addr(host)
+        sig = peers.token(hh.key, "libfile", uri)
+        q = quote(uri, safe="")
+        return (
+            f"http://{ip}:{port}/api/v2/library/file?uri={q}&sig={sig}",
+            f"http://{ip}:{port}/api/v2/library/art?uri={q}",
+        )
+
+    async def play_library(self, gid: str, body: dict[str, Any]) -> dict[str, Any]:
+        leader = self._media_leader(gid)
+        if leader != self.id:
+            return await self.forward(leader, "POST", f"/api/v2/groups/{leader}/library/play", body)
+        host = str(body.get("host") or self.library_host())
+        items = [t for t in body.get("tracks") or [] if isinstance(t, dict) and t.get("uri")]
+        if not items:
+            raise EngineError(400, "Nothing to play.")
+        items = items[:500]
+        tracks = []
+        for item in items:
+            url, art = self.library_urls(host, str(item["uri"]))
+            tracks.append(
+                {
+                    "url": url,
+                    "uri": item["uri"],
+                    "title": item.get("title"),
+                    "artist": item.get("artist"),
+                    "album": item.get("album"),
+                    "duration": item.get("duration"),
+                    "image_url": art,
+                    "context_name": body.get("context_name"),
+                }
+            )
+        start = int(body.get("start") or 0)
+        await self._start_media(tracks, start, "library")
+        return {"ok": True, "tracks": len(tracks)}
+
+    async def play_podcast(self, gid: str, body: dict[str, Any]) -> dict[str, Any]:
+        leader = self._media_leader(gid)
+        if leader != self.id:
+            return await self.forward(leader, "POST", f"/api/v2/groups/{leader}/podcast/play", body)
+        ep = body.get("episode") or {}
+        url = str(ep.get("url") or "")
+        if not url.startswith(("http://", "https://")) or not ep.get("id"):
+            raise EngineError(400, "That episode has no audio address.")
+        pod = body.get("podcast") or {}
+        track = {
+            "url": url,
+            "title": ep.get("title"),
+            "artist": pod.get("title"),
+            "album": None,
+            "duration": ep.get("duration"),
+            "image_url": ep.get("image") or pod.get("image"),
+            "episode_key": str(ep["id"]),
+            "context_name": pod.get("title"),
+        }
+        start_at = body.get("position")
+        seek = float(start_at) if start_at is not None else self.podcasts.resume_at(str(ep["id"]))
+        await self._start_media([track], 0, "podcast", seek=seek)
+        return {"ok": True, "position": seek}
+
+    def _media_leader(self, gid: str) -> str:
+        if gid.endswith(SOLO_SUFFIX):
+            raise EngineError(409, "This room is still playing for its old group.")
+        return self.resolve_leader(gid)
+
+    async def _start_media(
+        self, tracks: list[dict[str, Any]], start: int, owner: str, seek: float = 0
+    ) -> None:
+        async with self._lock:
+            if self.source != owner:
+                await self._switch_source(owner)
+            self._track_podcast(final=True)
+            try:
+                await self.media.play(tracks, start=start, owner=owner, seek=seek)
+            except MpdError as exc:
+                raise EngineError(502, f"The music player did not start: {exc}") from exc
+            self.source = owner
+            self._prev_playing[owner] = True
+        self.kick()
+
     async def _start_radio(self, station: dict[str, Any]) -> None:
         if is_playing(self._spotify_status):
             await self.spotify.command("pause")
+        if self.media.state != "stop":
+            self._track_podcast(final=True)
+            await self.media.release()
         await self.radio.play(station)
         self.radio.restarts = 0
         self._prev_playing["radio"] = True

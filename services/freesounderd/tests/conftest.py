@@ -66,6 +66,148 @@ class FakeSnapserver:
         return {"id": payload["id"], "jsonrpc": "2.0", "result": result}
 
 
+class FakeMpd:
+    """Enough of MPD for the engine: a queue, play state, volume, a tiny db."""
+
+    def __init__(self) -> None:
+        self.queue: list[str] = []
+        self.state = "stop"
+        self.pos = 0
+        self.elapsed = 0.0
+        self.volume = 50
+        self.version = 1
+        self.calls: list[list[Any]] = []
+        self.db: list[dict[str, str]] = []
+        self.pictures: dict[str, bytes] = {}
+        self.fail_seek = False
+
+    def _status(self) -> dict[str, str]:
+        out = {
+            "state": self.state,
+            "playlist": str(self.version),
+            "playlistlength": str(len(self.queue)),
+            "volume": str(self.volume),
+        }
+        if self.state != "stop" and self.queue:
+            out.update({"song": str(self.pos), "elapsed": f"{self.elapsed:.3f}"})
+        return out
+
+    async def status(self) -> dict[str, str]:
+        return self._status()
+
+    async def currentsong(self) -> dict[str, str]:
+        if self.state == "stop" or not self.queue:
+            return {}
+        return {"file": self.queue[self.pos], "Pos": str(self.pos)}
+
+    def external_play(self, url: str) -> None:
+        """A UPnP controller (via upmpdcli) replaces the queue and plays."""
+
+        self.queue = [url]
+        self.version += 2
+        self.pos, self.state, self.elapsed = 0, "play", 0.0
+
+    def _run(self, cmd: list[Any]) -> list[tuple[str, str]]:
+        from freesounderd.mpd import MpdError
+
+        name, args = cmd[0], [str(a) for a in cmd[1:]]
+        self.calls.append([name, *args])
+        if name == "clear":
+            self.queue, self.version = [], self.version + 1
+        elif name == "add":
+            self.queue.append(args[0])
+            self.version += 1
+        elif name == "play":
+            if self.queue:
+                self.pos = int(args[0]) if args else self.pos
+                self.state, self.elapsed = "play", 0.0
+        elif name == "seek":
+            if self.fail_seek:
+                raise MpdError("[2@0] {seek} not seekable")
+            self.pos, self.elapsed, self.state = int(args[0]), float(args[1]), "play"
+        elif name == "seekcur":
+            self.elapsed = float(args[0])
+        elif name == "pause":
+            if self.state != "stop":
+                self.state = "pause" if args and args[0] == "1" else "play"
+        elif name == "stop":
+            self.state = "stop"
+        elif name == "next":
+            if self.pos + 1 < len(self.queue):
+                self.pos, self.elapsed = self.pos + 1, 0.0
+            else:
+                self.state = "stop"
+        elif name == "previous":
+            self.pos, self.elapsed = max(0, self.pos - 1), 0.0
+        elif name == "setvol":
+            self.volume = int(args[0])
+        elif name == "stats":
+            albums = {r.get("Album") for r in self.db}
+            artists = {r.get("AlbumArtist") for r in self.db}
+            return [
+                ("artists", str(len(artists))),
+                ("albums", str(len(albums))),
+                ("songs", str(len(self.db))),
+            ]
+        elif name == "list" and args[0] == "albumartist":
+            return [("AlbumArtist", a) for a in sorted({r["AlbumArtist"] for r in self.db})]
+        elif name == "list" and args[0] == "album":
+            if len(args) >= 3 and args[1] == "albumartist":
+                return [
+                    ("Album", a)
+                    for a in sorted({r["Album"] for r in self.db if r["AlbumArtist"] == args[2]})
+                ]
+            out: list[tuple[str, str]] = []
+            for artist in sorted({r["AlbumArtist"] for r in self.db}):
+                out.append(("AlbumArtist", artist))
+                out += [
+                    ("Album", a)
+                    for a in sorted({r["Album"] for r in self.db if r["AlbumArtist"] == artist})
+                ]
+            return out
+        elif name == "find":
+            want = dict(zip(args[0::2], args[1::2], strict=False))
+            keys = {"album": "Album", "albumartist": "AlbumArtist"}
+            hits = [r for r in self.db if all(r.get(keys[k]) == v for k, v in want.items())]
+            return [kv for r in hits for kv in r.items()]
+        elif name == "search":
+            q = args[1].lower()
+            hits = [r for r in self.db if any(q in v.lower() for v in r.values())]
+            return [kv for r in hits for kv in r.items()]
+        elif name == "lsinfo":
+            path = args[0] if args else ""
+            dirs, files = set(), []
+            for r in self.db:
+                f = r["file"]
+                if path and not f.startswith(path + "/"):
+                    continue
+                rest = f[len(path) + 1 :] if path else f
+                if "/" in rest:
+                    dirs.add((path + "/" if path else "") + rest.split("/", 1)[0])
+                else:
+                    files.append(r)
+            out = [("directory", d) for d in sorted(dirs)]
+            return out + [kv for r in files for kv in r.items()]
+        return []
+
+    async def command(self, name: str, *args: Any, binary: bool = False) -> list[tuple[str, str]]:
+        return self._run([name, *args])
+
+    async def command_list(self, commands: list[list[Any]]) -> None:
+        snapshot = (list(self.queue), self.state, self.pos, self.elapsed, self.version)
+        try:
+            for cmd in commands:
+                self._run(cmd)
+        except Exception:
+            self.queue, self.state, self.pos, self.elapsed, self.version = snapshot
+            raise
+
+    async def binary(self, name: str, uri: str) -> tuple[bytes, str | None]:
+        if name == "readpicture" and uri in self.pictures:
+            return self.pictures[uri], "image/jpeg"
+        return b"", None
+
+
 class Lan:
     def __init__(self) -> None:
         self.apps: dict[str, Any] = {}
@@ -73,6 +215,7 @@ class Lan:
         self.spotify: dict[str, dict[str, Any] | None] = {}
         self.spotify_calls: list[tuple[str, str, Any]] = []
         self.itunes: list[dict[str, Any]] = []
+        self.feeds: dict[str, bytes] = {}
         self.down: set[str] = set()
 
     def transport(self, local_ip: str) -> httpx.MockTransport:
@@ -90,6 +233,8 @@ class Lan:
                 return httpx.Response(200, json=server.handle(json.loads(request.content)))
             if host == "itunes.apple.com":
                 return httpx.Response(200, json={"results": self.itunes})
+            if host in self.feeds:
+                return httpx.Response(200, content=self.feeds[host])
             if port == 3678:
                 import json
 
@@ -130,6 +275,7 @@ class Player:
             snapserver_conf=root / "snapserver.conf",
             snapclient_env=root / "snapclient.env",
             spotify_dir=root / "spotify",
+            music_dir=root / "music",
             apply_command=None,
             ssh_command=None,
             airplay_version=2,
@@ -143,6 +289,15 @@ class Player:
             http=httpx.AsyncClient(transport=lan.transport(ip)),
         )
         self.engine._model = model
+        self.mpd = FakeMpd()
+        self.engine.media.mpd = self.mpd
+        self.engine.library.mpd = self.mpd
+        self.upnp_meta: dict[str, Any] = {}
+
+        async def renderer_track() -> dict[str, Any]:
+            return dict(self.upnp_meta)
+
+        self.engine.renderer.track = renderer_track  # type: ignore[method-assign]
         self.app = create_app(self.settings, self.store, engine=self.engine, run_loop=False)
         lan.apps[ip] = self.app
         self.client = httpx.AsyncClient(

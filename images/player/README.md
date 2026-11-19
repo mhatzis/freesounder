@@ -100,6 +100,13 @@ before snapclient:
 - There is no wired GPIO button any more (0.6.11): a button on GPIO3 took
   the I2C clock line away from the codec, which left the card listed but
   silent. Reset from the app instead (docs/reset.md).
+- Music library, podcasts and UPnP / DLNA (0.6.12): `freesounder-mpd.service`
+  runs MPD (`/etc/freesounder/mpd.conf`, local only, fifo output
+  `/run/freesounder/mpd.fifo` → the leader's `Media` stream) on every
+  player. `freesounder-upnp.service` runs upmpdcli on group leaders only
+  (freesounderd writes `/run/freesounder/upmpdcli.conf` and starts it).
+  Debian's `mpd` and `upmpdcli` units are masked. `cifs-utils` and
+  `nfs-common` mount NAS shares read-only. See docs/sources.md.
 - Card outputs are opened as `hw:CARD=<id>,DEV=0` under one plug (0.6.11).
   `default:CARD=<id>` stacked a second plug under the FreeSounder chain, and
   that failed hw-params on a PCM5122 (`snd_interval_empty` assertion).

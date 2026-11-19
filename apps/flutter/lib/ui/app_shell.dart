@@ -7,16 +7,14 @@ import '../models/now_playing.dart';
 import '../state/playback_store.dart';
 import '../theme/tokens.dart';
 import 'add_player_sheet.dart';
-import '../spotify/spotify_store.dart';
 import '../spotify/ui/spotify_brand.dart';
-import '../spotify/ui/spotify_screen.dart';
 import 'artwork.dart';
 import 'mini_player.dart';
 import 'now_playing_screen.dart';
-import 'radio_screen.dart';
 import 'room_settings_sheet.dart';
 import 'rooms_panel.dart';
 import 'settings_screen.dart';
+import 'sources_sheet.dart';
 
 /// App shell: now-playing canvas, persistent mini-player, rooms bottom sheet
 /// on narrow widths, and a right-hand rooms rail at 900px and above.
@@ -175,7 +173,13 @@ class _NowPlayingCanvas extends ConsumerWidget {
                                       child: Artwork(
                                         urls: np?.artworkCandidates ?? const [],
                                         trackKey: np?.trackKey,
-                                        icon: np?.source == 'radio' ? Icons.radio : null,
+                                        icon: switch (np?.source) {
+                                          'radio' => Icons.radio,
+                                          'library' => Icons.album_rounded,
+                                          'podcast' => Icons.podcasts_rounded,
+                                          'upnp' => Icons.cast_connected_rounded,
+                                          _ => null,
+                                        },
                                       ),
                                     ),
                                   ),
@@ -353,21 +357,11 @@ class _TopBar extends StatelessWidget {
               ),
             ),
           ),
-        Consumer(
-          builder: (context, ref, _) => IconButton(
-            key: const Key('spotify-button'),
-            tooltip: 'Spotify',
-            icon: ref.watch(spotifyProvider.select((s) => s.signedIn))
-                ? const SpotifyMark.icon(size: 22)
-                : const Icon(Icons.library_music_outlined),
-            onPressed: () => showSpotifyScreen(context),
-          ),
-        ),
         IconButton(
-          key: const Key('radio-button'),
-          tooltip: 'Radio',
-          icon: const Icon(Icons.radio_outlined),
-          onPressed: () => showRadioScreen(context),
+          key: const Key('sources-button'),
+          tooltip: 'Play music',
+          icon: const Icon(Icons.library_music_outlined),
+          onPressed: () => showSourcesSheet(context),
         ),
         IconButton(
           key: const Key('settings-button'),
@@ -384,12 +378,15 @@ class _TopBar extends StatelessWidget {
   }
 }
 
-/// "Radio", "Spotify", "AirPlay" for the now-playing canvas.
+/// "Radio", "Spotify", "AirPlay", … for the now-playing canvas.
 String? sourceLabel(String? source) {
   return switch (source) {
     'radio' => 'Radio',
     'spotify' => 'Spotify Connect',
     'airplay' => 'AirPlay',
+    'library' => 'Music library',
+    'podcast' => 'Podcasts',
+    'upnp' => 'UPnP / DLNA',
     _ => null,
   };
 }

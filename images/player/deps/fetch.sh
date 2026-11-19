@@ -20,6 +20,9 @@ fetch "$SNAP/$SNAPSERVER_DEB" "$SNAPSERVER_DEB" "$SNAPSERVER_SHA256"
 fetch "$SNAP/$SNAPCLIENT_DEB" "$SNAPCLIENT_DEB" "$SNAPCLIENT_SHA256"
 fetch "https://github.com/devgianlu/go-librespot/releases/download/v${GO_LIBRESPOT_VERSION}/$GO_LIBRESPOT_TGZ" \
 	"$GO_LIBRESPOT_TGZ" "$GO_LIBRESPOT_SHA256"
+fetch "$UPMPDCLI_BASE/$UPMPDCLI_PATH/${UPMPDCLI_DEB//\~/%7E}" "$UPMPDCLI_DEB" "$UPMPDCLI_SHA256"
+fetch "$UPMPDCLI_BASE/$LIBUPNPP_PATH/${LIBUPNPP_DEB//\~/%7E}" "$LIBUPNPP_DEB" "$LIBUPNPP_SHA256"
+fetch "$UPMPDCLI_BASE/$LIBNPUPNP_PATH/${LIBNPUPNP_DEB//\~/%7E}" "$LIBNPUPNP_DEB" "$LIBNPUPNP_SHA256"
 if [[ -n "${AIRPLAY2_RUN_ID:-}" ]] && ! ls "$CACHE/airplay2/"shairport-sync_*.deb >/dev/null 2>&1; then
 	gh run download "$AIRPLAY2_RUN_ID" -n airplay2-trixie-arm64 -D "$CACHE/airplay2"
 fi

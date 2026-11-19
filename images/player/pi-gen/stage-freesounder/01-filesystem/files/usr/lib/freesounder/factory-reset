@@ -44,7 +44,7 @@ done
 
 if [[ $early -eq 0 ]]; then
 	systemctl stop freesounderd.service freesounder-spotify.service snapserver.service \
-		snapclient.service 2>/dev/null || true
+		snapclient.service freesounder-upnp.service freesounder-mpd.service 2>/dev/null || true
 	# Feedback 2: a short tone through the player's own output, if it has one.
 	if command -v aplay >/dev/null && [[ -x /opt/freesounder/venv/bin/python ]]; then
 		/opt/freesounder/venv/bin/python - <<'PY' 2>/dev/null || true
@@ -57,10 +57,17 @@ PY
 	fi
 fi
 
+# Music library shares (NAS / USB) are mounted under the state directory:
+# unmount them first so nothing on the share is touched.
+if [[ -r /proc/mounts ]]; then
+	awk '$2 ~ "^/var/lib/freesounder/music/" {print $2}' /proc/mounts | sort -r |
+		while read -r mnt; do umount -l "$mnt" 2>/dev/null || true; done
+fi
 # Home, room and per-room state (household key, members, group, settings,
-# radio favourites, Spotify credentials).
+# radio favourites, Spotify credentials, library shares and their passwords,
+# podcast subscriptions, the MPD database). -xdev: never cross into a mount.
 if [[ -d /var/lib/freesounder ]]; then
-	find /var/lib/freesounder -mindepth 1 -delete 2>/dev/null || true
+	find /var/lib/freesounder -xdev -mindepth 1 -delete 2>/dev/null || true
 fi
 rm -f /etc/freesounder/name /etc/freesounder/configured /etc/freesounder/hostname \
 	/etc/freesounder/player-id /etc/freesounder/audio-output /etc/freesounder/ma-token \
@@ -96,6 +103,8 @@ hostname fs-new 2>/dev/null || true
 
 # "Reset - ready for setup" on the status screen until the app sets it up.
 install -d -m 0755 /var/lib/freesounder
+install -d -m 0755 /var/lib/freesounder/music
+install -d -m 0755 -o mpd -g audio /var/lib/freesounder/mpd 2>/dev/null || install -d -m 0755 /var/lib/freesounder/mpd
 date -Iseconds > /var/lib/freesounder/reset-done
 echo done > /run/freesounder/reset-state
 sync

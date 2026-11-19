@@ -42,6 +42,11 @@ install -m 0755 files/usr/lib/freesounder/ssh-developer "${ROOTFS_DIR}/usr/lib/f
 install -m 0755 files/usr/sbin/freesounder-setup "${ROOTFS_DIR}/usr/sbin/freesounder-setup"
 install -m 0644 files/etc/systemd/system/freesounderd.service "${ROOTFS_DIR}/etc/systemd/system/freesounderd.service"
 install -m 0644 files/etc/systemd/system/freesounder-spotify.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-spotify.service"
+# MPD + upmpdcli: music library, podcasts, UPnP/DLNA (0.6.12).
+install -d "${ROOTFS_DIR}/etc/freesounder"
+install -m 0644 files/etc/freesounder/mpd.conf "${ROOTFS_DIR}/etc/freesounder/mpd.conf"
+install -m 0644 files/etc/systemd/system/freesounder-mpd.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-mpd.service"
+install -m 0644 files/etc/systemd/system/freesounder-upnp.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-upnp.service"
 install -m 0644 files/etc/systemd/system/freesounder-ble-provisioning.service "${ROOTFS_DIR}/etc/systemd/system/freesounder-ble-provisioning.service"
 install -d "${ROOTFS_DIR}/etc/systemd/system/bluetooth.service.d"
 # EXPERIMENTAL Bluetooth speaker output: bluealsa as A2DP source only.

@@ -1,0 +1,22 @@
+[Unit]
+Description=FreeSounder music player (MPD: library, podcasts, UPnP/DLNA)
+After=network-online.target local-fs.target systemd-tmpfiles-setup.service
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/mpd --systemd /etc/freesounder/mpd.conf
+User=mpd
+Group=audio
+Restart=on-failure
+RestartSec=3
+Nice=-5
+# Pi Zero 2 W: keep it small.
+MemoryHigh=96M
+MemoryMax=160M
+# No private mount namespace: library shares are mounted later by
+# freesounderd and must be visible here.
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target
