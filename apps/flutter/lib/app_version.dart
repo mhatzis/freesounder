@@ -1,2 +1,2 @@
 /// Marketing version shown in settings and room sheets.
-const appVersion = '0.6.12';
+const appVersion = '0.6.13';
