@@ -1430,6 +1430,15 @@ class Engine:
     ) -> Any:
         rec = self.peers.get(pid)
         hh = self.store.household()
+        if (rec is None or not rec.get("ip")) and hh is not None:
+            # A member this player remembers but has not heard from lately
+            # (listed as a room, e.g. after our restart or a missed beacon):
+            # try its last address instead of answering 404, which the app
+            # read as "this player has no such feature".
+            known = self.store.known_peers().get(pid)
+            if known is not None:
+                name = self.store.known_peer_names().get(pid) or pid
+                rec = {"id": pid, "ip": known[0], "port": known[1], "room": name}
         if rec is None or not rec.get("ip") or hh is None:
             raise EngineError(404, f"Unknown player {pid}")
         raw = json.dumps(body).encode() if body is not None else b""
