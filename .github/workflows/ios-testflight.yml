@@ -20,7 +20,7 @@ on:
 jobs:
   testflight:
     name: Build and upload
-    runs-on: macos-latest
+    runs-on: xcode-27  # iOS 27 SDK (App Store requires it from April 2027)
     timeout-minutes: 45
     defaults:
       run:
