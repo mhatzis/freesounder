@@ -63,6 +63,11 @@ systemctl enable freesounder-factory-reset.service
 systemctl enable freesounder-heartbeat.service
 systemctl enable freesounder-audio-detect.service
 systemctl enable freesounder-audio-output.timer
+# OTA: data partition + slot boot partition, trial-boot bookkeeping and the post-update health check.
+# rauc.service itself is D-Bus activated.
+systemctl enable freesounder-data.service
+systemctl enable freesounder-ota-boot.service
+systemctl enable freesounder-ota-health.service
 # Persistent journal directory owned as journald expects.
 systemd-tmpfiles --create --prefix /var/log/journal 2>/dev/null || true
 

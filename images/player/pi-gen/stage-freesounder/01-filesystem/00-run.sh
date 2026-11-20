@@ -171,3 +171,30 @@ if [ -f "${ROOTFS_DIR}/boot/firmware/cmdline.txt" ]; then
 		sed -i 's/[[:space:]]*$/ loglevel=7/' "${ROOTFS_DIR}/boot/firmware/cmdline.txt"
 	fi
 fi
+
+# ---------------------------------------------------------------- OTA (RAUC A/B, tryboot)
+# Partition layout and the A/B boot switch: /usr/lib/freesounder/ota/fsota.py.
+install -d "${ROOTFS_DIR}/usr/lib/freesounder/ota" "${ROOTFS_DIR}/etc/rauc" "${ROOTFS_DIR}/data" \
+	"${ROOTFS_DIR}/etc/systemd/system.conf.d"
+install -m 0644 files/usr/lib/freesounder/ota/fsota.py "${ROOTFS_DIR}/usr/lib/freesounder/ota/fsota.py"
+for f in rauc-backend freesounder-ota post-install data-setup; do
+	install -m 0755 "files/usr/lib/freesounder/ota/$f" "${ROOTFS_DIR}/usr/lib/freesounder/ota/$f"
+done
+ln -sf /usr/lib/freesounder/ota/freesounder-ota "${ROOTFS_DIR}/usr/sbin/freesounder-ota"
+install -m 0644 files/etc/rauc/system.conf "${ROOTFS_DIR}/etc/rauc/system.conf"
+# The keyring is the OTA CA certificate (public). Release builds pass the production CA, dev builds
+# the local dev CA from images/player/ota/gen-dev-keys.sh. Never a private key.
+if [[ -z "${RAUC_KEYRING_PEM:-}" || ! -f "${RAUC_KEYRING_PEM}" ]]; then
+	echo "RAUC_KEYRING_PEM (path to the OTA CA certificate) is required." >&2
+	exit 1
+fi
+if grep -q "PRIVATE KEY" "${RAUC_KEYRING_PEM}"; then
+	echo "RAUC_KEYRING_PEM contains a private key; refusing to put it in the image." >&2
+	exit 1
+fi
+install -m 0644 "${RAUC_KEYRING_PEM}" "${ROOTFS_DIR}/etc/rauc/keyring.pem"
+install -m 0644 files/etc/systemd/system.conf.d/10-freesounder-watchdog.conf \
+	"${ROOTFS_DIR}/etc/systemd/system.conf.d/10-freesounder-watchdog.conf"
+for unit in freesounder-data.service freesounder-ota-boot.service freesounder-ota-health.service; do
+	install -m 0644 "files/etc/systemd/system/$unit" "${ROOTFS_DIR}/etc/systemd/system/$unit"
+done

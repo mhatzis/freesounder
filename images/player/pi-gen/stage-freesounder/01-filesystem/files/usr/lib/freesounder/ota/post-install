@@ -1,0 +1,66 @@
+#!/bin/bash
+# RAUC system post-install handler: runs after every target slot was written, before RAUC marks the
+# new slot group primary. Carries per-player identity and boot-time hardware choices into the new slot.
+#
+#   rootfs: grow the filesystem to the partition, keep /etc/machine-id and SSH host keys
+#   boot:   keep the DAC/amp overlay block (# --- freesounder-dac-start/end ---) from config.txt
+#
+# RAUC exports RAUC_TARGET_SLOTS="1 2 ..." and per slot RAUC_SLOT_CLASS_<n>, RAUC_SLOT_DEVICE_<n>.
+# Test hooks: FSPI_ROOT (prefix for the running system's files), FSPI_BOOT_CONFIG.
+set -euo pipefail
+R=${FSPI_ROOT:-}
+BOOT_CFG=${FSPI_BOOT_CONFIG:-$R/boot/firmware/config.txt}
+say() { echo "freesounder-post-install: $*"; logger -t freesounder-ota -- "$*" 2>/dev/null || true; }
+export MTOOLS_SKIP_CHECK=1
+
+fix_rootfs() {
+	local dev=$1 mnt
+	local rc=0
+	e2fsck -fy "$dev" >/dev/null 2>&1 || rc=$?
+	# 0 = clean, 1 = errors corrected; anything else means the written image is broken.
+	if ((rc > 1)); then
+		say "e2fsck $dev failed ($rc)"
+		return 1
+	fi
+	resize2fs "$dev" >/dev/null 2>&1 || say "resize2fs $dev failed (continuing at image size)"
+	mnt=$(mktemp -d /run/fsota-root.XXXXXX)
+	mount -t ext4 "$dev" "$mnt"
+	if [[ -s "$R/etc/machine-id" ]]; then
+		cp -f "$R/etc/machine-id" "$mnt/etc/machine-id"
+	fi
+	local key
+	for key in "$R"/etc/ssh/ssh_host_*; do
+		[[ -e "$key" ]] || continue
+		cp -a "$key" "$mnt/etc/ssh/"
+	done
+	sync
+	umount "$mnt"
+	rmdir "$mnt"
+	say "root slot $dev prepared"
+}
+
+fix_boot() {
+	local dev=$1 tmp new block
+	[[ -f "$BOOT_CFG" ]] || return 0
+	block=$(sed -n '/^# --- freesounder-dac-start ---$/,/^# --- freesounder-dac-end ---$/p' "$BOOT_CFG")
+	[[ -n "$block" ]] || return 0
+	tmp=$(mktemp)
+	new=$(mktemp)
+	mtype -i "$dev" ::/config.txt > "$tmp"
+	sed '/^# --- freesounder-dac-start ---$/,/^# --- freesounder-dac-end ---$/d' "$tmp" > "$new"
+	printf '%s\n' "$block" >> "$new"
+	mcopy -o -i "$dev" "$new" ::/config.txt
+	rm -f "$tmp" "$new"
+	say "boot slot $dev: DAC overlay block carried over"
+}
+
+for i in ${RAUC_TARGET_SLOTS:-}; do
+	class_var="RAUC_SLOT_CLASS_$i"
+	dev_var="RAUC_SLOT_DEVICE_$i"
+	class=${!class_var:-}
+	dev=${!dev_var:-}
+	case "$class" in
+		rootfs) fix_rootfs "$dev" ;;
+		boot) fix_boot "$dev" ;;
+	esac
+done

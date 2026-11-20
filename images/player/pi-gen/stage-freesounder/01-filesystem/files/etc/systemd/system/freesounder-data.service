@@ -1,0 +1,16 @@
+[Unit]
+Description=FreeSounder data partition (/data) and this slot's /boot/firmware
+Documentation=file:/usr/lib/freesounder/ota/data-setup
+DefaultDependencies=no
+After=systemd-remount-fs.service systemd-udevd.service
+Before=local-fs.target freesounder-boot-mark.service freesounder-boot-count.service freesounder-factory-reset.service freesounder-hostname.service systemd-tmpfiles-setup.service
+ConditionKernelCommandLine=rauc.slot
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/freesounder/ota/data-setup
+TimeoutStartSec=10min
+
+[Install]
+WantedBy=local-fs.target

@@ -14,7 +14,13 @@ TARGET=/run/freesounder-boot
 mkdir -p "$TARGET"
 
 BOOT_PART_DEV=""
-if [ -n "${rootmnt:-}" ] && [ -f "${rootmnt}/etc/fstab" ]; then
+# A/B layout: the slot's own boot partition is on the command line (fsboot=PARTUUID=...).
+for tok in $(cat /proc/cmdline); do
+	case "$tok" in
+		fsboot=*) BOOT_PART_DEV=${tok#fsboot=} ;;
+	esac
+done
+if [ -z "$BOOT_PART_DEV" ] && [ -n "${rootmnt:-}" ] && [ -f "${rootmnt}/etc/fstab" ]; then
 	BOOT_PART_DEV=$(findmnt -n -o SOURCE -s -F "${rootmnt}/etc/fstab" /boot/firmware 2>/dev/null)
 fi
 if [ -z "$BOOT_PART_DEV" ]; then

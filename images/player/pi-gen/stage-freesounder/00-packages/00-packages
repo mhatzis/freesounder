@@ -18,3 +18,8 @@ rfkill
 bluez-firmware
 iw
 bluez-alsa-utils
+rauc
+rauc-service
+mtools
+dosfstools
+fdisk

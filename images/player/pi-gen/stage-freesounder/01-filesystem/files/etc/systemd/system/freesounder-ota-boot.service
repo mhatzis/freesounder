@@ -1,0 +1,13 @@
+[Unit]
+Description=FreeSounder OTA: note trial boots and roll-backs
+After=freesounder-data.service local-fs.target
+Before=rauc.service freesounderd.service freesounder-ota-health.service
+ConditionKernelCommandLine=rauc.slot
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/freesounder/ota/freesounder-ota boot-check
+
+[Install]
+WantedBy=multi-user.target

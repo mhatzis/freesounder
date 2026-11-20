@@ -1,0 +1,13 @@
+[Unit]
+Description=FreeSounder OTA: health check after an update (commit or roll back)
+After=freesounder-ota-boot.service freesounderd.service NetworkManager.service
+ConditionKernelCommandLine=rauc.slot
+
+[Service]
+# Not a oneshot: the check waits for the boot to finish (is-system-running), so it must not hold it up.
+Type=exec
+ExecStart=/usr/lib/freesounder/ota/freesounder-ota health --timeout 300
+TimeoutStartSec=infinity
+
+[Install]
+WantedBy=multi-user.target

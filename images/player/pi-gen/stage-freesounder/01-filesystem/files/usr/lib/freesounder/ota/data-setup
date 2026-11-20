@@ -1,0 +1,185 @@
+#!/bin/bash
+# FreeSounder data partition (p7) and per-slot /boot/firmware.
+#
+# Runs every boot before local-fs.target (freesounder-data.service). Root (A or B) is replaced
+# wholesale by an update, so anything that must survive an update lives on /data:
+#   * bind mounts: whole state directories (household, Wi-Fi, pairings, Docker, ...)
+#   * overlay:     /etc/freesounder, so new image defaults still show through unless changed here
+# First boot after flashing creates p7 in the free space after root B and formats it.
+#
+# Test hooks: FSDATA_ROOT (prefix for every path), FSDATA_SKIP_DISK=1 (no partitioning/mounting of
+# real devices; $FSDATA_ROOT/data must already be a directory or mount).
+set -euo pipefail
+
+R=${FSDATA_ROOT:-}
+DATA="$R/data"
+DISK_ID=46534f54
+LOG_TAG=freesounder-data
+say() { logger -t "$LOG_TAG" -- "$*" 2>/dev/null || true; echo "$LOG_TAG: $*"; }
+
+# Directories that are pure state: the data copy replaces the image copy.
+BINDS=(
+	/var/lib/freesounder
+	/var/lib/bluetooth
+	/var/lib/NetworkManager
+	/etc/NetworkManager/system-connections
+	/var/lib/docker
+	/var/lib/snapserver
+)
+# Directories that mix image defaults and runtime state: overlay (image = lower, data = upper).
+OVERLAYS=(
+	/etc/freesounder
+)
+
+cmdline_arg() {
+	local key=$1 tok
+	for tok in $(cat "${FSDATA_CMDLINE:-/proc/cmdline}"); do
+		if [[ "$tok" == "$key="* ]]; then
+			printf '%s\n' "${tok#*=}"
+			return 0
+		fi
+	done
+	return 1
+}
+
+dev_for_partuuid() {
+	blkid -t "PARTUUID=$1" -o device 2>/dev/null | head -n1
+}
+
+mount_bootfs() {
+	local spec dev
+	spec=$(cmdline_arg fsboot) || { say "no fsboot= on the command line; /boot/firmware not mounted"; return 0; }
+	dev=$(dev_for_partuuid "${spec#PARTUUID=}")
+	if [[ -z "$dev" ]]; then
+		say "boot partition $spec not found"
+		return 0
+	fi
+	mkdir -p /boot/firmware
+	if ! mountpoint -q /boot/firmware; then
+		fsck.vfat -a "$dev" >/dev/null 2>&1 || true
+		mount -t vfat -o rw,noatime,fmask=0022,dmask=0022 "$dev" /boot/firmware
+	fi
+}
+
+# Grow the extended partition (p4) to the end of the disk, then add p7 (data) after root B.
+# Works on a block device or an image file (the simulation uses a file).
+grow_table() {
+	local disk=$1
+	local line p6_start p6_size start align=$((8 * 2048))
+	echo ",+" | sfdisk --no-reread --no-tell-kernel -q -N 4 "$disk"
+	# Explicit start after root B: `--append` alone would take the first free gap in p4, which is the
+	# 8 MiB EBR gap in front of p5.
+	line=$(sfdisk -d "$disk" | grep -E '^[^ ]*6 :')
+	p6_start=$(sed -E 's/.*start= *([0-9]+).*/\1/' <<<"$line")
+	p6_size=$(sed -E 's/.*size= *([0-9]+).*/\1/' <<<"$line")
+	start=$(( (p6_start + p6_size + align + align - 1) / align * align ))
+	echo "$start,+,L" | sfdisk --no-reread --no-tell-kernel -q --append "$disk"
+}
+
+ensure_data_partition() {
+	local rootdev disk pdata
+	pdata=$(dev_for_partuuid "${DISK_ID}-07")
+	if [[ -n "$pdata" ]]; then
+		printf '%s\n' "$pdata"
+		return 0
+	fi
+	rootdev=$(dev_for_partuuid "${DISK_ID}-05")
+	[[ -n "$rootdev" ]] || rootdev=$(dev_for_partuuid "${DISK_ID}-06")
+	[[ -n "$rootdev" ]] || { say "cannot find the FreeSounder disk"; return 1; }
+	disk="/dev/$(lsblk -no pkname "$rootdev")"
+	# Root B must fit on the card, plus at least 512 MiB of data (16 GB cards are the supported minimum).
+	local disk_bytes need
+	disk_bytes=$(blockdev --getsize64 "$disk")
+	need=$(( $(sfdisk -l -o End -q "$disk" | tail -n1 | tr -d ' ') * 512 + 512 * 1024 * 1024 ))
+	if ((disk_bytes < need)); then
+		say "card too small for the A/B layout ($disk_bytes bytes); use a 16 GB or larger card"
+		return 1
+	fi
+	say "first boot: creating the data partition on $disk"
+	grow_table "$disk"
+	partx -u "$disk" 2>/dev/null || true
+	partx -a "$disk" 2>/dev/null || true
+	udevadm settle 2>/dev/null || true
+	pdata=$(dev_for_partuuid "${DISK_ID}-07")
+	if [[ -z "$pdata" ]]; then
+		# blkid may not know the new node yet.
+		case "$disk" in
+			*mmcblk*|*nvme*|*loop*) pdata="${disk}p7" ;;
+			*) pdata="${disk}7" ;;
+		esac
+	fi
+	[[ -b "$pdata" ]] || { say "data partition $pdata did not appear"; return 1; }
+	mkfs.ext4 -q -F -L fsdata -E lazy_itable_init=1,lazy_journal_init=1 "$pdata"
+	printf '%s\n' "$pdata"
+}
+
+mount_data() {
+	mkdir -p "$DATA"
+	if [[ "${FSDATA_SKIP_DISK:-0}" == 1 ]]; then
+		return 0
+	fi
+	if mountpoint -q "$DATA"; then
+		return 0
+	fi
+	local dev
+	dev=$(ensure_data_partition)
+	if [[ -z "$(blkid -p -s TYPE -o value "$dev" 2>/dev/null)" ]]; then
+		# Power cut between creating p7 and formatting it on the first boot.
+		say "formatting empty data partition $dev"
+		mkfs.ext4 -q -F -L fsdata -E lazy_itable_init=1,lazy_journal_init=1 "$dev"
+	fi
+	e2fsck -p "$dev" >/dev/null 2>&1 || e2fsck -fy "$dev" >/dev/null 2>&1 || true
+	mount -t ext4 -o rw,noatime "$dev" "$DATA"
+}
+
+seed_and_bind() {
+	local path=$1 src="$R$1" dst="$DATA/state$1"
+	if [[ ! -d "$dst" ]]; then
+		mkdir -p "$(dirname "$dst")"
+		if [[ -d "$src" ]]; then
+			cp -a "$src" "$dst.tmp"
+		else
+			mkdir -p "$dst.tmp"
+		fi
+		mv "$dst.tmp" "$dst"
+		say "seeded $path"
+	fi
+	mkdir -p "$src"
+	if ! mountpoint -q "$src"; then
+		mount --bind "$dst" "$src"
+	fi
+}
+
+overlay() {
+	local path=$1 tgt="$R$1" base="$DATA/overlay$1"
+	mkdir -p "$base/upper" "$base/work" "$tgt"
+	if mountpoint -q "$tgt"; then
+		return 0
+	fi
+	# A previous boot's interrupted copy-up leaves the work dir dirty; overlayfs refuses that.
+	rm -rf "$base/work" && mkdir -p "$base/work"
+	mount -t overlay overlay -o "lowerdir=$tgt,upperdir=$base/upper,workdir=$base/work" "$tgt"
+}
+
+main() {
+	if [[ "${FSDATA_SKIP_DISK:-0}" != 1 ]]; then
+		mount_bootfs
+	fi
+	mount_data
+	mkdir -p "$DATA/ota" "$DATA/state" "$DATA/overlay"
+	printf '%s\n' 1 > "$DATA/.layout-version"
+	local p
+	for p in "${BINDS[@]}"; do
+		seed_and_bind "$p"
+	done
+	for p in "${OVERLAYS[@]}"; do
+		overlay "$p"
+	done
+	say "data ready"
+}
+
+if [[ "${1:-}" == --grow-table ]]; then
+	grow_table "${2:?disk}"
+	exit 0
+fi
+main "$@"

@@ -13,9 +13,30 @@ export FREESOUNDER_ROOT=$REPO_ROOT
 
 export PATH="/usr/local/sbin:/usr/sbin:/sbin:${PATH}"
 
+# OTA (RAUC): the public CA certificate that update bundles must chain to is baked into the image.
+# CI passes the real one; on a dev box fall back to the local dev CA from ota/gen-dev-keys.sh.
+if [[ -z "${RAUC_KEYRING_PEM:-}" ]]; then
+	_dev_ca="${HOME}/.config/freesounder-build/ota-dev-keys/ca.cert.pem"
+	if [[ -f "$_dev_ca" ]]; then
+		export RAUC_KEYRING_PEM="$_dev_ca"
+		echo "OTA: using the DEV keyring $_dev_ca (players will only accept dev-signed bundles)"
+	else
+		echo "RAUC_KEYRING_PEM (OTA CA certificate) is required; run images/player/ota/gen-dev-keys.sh for a dev one." >&2
+		exit 1
+	fi
+fi
+RAUC_KEYRING_PEM=$(realpath "$RAUC_KEYRING_PEM")
+export RAUC_KEYRING_PEM
+if grep -q "PRIVATE KEY" "$RAUC_KEYRING_PEM"; then
+	echo "RAUC_KEYRING_PEM must be the CA certificate, not a private key." >&2
+	exit 1
+fi
+# FS_AB_IMAGE=0 skips the A/B (OTA) conversion and leaves only the plain pi-gen image.
+export FS_AB_IMAGE=${FS_AB_IMAGE:-1}
+
 if [[ "$(id -u)" -ne 0 ]]; then
 	echo "Re-running under sudo..."
-	exec sudo --preserve-env=FREESOUNDER_ROOT,DEPS_CACHE,AIRPLAY2_RUN_ID,PI_GEN_REF,PI_GEN_URL,WORK_ROOT,PI_GEN_DIR,DEPLOY_DIR,PATH,FSADMIN_PASSWORD_HASH,FSADMIN_PASSWORD_HASH_FILE,FSADMIN_PASSWORD_FILE,FSADMIN_PASSWORD \
+	exec sudo --preserve-env=FREESOUNDER_ROOT,DEPS_CACHE,AIRPLAY2_RUN_ID,PI_GEN_REF,PI_GEN_URL,WORK_ROOT,PI_GEN_DIR,DEPLOY_DIR,PATH,FSADMIN_PASSWORD_HASH,FSADMIN_PASSWORD_HASH_FILE,FSADMIN_PASSWORD_FILE,FSADMIN_PASSWORD,RAUC_KEYRING_PEM,FS_AB_IMAGE \
 		"$0" "$@"
 fi
 
@@ -166,6 +187,17 @@ echo "Starting pi-gen (this takes a good while)..."
 cd "$PI_GEN_DIR"
 # Prefer a non-docker build; it is what works on this kind of host.
 ./build.sh -c "$PI_GEN_DIR/config.freesounder"
+
+# A/B (OTA) card image + the slot images that ota/build-bundle.sh turns into an update bundle.
+if [[ "$FS_AB_IMAGE" == 1 ]]; then
+	base_img=$(ls -t "$DEPLOY_DIR"/*.img.xz "$DEPLOY_DIR"/*.img 2>/dev/null | grep -v -- '-ab\.img' | head -n1 || true)
+	if [[ -z "$base_img" ]]; then
+		echo "ERROR: no pi-gen image found in $DEPLOY_DIR for the A/B conversion" >&2
+		exit 1
+	fi
+	version=${FS_VERSION:-$(git -C "$REPO_ROOT" describe --tags --always 2>/dev/null || echo dev)}
+	"$SCRIPT_DIR/ota/make-ab-image.sh" "$base_img" "$DEPLOY_DIR/ab" "$version"
+fi
 
 echo "Build finished. Images in $DEPLOY_DIR :"
 ls -lh "$DEPLOY_DIR"
