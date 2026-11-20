@@ -7,7 +7,7 @@
 **FreeSounder** is a free, open-source multi-room wireless audio system that aims to feel as simple and polished as commercial whole-home speaker systems, without the lock-in.
 
 
-> Status: early implementation. Architecture is locked as **player-only**: there is no cupboard server. Each Player is its own streamer, when grouping the one serving the music takes control of the streams. not pi zero can only support 3-4 streams.
+> Status: early implementation. Architecture is locked as **player-only**: there is no cupboard server. Each Player is its own streamer, when grouping the one serving the music takes control of the streams. NOTE: pi zero can only support 3-4 streams.
 ## Architecture in brief
 
 - Every room ships the same player image. **One** 4 GB player at a time is the household host (default hardware: **Raspberry Pi 4 4GB**).
