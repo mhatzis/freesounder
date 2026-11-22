@@ -287,6 +287,16 @@ class ControlApiClient {
 
   /// Sign the group's Spotify device in with the app's token (used once; the
   /// player keeps go-librespot's own stored credentials, not the token).
+  /// Start (or look at) a spotify.com/pair sign-in on the group's speaker.
+  Future<PlayerSpotify> spotifyPair(String roomOrGroupId) async => PlayerSpotify.fromJson(
+        await _send('POST', '/api/v2/groups/$roomOrGroupId/spotify/pair', const <String, dynamic>{}, true)
+            as Map<String, dynamic>,
+      );
+
+  Future<PlayerSpotify> spotifyPairCancel(String roomOrGroupId) async => PlayerSpotify.fromJson(
+        await _send('POST', '/api/v2/groups/$roomOrGroupId/spotify/pair/cancel') as Map<String, dynamic>,
+      );
+
   Future<PlayerSpotify> spotifyLogin(String roomOrGroupId, {required String username, required String accessToken}) async {
     final data = await _send(
       'POST',
@@ -520,6 +530,7 @@ class PlayerSpotify {
     this.deviceName,
     this.loggedIn = false,
     this.username,
+    this.pairing,
   });
 
   final String leaderId;
@@ -528,12 +539,34 @@ class PlayerSpotify {
   final bool loggedIn;
   final String? username;
 
-  factory PlayerSpotify.fromJson(Map<String, dynamic> json) => PlayerSpotify(
-        leaderId: json['leader_id'] as String? ?? '',
-        deviceId: json['device_id'] as String?,
-        deviceName: json['device_name'] as String?,
-        loggedIn: json['logged_in'] as bool? ?? false,
-        username: json['username'] as String?,
+  /// While the speaker waits for approval at spotify.com/pair (0.6.19).
+  final SpotifyPairing? pairing;
+
+  factory PlayerSpotify.fromJson(Map<String, dynamic> json) {
+    final pairing = json['pairing'];
+    return PlayerSpotify(
+      leaderId: json['leader_id'] as String? ?? '',
+      deviceId: json['device_id'] as String?,
+      deviceName: json['device_name'] as String?,
+      loggedIn: json['logged_in'] as bool? ?? false,
+      username: json['username'] as String?,
+      pairing: pairing is Map<String, dynamic> ? SpotifyPairing.fromJson(pairing) : null,
+    );
+  }
+}
+
+/// A pairing code for a speaker's Spotify sign-in (go-librespot device_auth).
+class SpotifyPairing {
+  const SpotifyPairing({required this.code, required this.url});
+
+  final String code;
+
+  /// Usually already carries the code, so the user only confirms there.
+  final String url;
+
+  factory SpotifyPairing.fromJson(Map<String, dynamic> json) => SpotifyPairing(
+        code: json['code'] as String? ?? '',
+        url: json['url'] as String? ?? 'https://www.spotify.com/pair',
       );
 }
 

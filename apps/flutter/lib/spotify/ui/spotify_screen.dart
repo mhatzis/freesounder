@@ -13,6 +13,7 @@ import '../spotify_auth.dart';
 import '../spotify_models.dart';
 import '../spotify_store.dart';
 import 'spotify_brand.dart';
+import 'spotify_pair_dialog.dart';
 import 'spotify_setup.dart';
 
 Future<void> showSpotifyScreen(BuildContext context) {
@@ -421,7 +422,17 @@ Future<void> playSpotifyItem(BuildContext context, SpotifyItem item) async {
   final messenger = ScaffoldMessenger.of(context);
   messenger.showSnackBar(SnackBar(content: Text('Starting on ${chosen.name}…'), duration: const Duration(seconds: 20)));
   try {
-    await container.read(spotifyProvider.notifier).play(chosen.id, item);
+    try {
+      await container.read(spotifyProvider.notifier).play(chosen.id, item);
+    } on SpotifyPairingRequired catch (need) {
+      // First time on this speaker: approve it once at spotify.com/pair.
+      messenger.hideCurrentSnackBar();
+      if (!context.mounted || !await showSpotifyPairDialog(context, need)) {
+        return;
+      }
+      messenger.showSnackBar(SnackBar(content: Text('Starting on ${chosen.name}…'), duration: const Duration(seconds: 20)));
+      await container.read(spotifyProvider.notifier).play(chosen.id, item);
+    }
     messenger.hideCurrentSnackBar();
     messenger.showSnackBar(SnackBar(content: Text('Playing on ${chosen.name}')));
     container.read(playbackProvider.notifier).selectRoom(chosen.memberIds.first);

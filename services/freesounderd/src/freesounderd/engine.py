@@ -260,6 +260,10 @@ class Engine:
         self._np_changed_at: float | None = None
         self._spotify_login_active = False
         self._spotify_login_lock = asyncio.Lock()
+        # Pairing with spotify.com/pair (device_auth), while it waits.
+        self._spotify_pair: dict[str, Any] | None = None
+        self._spotify_pair_task: asyncio.Task[None] | None = None
+        self._spotify_pair_ctx: tuple[dict[str, Any] | None, str, str] | None = None
         # MPD: music library, podcasts and the UPnP/DLNA renderer (upmpdcli).
         self.media = MediaPlayer(MpdClient(settings.mpd_host, settings.mpd_port))
         self.library = Library(
@@ -2058,6 +2062,7 @@ class Engine:
             "username": (status or {}).get("username")
             or stored_username(self.settings.spotify_dir),
             "signing_in": self._spotify_login_active,
+            "pairing": self._spotify_pair,
         }
 
     async def spotify_login(self, gid: str, body: dict[str, Any]) -> dict[str, Any]:
@@ -2148,6 +2153,124 @@ class Engine:
         except (OSError, TimeoutError):
             return ""
         return out.decode(errors="replace")
+
+    # How long a pairing code is waited for (Spotify's codes last ~10 min).
+    SPOTIFY_PAIR_WAIT = 600.0
+
+    async def spotify_pair(self, gid: str) -> dict[str, Any]:
+        """Sign this group's speaker in to Spotify with a code approved at
+        spotify.com/pair (go-librespot device_auth, Spotify's own sign-in).
+
+        0.6.19: Spotify no longer accepts the app's own token for a speaker
+        (login5 INVALID_CREDENTIALS). Returns the Spotify info with
+        "pairing": {code, url, expires_at} while it waits; the speaker keeps
+        the login afterwards (state.json, reused by the normal config).
+        """
+
+        leader = self._spotify_leader(gid)
+        if leader != self.id:
+            return await self.forward(
+                leader, "POST", f"/api/v2/groups/{leader}/spotify/pair", {}, wait=30
+            )
+        if not self.settings.manage_system:
+            return await self._spotify_info_local()
+        async with self._spotify_login_lock:
+            status = await self.spotify.status()
+            if status and status.get("username"):
+                return await self._spotify_info_local()
+            if self._spotify_pair_task is not None and not self._spotify_pair_task.done():
+                return await self._spotify_info_local()
+            self._spotify_login_active = True
+            spot_path = self.settings.spotify_dir / "config.yml"
+            name = self.my_group_name()
+            fifo = str(self.settings.run_dir / "spotify.fifo")
+            # go-librespot signs in with a stored login if it has one, so the
+            # old one is set aside (and put back if pairing does not finish).
+            backup = saved_credentials(self.settings.spotify_dir)
+            await self.system.systemctl("stop", SPOTIFY_UNIT)
+            clear_credentials(self.settings.spotify_dir)
+            self.system.write_if_changed(
+                spot_path, render_config(device_name=name, fifo=fifo, device_auth=True), 0o600
+            )
+            await self.system.systemctl("start", SPOTIFY_UNIT)
+            code = None
+            for _ in range(30):
+                code = await self.spotify.auth_code()
+                if code:
+                    break
+                await asyncio.sleep(0.5)
+            if not code:
+                await self._end_spotify_pair(backup, name, fifo)
+                raise EngineError(
+                    502,
+                    f"{self.room_name()} could not get a pairing code from Spotify. "
+                    "Check that it is online, then try again.",
+                )
+            self._spotify_pair = code
+            self._spotify_pair_ctx = (backup, name, fifo)
+            self._spotify_pair_task = asyncio.create_task(
+                self._finish_spotify_pair(backup, name, fifo)
+            )
+        return await self._spotify_info_local()
+
+    async def spotify_pair_cancel(self, gid: str) -> dict[str, Any]:
+        leader = self._spotify_leader(gid)
+        if leader != self.id:
+            return await self.forward(
+                leader, "POST", f"/api/v2/groups/{leader}/spotify/pair/cancel", {}
+            )
+        task = self._spotify_pair_task
+        if task is not None and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        if self._spotify_pair is not None and self._spotify_pair_ctx is not None:
+            # Cancelled before the waiting task ever ran: tidy up here.
+            await self._end_spotify_pair(*self._spotify_pair_ctx)
+        return await self._spotify_info_local()
+
+    async def _finish_spotify_pair(
+        self, backup: dict[str, Any] | None, name: str, fifo: str
+    ) -> None:
+        """Wait for the approval, then back to the normal config (which
+        reuses the stored login). On timeout, decline or cancel: put the
+        old login back."""
+
+        ok = False
+        try:
+            deadline = time.monotonic() + self.SPOTIFY_PAIR_WAIT
+            while time.monotonic() < deadline:
+                status = await self.spotify.status()
+                if status and status.get("username"):
+                    ok = True
+                    break
+                code = await self.spotify.auth_code()
+                if code:
+                    self._spotify_pair = code
+                await asyncio.sleep(2)
+        finally:
+            if ok:
+                logger.info("Spotify pairing approved on %s", self.room_name())
+                await self._end_spotify_pair(None, name, fifo)
+            else:
+                logger.info("Spotify pairing ended without approval on %s", self.room_name())
+                await self._end_spotify_pair(backup, name, fifo)
+
+    async def _end_spotify_pair(
+        self, restore: dict[str, Any] | None, name: str, fifo: str
+    ) -> None:
+        if restore and not saved_credentials(self.settings.spotify_dir):
+            restore_credentials(self.settings.spotify_dir, restore)
+        self.system.write_if_changed(
+            self.settings.spotify_dir / "config.yml",
+            render_config(device_name=name, fifo=fifo),
+            0o600,
+        )
+        await self.system.systemctl("restart", SPOTIFY_UNIT)
+        self._spotify_pair = None
+        self._spotify_pair_ctx = None
+        self._spotify_login_active = False
+        self.kick()
 
     async def _wait_spotify_user(self, username: str, seconds: float) -> bool:
         deadline = time.monotonic() + seconds

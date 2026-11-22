@@ -20,6 +20,7 @@ def render_config(
     fifo: str,
     api_port: int = 3678,
     token_login: tuple[str, str] | None = None,
+    device_auth: bool = False,
 ) -> str:
     """go-librespot config.yml (YAML is a superset of JSON for scalars).
 
@@ -29,7 +30,14 @@ def render_config(
     """
 
     name = json.dumps(device_name)
-    if token_login:
+    zeroconf = "true"
+    if device_auth:
+        # Pairing with a code at spotify.com/pair (0.6.19): Spotify's own
+        # sign-in. go-librespot stores the login in state.json, which the
+        # normal (zeroconf, persist_credentials) config then reuses.
+        zeroconf = "false"
+        credentials = ["credentials:", "  type: device_auth"]
+    elif token_login:
         username, token = token_login
         credentials = [
             "credentials:",
@@ -57,7 +65,7 @@ def render_config(
             "volume_steps: 100",
             "initial_volume: 100",
             "external_volume: true",
-            "zeroconf_enabled: true",
+            f"zeroconf_enabled: {zeroconf}",
             "zeroconf_backend: avahi",
             *credentials,
             "metadata:",
@@ -90,6 +98,24 @@ class LibrespotClient:
             return res.json()
         except ValueError:
             return None
+
+    async def auth_code(self) -> dict[str, Any] | None:
+        """The pairing code while go-librespot waits for spotify.com/pair
+        approval ({code, url, expires_at}), else None."""
+
+        try:
+            res = await self._client.get(f"{self.base}/auth/code", timeout=2)
+        except httpx.HTTPError:
+            return None
+        if res.status_code != 200:
+            return None
+        try:
+            data = res.json()
+        except ValueError:
+            return None
+        if not isinstance(data, dict) or not (data.get("code") or data.get("url")):
+            return None
+        return {k: data.get(k) for k in ("code", "url", "expires_at")}
 
     async def set_volume(self, percent: int, steps: int = 100) -> bool:
         """Report our room volume to Spotify Connect (external_volume: no attenuation here)."""

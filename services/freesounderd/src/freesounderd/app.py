@@ -358,6 +358,14 @@ def create_app(
     async def spotify_info_get(gid: str) -> dict[str, Any]:
         return await engine.spotify_info(gid)
 
+    @app.post("/api/v2/groups/{gid}/spotify/pair")
+    async def spotify_pair(gid: str) -> dict[str, Any]:
+        return await engine.spotify_pair(gid)
+
+    @app.post("/api/v2/groups/{gid}/spotify/pair/cancel")
+    async def spotify_pair_cancel(gid: str) -> dict[str, Any]:
+        return await engine.spotify_pair_cancel(gid)
+
     @app.post("/api/v2/groups/{gid}/spotify/login")
     async def spotify_login(gid: str, body: SpotifyLoginBody) -> dict[str, Any]:
         return await engine.spotify_login(gid, body.model_dump())
