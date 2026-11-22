@@ -8,6 +8,7 @@ import '../spotify/ui/spotify_brand.dart';
 import '../state/playback_store.dart';
 import 'artwork.dart';
 import 'sources_sheet.dart';
+import 'volume_sheet.dart';
 
 Future<void> showNowPlayingScreen(BuildContext context) {
   return Navigator.of(context).push(
@@ -45,7 +46,6 @@ class NowPlayingScreen extends ConsumerStatefulWidget {
 
 class _NowPlayingScreenState extends ConsumerState<NowPlayingScreen> {
   double? _dragging;
-  double? _volume;
 
   Future<void> _run(Future<void> Function() action) async {
     try {
@@ -72,7 +72,6 @@ class _NowPlayingScreenState extends ConsumerState<NowPlayingScreen> {
     // songs, podcast episodes, and UPnP / DLNA streams.
     const seekable = {'spotify', 'library', 'podcast', 'upnp'};
     final canSeek = seekable.contains(np?.source) && (np?.duration ?? 0) > 0;
-    final volume = _volume ?? (room?.volume ?? 0).toDouble();
 
     return Scaffold(
       appBar: AppBar(
@@ -197,27 +196,9 @@ class _NowPlayingScreenState extends ConsumerState<NowPlayingScreen> {
                 ),
                 if (room != null) ...[
                   const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      const Icon(Icons.volume_down),
-                      Expanded(
-                        child: Slider(
-                          key: const Key('np-screen-volume'),
-                          value: volume.clamp(0, 100),
-                          max: 100,
-                          onChanged: (v) {
-                            setState(() => _volume = v);
-                            store.dragVolume(room.id, v, group: room.isGrouped);
-                          },
-                          onChangeEnd: (v) {
-                            setState(() => _volume = null);
-                            _run(() => store.commitVolume(room.id, v, group: room.isGrouped));
-                          },
-                        ),
-                      ),
-                      const Icon(Icons.volume_up),
-                    ],
-                  ),
+                  // One room: a slider. A group: its level, opening the
+                  // panel with all rooms and each room (0.6.19).
+                  QuickVolume(key: const Key('np-screen-volume'), roomId: room.id),
                 ],
                 const SizedBox(height: 12),
                 Center(

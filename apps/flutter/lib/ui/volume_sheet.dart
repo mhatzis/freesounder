@@ -110,11 +110,16 @@ class _VolumeSheetState extends ConsumerState<VolumeSheet> {
                     _baseLevel ??= groupLevel(members);
                     _master = v;
                   });
-                  store.dragVolume(room.id, v, group: true);
+                  // 0.6.19: each room is set directly (as smooth as a room's
+                  // own slider), not through group commands.
+                  for (final r in members) {
+                    store.dragVolume(r.id, _shown(r).toDouble());
+                  }
                 },
                 onChangeEnd: (v) async {
+                  setState(() => _master = v);
                   try {
-                    await store.commitVolume(room.id, v, group: true);
+                    await Future.wait([for (final r in members) store.commitVolume(r.id, _shown(r).toDouble())]);
                   } on Object {
                     // The rooms show the player's levels again below.
                   }

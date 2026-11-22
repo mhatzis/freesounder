@@ -598,10 +598,17 @@ class PlaybackStore extends Notifier<PlaybackState> {
     // can never leave an old song and cover showing.
     _npRefresh?.cancel();
     _npRefresh = Timer.periodic(ref.read(linkTimingsProvider).nowPlayingRefresh, (_) {
+      if (state.reconnecting || state.mockMode) {
+        return;
+      }
       final active = state.activeRoomId;
-      if (active != null && !state.reconnecting && !state.mockMode) {
+      if (active != null) {
         unawaited(_refreshNowPlaying(active));
       }
+      // 0.6.19: the rooms list too. A player that was unplugged and came back
+      // showed up only after restarting the app when the event stream had
+      // gone quiet without closing.
+      unawaited(_reloadRooms());
     });
   }
 
@@ -1132,7 +1139,12 @@ class PlaybackStore extends Notifier<PlaybackState> {
     }
     try {
       final rooms = await client.listRooms().timeout(const Duration(seconds: 5));
-      state = state.copyWith(rooms: rooms);
+      if (!identical(client, _client) || _disposed) {
+        return;
+      }
+      if (!_sameRooms(rooms, state.rooms)) {
+        state = state.copyWith(rooms: rooms);
+      }
     } on Object {
       // The event stream brings the new rooms shortly anyway.
     }
@@ -1930,4 +1942,27 @@ List<String> describeRoomAudio(Map<String, dynamic> audio) {
       'Player: ${snap['connected'] == true ? 'connected' : 'not connected'}, volume ${snap['volume'] ?? '?'}${snap['muted'] == true ? ', muted' : ''}',
     if (stream != null) 'Stream: ${stream['id']} ${stream['status'] ?? ''}'.trim(),
   ];
+}
+
+/// The fields the rooms list shows; an unchanged list is not re-applied, so a
+/// periodic refresh never fights a slider being dragged.
+bool _sameRooms(List<Room> a, List<Room> b) {
+  if (a.length != b.length) {
+    return false;
+  }
+  for (var i = 0; i < a.length; i++) {
+    final x = a[i], y = b[i];
+    if (x.id != y.id ||
+        x.name != y.name ||
+        x.available != y.available ||
+        x.groupId != y.groupId ||
+        x.state != y.state ||
+        x.source != y.source ||
+        x.url != y.url ||
+        x.powerWarning != y.powerWarning ||
+        x.memberIds.join(',') != y.memberIds.join(',')) {
+      return false;
+    }
+  }
+  return true;
 }

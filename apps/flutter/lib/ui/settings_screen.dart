@@ -39,9 +39,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
   void _onVersionTap() {
     _versionTaps += 1;
-    if (_versionTaps == 7) {
-      ref.read(developerModeProvider.notifier).set(true);
-      ScaffoldMessenger.maybeOf(context)?.showSnackBar(const SnackBar(content: Text('Developer mode on')));
+    if (_versionTaps >= 7) {
+      _versionTaps = 0;
+      ref.read(developerModeProvider.notifier).toggle();
+      final on = ref.read(developerModeProvider);
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+        SnackBar(content: Text(on ? 'Developer mode on' : 'Developer mode off')),
+      );
     }
   }
 
@@ -74,6 +78,9 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             const SizedBox(height: 8),
             Text(state.error!, style: text.bodySmall?.copyWith(color: scheme.error)),
           ],
+          // 0.6.19: picking a player by address is a developer tool now; it
+          // also shows when the app cannot find the home, to recover.
+          if (ref.watch(developerModeProvider) || (!state.connected && !state.mockMode)) ...[
           const SizedBox(height: 24),
           Text('Connect', style: text.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
           const SizedBox(height: 4),
@@ -135,6 +142,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               ),
             ],
           ),
+          ],
           const SizedBox(height: 28),
           Text('Demo', style: text.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
           const SizedBox(height: 4),
