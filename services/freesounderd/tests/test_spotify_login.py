@@ -48,3 +48,12 @@ def test_no_stored_login_means_nothing_to_restore(tmp_path: Path) -> None:
     empty = {"credentials": {"username": "", "data": None}}
     (tmp_path / "state.json").write_text(json.dumps(empty))
     assert saved_credentials(tmp_path) is None
+
+
+def test_login5_invalid_credentials_points_to_the_spotify_app() -> None:
+    log = (
+        'level=fatal msg="daemon exited with error" error="failed authenticating with '
+        'login5: failed authenticating with login5: INVALID_CREDENTIALS"'
+    )
+    reason = login_failure_reason(log, "Lounge")
+    assert "Premium" not in reason and "pick Lounge" in reason

@@ -237,6 +237,13 @@ def login_failure_reason(log: str, room: str) -> str:
             f"Spotify says this account cannot play on speakers ({room}). Spotify "
             "Connect needs Spotify Premium; check the account you signed in with."
         )
+    if "invalid_credentials" in text and "login5" in text:
+        # Spotify no longer accepts a speaker sign-in with a token from the
+        # app's own Spotify client id (go-librespot issue #364).
+        return (
+            f"Spotify refused the app's sign-in for {room}. Open the Spotify app, "
+            f"tap the devices icon and pick {room} once; it stays signed in."
+        )
     if "badcredentials" in text or "bad credentials" in text or "invalid token" in text:
         return (
             f"Spotify refused the sign-in for {room}. In FreeSounder, sign out of "
