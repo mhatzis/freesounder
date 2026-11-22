@@ -15,6 +15,16 @@ class ConnectionPrefs {
   static const wifiCountryKey = 'wifi_country';
   static const householdKey = 'household_id';
   static const membersKey = 'household_members';
+  static const joinedKey = 'joined_households';
+
+  /// Homes this phone has joined (0.6.19): set them up, joined with the
+  /// home's code, or used them before the code existed.
+  List<String> get joinedHouseholds => _prefs.getStringList(joinedKey) ?? const [];
+
+  Future<void> addJoinedHousehold(String id) async {
+    final joined = {...joinedHouseholds, id}.toList();
+    await _prefs.setStringList(joinedKey, joined);
+  }
 
   /// Household the saved host belonged to, and its members' last known URLs,
   /// so the app can find the home again when one player's IP changes.

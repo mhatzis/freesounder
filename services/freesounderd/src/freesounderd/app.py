@@ -33,6 +33,7 @@ from freesounderd.models import (
     GroupMembersBody,
     Health,
     JoinBody,
+    JoinCodeBody,
     LeaveBody,
     LibraryPlayBody,
     LibraryShareBody,
@@ -202,6 +203,30 @@ def create_app(
         engine.kick()
         background.add_task(asyncio.to_thread, store.run_hook)
         return {"ok": True}
+
+    @app.get("/api/v2/household/join-code")
+    async def household_join_code() -> dict[str, Any]:
+        """The code a phone that has joined shows, so others can join too.
+        The LAN API has no authentication yet: this is a friendly gate for
+        a second phone, not security."""
+
+        hh = store.household()
+        if hh is None:
+            raise HTTPException(status_code=404, detail="Not set up yet")
+        return {"code": peers.join_code(hh.key), "name": hh.name, "id": hh.id}
+
+    @app.post("/api/v2/household/join")
+    async def household_join(body: JoinCodeBody) -> dict[str, Any]:
+        hh = store.household()
+        if hh is None:
+            raise HTTPException(status_code=404, detail="Not set up yet")
+        typed = "".join(ch for ch in body.code if ch.isdigit())
+        if typed != peers.join_code(hh.key):
+            raise HTTPException(
+                status_code=403,
+                detail="That code is not right. Ask someone in this home for the code in Settings.",
+            )
+        return {"ok": True, "id": hh.id, "name": hh.name}
 
     @app.get("/api/v2/household")
     async def household() -> dict[str, Any]:

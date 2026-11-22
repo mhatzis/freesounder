@@ -133,6 +133,10 @@ class GroupMembersBody(BaseModel):
     members: list[str]
 
 
+class JoinCodeBody(BaseModel):
+    code: str = Field(min_length=1, max_length=20)
+
+
 class LeaveBody(BaseModel):
     """Leave a group. [keep]: the room that should lead what remains."""
 

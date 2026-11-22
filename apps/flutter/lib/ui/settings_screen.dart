@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../api/connection_prefs.dart';
@@ -74,6 +75,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           Text('System', style: text.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
           const SizedBox(height: 8),
           _StatusCard(state: state, developer: ref.watch(developerModeProvider)),
+          if (state.connected && !state.mockMode) const _HomeCode(),
           if (state.error != null) ...[
             const SizedBox(height: 8),
             Text(state.error!, style: text.bodySmall?.copyWith(color: scheme.error)),
@@ -301,4 +303,43 @@ Future<void> showResetHelp(BuildContext context) {
       actions: [TextButton(onPressed: () => Navigator.of(dialog).pop(), child: const Text('OK'))],
     ),
   );
+}
+
+
+/// The home's join code, for another phone on this Wi-Fi (0.6.19).
+class _HomeCode extends ConsumerStatefulWidget {
+  const _HomeCode();
+
+  @override
+  ConsumerState<_HomeCode> createState() => _HomeCodeState();
+}
+
+class _HomeCodeState extends ConsumerState<_HomeCode> {
+  late final Future<String?> _code = ref.read(playbackProvider.notifier).homeJoinCode();
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<String?>(
+      future: _code,
+      builder: (context, snap) {
+        final code = snap.data;
+        if (code == null) {
+          return const SizedBox.shrink();
+        }
+        final shown = '${code.substring(0, 3)} ${code.substring(3)}';
+        return ListTile(
+          key: const Key('home-join-code'),
+          contentPadding: EdgeInsets.zero,
+          leading: const Icon(Icons.group_add_outlined),
+          title: Text('Home code: $shown'),
+          subtitle: const Text('Another phone on this Wi-Fi joins your home with this code.'),
+          trailing: IconButton(
+            tooltip: 'Copy code',
+            icon: const Icon(Icons.copy),
+            onPressed: () => Clipboard.setData(ClipboardData(text: code)),
+          ),
+        );
+      },
+    );
+  }
 }

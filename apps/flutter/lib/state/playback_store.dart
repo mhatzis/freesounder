@@ -15,6 +15,7 @@ import '../spotify/spotify_store.dart';
 import '../models/player_settings.dart';
 import '../models/radio_station.dart';
 import '../models/room.dart';
+import 'join_home.dart';
 import '../ui/artwork.dart' show artworkGeneration;
 
 class AppConfig {
@@ -535,7 +536,22 @@ class PlaybackStore extends Notifier<PlaybackState> {
       final info = await client.info().timeout(const Duration(seconds: 4));
       final hh = info['household'];
       if (identical(client, _client) && hh is Map && hh['id'] is String) {
-        _householdId = hh['id'] as String;
+        final id = hh['id'] as String;
+        _householdId = id;
+        final prefs = ref.read(connectionPrefsProvider);
+        if (prefs != null && !prefs.joinedHouseholds.contains(id)) {
+          // 0.6.19: a phone joins a home once, with the code shown in the
+          // Settings of a phone that has. The phone that set the home up,
+          // and one that used it before codes existed, count as joined.
+          if (_justSetUp || prefs.householdId == id) {
+            await prefs.addJoinedHousehold(id);
+          } else {
+            ref.read(joinHomeProvider.notifier).show(
+                  JoinPrompt(householdId: id, name: hh['name'] as String? ?? 'Home'),
+                );
+            return;
+          }
+        }
         if (_persistHome) {
           await _rememberHome(client);
         }
@@ -543,6 +559,30 @@ class PlaybackStore extends Notifier<PlaybackState> {
     } on Object {
       // Optional: only used to spot players that belong to another home.
     }
+  }
+
+  /// Set while this phone sets up a new home, so it counts as joined.
+  bool _justSetUp = false;
+
+  /// Join the home the app found, with its code (0.6.19).
+  Future<void> joinHome(String code) async {
+    final client = _client;
+    final prompt = ref.read(joinHomeProvider);
+    if (client == null || prompt == null) {
+      throw ControlApiException('Not connected to a player');
+    }
+    await client.joinHousehold(code.trim());
+    await ref.read(connectionPrefsProvider)?.addJoinedHousehold(prompt.householdId);
+    ref.read(joinHomeProvider.notifier).clear();
+    await _rememberHome(client);
+  }
+
+  /// This home's join code, to show in Settings.
+  Future<String?> homeJoinCode() async {
+    if (state.mockMode || _client == null) {
+      return null;
+    }
+    return _client!.joinCode();
   }
 
   /// Players on this network that are set up in a *different* home (for
@@ -1575,6 +1615,9 @@ class PlaybackStore extends Notifier<PlaybackState> {
     }
     final connectedHost = client == null ? null : Uri.tryParse(client.baseUrl)?.host;
     final createSystem = client == null || (address != null && address == connectedHost);
+    if (createSystem) {
+      _justSetUp = true;
+    }
     if (!createSystem) {
       var playerId = id;
       if (address != null && !resetFirst) {

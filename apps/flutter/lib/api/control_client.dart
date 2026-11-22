@@ -67,6 +67,13 @@ class ControlApiClient {
   /// This player's identity (`state` is `unclaimed` or `ready`).
   Future<Map<String, dynamic>> info() async => await _getJson('/api/v2/info') as Map<String, dynamic>;
 
+  /// The home's join code, for a phone that has joined to show (0.6.19).
+  Future<String> joinCode() async =>
+      (await _getJson('/api/v2/household/join-code') as Map<String, dynamic>)['code'] as String;
+
+  /// Check a code typed on a phone that has not joined this home yet.
+  Future<void> joinHousehold(String code) => _send('POST', '/api/v2/household/join', {'code': code});
+
   Future<List<Room>> listRooms() async {
     final data = await _getJson('/api/v2/rooms') as List<dynamic>;
     return [for (final item in data) Room.fromJson(item as Map<String, dynamic>)];

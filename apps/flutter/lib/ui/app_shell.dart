@@ -6,7 +6,9 @@ import '../models/now_playing.dart';
 
 import '../state/playback_store.dart';
 import '../theme/tokens.dart';
+import '../state/join_home.dart';
 import 'add_player_sheet.dart';
+import 'join_home_screen.dart';
 import '../spotify/ui/spotify_brand.dart';
 import 'artwork.dart';
 import 'mini_player.dart';
@@ -64,6 +66,10 @@ class _AppShellState extends ConsumerState<AppShell> {
     final width = MediaQuery.sizeOf(context).width;
     final useRail = width >= FsTokens.railBreakpoint;
     final playback = ref.watch(playbackProvider);
+    final join = ref.watch(joinHomeProvider);
+    if (join != null && !playback.mockMode) {
+      return JoinHomeScreen(prompt: join);
+    }
 
     final canvas = _NowPlayingCanvas(state: playback);
 
