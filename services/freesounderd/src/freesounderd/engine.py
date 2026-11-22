@@ -24,7 +24,7 @@ import httpx
 from freesounderd import __version__, peers
 from freesounderd.artwork import AirplayArt, ArtLookup, split_stream_title
 from freesounderd.audio import audio_state, play_tone
-from freesounderd.bluetooth import BluezBackend, BtOutput, unblock_bluetooth
+from freesounderd.bluetooth import BLUEALSA_ENV, BluezBackend, BtOutput, unblock_bluetooth
 from freesounderd.config import DaemonSettings
 from freesounderd.discovery import Discovery, local_ip
 from freesounderd.dsp import read_audio_output
@@ -32,6 +32,7 @@ from freesounderd.library import Library
 from freesounderd.media import MEDIA_SOURCES, MediaPlayer
 from freesounderd.mpd import MpdClient, MpdError
 from freesounderd.podcasts import Podcasts
+from freesounderd.power import power_warning
 from freesounderd.radio import RadioBrowser, RadioPlayer
 from freesounderd.snapcast import (
     SOURCE_STREAM,
@@ -322,6 +323,7 @@ class Engine:
             "available": True,
             "library": len(self.library.shares()),
             "pod_rev": self.podcasts.rev(),
+            "power_warning": power_warning(self.settings.state_dir),
             "known": {
                 pid: [r.get("ip"), int(r.get("port", 8080))]
                 for pid, r in self.peers.items()
@@ -483,6 +485,7 @@ class Engine:
                     "url": f"http://{ip}:{port}" if ip else None,
                     "hostname": rec.get("hostname"),
                     "version": rec.get("version"),
+                    "power_warning": rec.get("power_warning"),
                     "source": group["source"],
                     "now_playing": {
                         k: (group.get("now_playing") or {}).get(k)
@@ -608,6 +611,7 @@ class Engine:
                 on_change=self.kick,
                 model=self._model,
                 net=lambda: self._net,
+                env_path=BLUEALSA_ENV,
             )
         if self.bt is not None:
             self.bt.start()

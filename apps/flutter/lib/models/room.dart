@@ -15,6 +15,7 @@ class Room {
     this.source,
     this.url,
     this.version,
+    this.powerWarning,
     this.nowTitle,
     this.nowArtist,
     this.nowImageUrl,
@@ -49,6 +50,9 @@ class Room {
   /// The player's software version (e.g. "0.6.15").
   final String? version;
 
+  /// The player's supply is too weak (0.6.19); shown on the room.
+  final String? powerWarning;
+
   bool get isGrouped => memberIds.length > 1;
 
   factory Room.fromJson(Map<String, dynamic> json) {
@@ -70,6 +74,7 @@ class Room {
       source: json['source'] as String?,
       url: json['url'] as String?,
       version: json['version'] as String?,
+      powerWarning: json['power_warning'] as String?,
       nowTitle: (json['now_playing'] as Map?)?['title'] as String?,
       nowArtist: (json['now_playing'] as Map?)?['artist'] as String?,
       nowImageUrl: (json['now_playing'] as Map?)?['image_url'] as String?,
@@ -101,6 +106,7 @@ class Room {
       source: source,
       url: url,
       version: version,
+      powerWarning: powerWarning,
       nowTitle: nowTitle,
       nowArtist: nowArtist,
       nowImageUrl: nowImageUrl,

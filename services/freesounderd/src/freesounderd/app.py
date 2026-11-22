@@ -25,8 +25,10 @@ from freesounderd.models import (
     AdoptBody,
     AirplayVolumeBody,
     BtConnectBody,
+    BtKeepaliveBody,
     BtLatencyBody,
     BtOutputBody,
+    BtQualityBody,
     BtScanBody,
     GroupMembersBody,
     Health,
@@ -786,6 +788,22 @@ def create_app(
                 rid, "POST", f"/api/v2/rooms/{rid}/bluetooth/latency", body.model_dump()
             )
         return await _bt_call(_bt().set_latency(body.latency_ms))
+
+    @app.post("/api/v2/rooms/{rid}/bluetooth/keepalive")
+    async def bt_keepalive(rid: str, body: BtKeepaliveBody) -> Any:
+        if rid != engine.id:
+            return await engine.forward(
+                rid, "POST", f"/api/v2/rooms/{rid}/bluetooth/keepalive", body.model_dump()
+            )
+        return await _bt_call(_bt().set_keepalive(body.enabled))
+
+    @app.post("/api/v2/rooms/{rid}/bluetooth/quality")
+    async def bt_quality(rid: str, body: BtQualityBody) -> Any:
+        if rid != engine.id:
+            return await engine.forward(
+                rid, "POST", f"/api/v2/rooms/{rid}/bluetooth/quality", body.model_dump(), wait=30
+            )
+        return await _bt_call(_bt().set_quality(body.quality))
 
     @app.delete("/api/v2/rooms/{rid}/bluetooth")
     async def bt_forget(rid: str) -> Any:

@@ -272,6 +272,17 @@ class ControlApiClient {
             as Map<String, dynamic>,
       );
 
+  Future<BtOutputStatus> bluetoothKeepalive(String playerId, {required bool enabled}) async =>
+      BtOutputStatus.fromJson(
+        await _send('POST', '/api/v2/rooms/$playerId/bluetooth/keepalive', {'enabled': enabled})
+            as Map<String, dynamic>,
+      );
+
+  Future<BtOutputStatus> bluetoothQuality(String playerId, String quality) async => BtOutputStatus.fromJson(
+        await _send('POST', '/api/v2/rooms/$playerId/bluetooth/quality', {'quality': quality}, true)
+            as Map<String, dynamic>,
+      );
+
   Future<BtOutputStatus> bluetoothForget(String playerId) async => BtOutputStatus.fromJson(
         await _send('DELETE', '/api/v2/rooms/$playerId/bluetooth', null, true) as Map<String, dynamic>,
       );

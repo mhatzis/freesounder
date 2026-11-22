@@ -14,7 +14,7 @@ release is priority order.
    (`persist_credentials`). Picking the room in the official Spotify app
    (zeroconf) keeps working as the other way in.
 2. **Bluetooth dropouts follow-up.** A "Robust" Bluetooth quality (lower SBC
-   bitpool, about half the airtime), suggested by the app when Diagnostics
+   bitpool, about a third less airtime (237 vs 345 kbps)), suggested by the app when Diagnostics
    shows Bluetooth-side gaps. Needs the Diagnostics text from the lounge.
 3. **Players reappear by themselves** after a power cycle (no app restart).
 4. **Group volume as smooth as room volume:** the app sets each room's level

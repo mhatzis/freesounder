@@ -199,6 +199,26 @@ class _RoomTile extends ConsumerWidget {
                           style: Theme.of(context).textTheme.titleSmall
                               ?.copyWith(fontWeight: selected ? FontWeight.w600 : FontWeight.w500),
                         ),
+                        if (room.powerWarning != null && !offline)
+                          Tooltip(
+                            message: room.powerWarning!,
+                            triggerMode: TooltipTriggerMode.tap,
+                            child: Row(
+                              key: Key('room-power-${room.id}'),
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.power_off_outlined, size: 14, color: scheme.error),
+                                const SizedBox(width: 4),
+                                Flexible(
+                                  child: Text(
+                                    'Power supply too weak',
+                                    overflow: TextOverflow.ellipsis,
+                                    style: Theme.of(context).textTheme.labelSmall?.copyWith(color: scheme.error),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
                         if (status.isNotEmpty)
                           Text(
                             status,

@@ -140,8 +140,15 @@ def test_mac_and_config_round_trip(tmp_path: Path) -> None:
         {"mac": SPEAKER, "name": 'Boom "$(reboot)"\nx', "enabled": True, "latency_ms": 180}, path
     )
     cfg = bt.read_config(path)
-    assert cfg == {"mac": SPEAKER, "name": "Boom (reboot) x", "enabled": True, "latency_ms": 180}
-    assert "$" not in path.read_text() and path.read_text().count("\n") == 4
+    assert cfg == {
+        "mac": SPEAKER,
+        "name": "Boom (reboot) x",
+        "enabled": True,
+        "latency_ms": 180,
+        "keepalive": True,
+        "quality": "high",
+    }
+    assert "$" not in path.read_text() and path.read_text().count("\n") == 6
 
 
 def test_audio_sink_detection() -> None:
@@ -732,3 +739,46 @@ async def test_wired_output_never_scans_or_pages(tmp_path: Path) -> None:
         clock.now += 60
     assert not [c for c in fake.calls if c[0] in ("discover", "connect", "pair")]
     assert ("start", bt.BLUEALSA_UNIT) not in units
+
+
+# ------------------------------------------------------------------ 0.6.19
+async def test_robust_quality_restarts_bluealsa_with_medium_sbc(tmp_path: Path) -> None:
+    out, fake, _events, units, _ = make_output(tmp_path)
+    out.env_path = tmp_path / "bluealsa.env"
+    out.start()
+    await out.stop()
+    assert out.env_path.read_text() == "BLUEALSA_SBC=--sbc-quality=high\n"
+    await out.use(SPEAKER)
+    units.clear()
+    st = await out.set_quality("robust")
+    assert st["quality"] == "robust"
+    assert out.env_path.read_text() == "BLUEALSA_SBC=--sbc-quality=medium\n"
+    assert ("restart", bt.BLUEALSA_UNIT) in units
+    assert bt.read_config(tmp_path / "bt-output")["quality"] == "robust"
+    with pytest.raises(bt.BtError):
+        await out.set_quality("loud")
+
+
+async def test_keepalive_toggle_re_picks_the_output_without_restarts(tmp_path: Path) -> None:
+    out, fake, events, units, _ = make_output(tmp_path)
+    await out.use(SPEAKER)
+    assert (await out.status())["keepalive"] is True  # on by default
+    events.clear()
+    units.clear()
+    st = await out.set_keepalive(False)
+    assert st["keepalive"] is False and events == ["reselect"] and units == []
+    assert bt.read_config(tmp_path / "bt-output")["keepalive"] is False
+
+
+def test_keepalive_level_only_for_a_bluetooth_output(tmp_path: Path) -> None:
+    from freesounderd.dsp import KEEPALIVE_DB, bt_keepalive_db, render_params
+    from freesounderd.models import PlayerSettings
+
+    cfg = tmp_path / "bt-output"
+    bt.write_config({"mac": SPEAKER, "enabled": True, "keepalive": True}, cfg)
+    assert bt_keepalive_db({"kind": "bluetooth"}, cfg) == KEEPALIVE_DB
+    assert bt_keepalive_db({"kind": "card"}, cfg) == 0.0
+    bt.write_config({"mac": SPEAKER, "enabled": True, "keepalive": False}, cfg)
+    assert bt_keepalive_db({"kind": "bluetooth"}, cfg) == 0.0
+    assert render_params(PlayerSettings(), -50) == "fsdsp1 0 0 0 0 -50\n"
+    assert render_params(PlayerSettings()) == "fsdsp1 0 0 0 0\n"  # wired: unchanged

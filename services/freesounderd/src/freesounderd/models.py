@@ -293,6 +293,14 @@ class BtLatencyBody(BaseModel):
     latency_ms: int = Field(ge=0, le=1000)
 
 
+class BtKeepaliveBody(BaseModel):
+    enabled: bool
+
+
+class BtQualityBody(BaseModel):
+    quality: Literal["high", "robust"]
+
+
 class LibraryShareBody(BaseModel):
     kind: str = Field(max_length=8)
     host: str | None = Field(default=None, max_length=253)

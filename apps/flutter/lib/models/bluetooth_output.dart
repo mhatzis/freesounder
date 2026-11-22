@@ -71,7 +71,15 @@ class BtOutputStatus {
     this.reason,
     this.warning,
     this.output,
+    this.keepalive = true,
+    this.quality = 'high',
   });
+
+  /// Keep the speaker awake while nothing plays (0.6.19).
+  final bool keepalive;
+
+  /// 'high' or 'robust' (less radio airtime; for a weak or busy link).
+  final String quality;
 
   /// The player has a Bluetooth adapter and the experimental output.
   final bool available;
@@ -108,6 +116,8 @@ class BtOutputStatus {
       reason: json['reason'] as String?,
       warning: json['warning'] as String?,
       output: json['output'] as String?,
+      keepalive: json['keepalive'] as bool? ?? true,
+      quality: json['quality'] as String? ?? 'high',
     );
   }
 

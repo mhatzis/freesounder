@@ -36,6 +36,10 @@
 #define NBQ 4         /* low shelf, high shelf, loudness low, loudness air */
 #define RAMP 2048     /* frames to crossfade filters and gains */
 #define CHECK_EVERY 2048 /* frames between params file checks */
+#define KEEPALIVE_AFTER 20.0 /* s of silence before the keep-alive starts */
+#define KEEPALIVE_HZ 30.0
+#define KEEPALIVE_FADE 0.3   /* s, fade-in time constant */
+#define SILENT 1e-5f         /* about -100 dBFS */
 
 typedef struct { double b0, b1, b2, a1, a2; } coef_t;
 typedef struct { double x1, x2, y1, y2; } state_t;
@@ -43,6 +47,7 @@ typedef struct { double x1, x2, y1, y2; } state_t;
 typedef struct {
 	float bass, treble, balance;
 	int loudness;
+	float keepalive_db; /* < 0: keep a Bluetooth speaker awake at this level; 0: off */
 } params_t;
 
 typedef struct {
@@ -63,6 +68,12 @@ typedef struct {
 	struct timespec mtime;
 	off_t size;
 	int have_file;
+	/* Keep-alive (0.6.19): after KEEPALIVE_AFTER s of digital silence, a
+	 * 30 Hz tone at keepalive_db keeps a Bluetooth speaker's auto standby
+	 * from firing. Off the moment real audio comes back. */
+	unsigned long quiet;       /* consecutive silent frames */
+	double ka_gain;            /* current keep-alive amplitude */
+	double ka_phase;
 } fsdsp_t;
 
 static int params_equal(const params_t *a, const params_t *b)
@@ -153,11 +164,16 @@ static int read_params(const char *path, params_t *out)
 	if (!f)
 		return -1;
 	char tag[16] = "";
-	params_t p = {0, 0, 0, 0};
-	int n = fscanf(f, "%15s %f %f %f %d", tag, &p.bass, &p.treble, &p.balance, &p.loudness);
+	params_t p = {0, 0, 0, 0, 0};
+	int n = fscanf(f, "%15s %f %f %f %d %f", tag, &p.bass, &p.treble, &p.balance, &p.loudness,
+		       &p.keepalive_db);
 	fclose(f);
 	if (n < 1 || strcmp(tag, "fsdsp1") != 0)
 		return -1;
+	if (n < 6 || !isfinite(p.keepalive_db) || p.keepalive_db >= 0)
+		p.keepalive_db = 0; /* older params files: off */
+	if (p.keepalive_db < -90) p.keepalive_db = -90;
+	if (p.keepalive_db < 0 && p.keepalive_db > -30) p.keepalive_db = -30;
 	if (!isfinite(p.bass)) p.bass = 0;
 	if (!isfinite(p.treble)) p.treble = 0;
 	if (!isfinite(p.balance)) p.balance = 0;
@@ -185,7 +201,7 @@ static void check_params(fsdsp_t *d, int force)
 	struct stat sb;
 	if (stat(d->path, &sb) != 0) {
 		if (d->have_file) {
-			params_t flat = {0, 0, 0, 0};
+			params_t flat = {0, 0, 0, 0, 0};
 			d->have_file = 0;
 			apply_params(d, &flat);
 		}
@@ -200,6 +216,8 @@ static void check_params(fsdsp_t *d, int force)
 	d->have_file = 1;
 	d->mtime = sb.st_mtim;
 	d->size = sb.st_size;
+	/* The keep-alive level needs no filter crossfade. */
+	d->p.keepalive_db = p.keepalive_db;
 	if (!force && d->ramp) {
 		d->pending = p;
 		d->has_pending = 1;
@@ -247,6 +265,35 @@ static inline double process(fsdsp_t *d, int ch, double x, unsigned int ramp)
 	return y;
 }
 
+/* Keep-alive sample to add after this frame (0 while there is audio). */
+static inline float keepalive(fsdsp_t *d, float xl, float xr)
+{
+	if (d->p.keepalive_db >= 0) {
+		d->quiet = 0;
+		d->ka_gain = 0;
+		return 0.0f;
+	}
+	double rate = d->rate ? d->rate : 44100;
+	if (fabsf(xl) > SILENT || fabsf(xr) > SILENT) {
+		d->quiet = 0;   /* music: off at once */
+		d->ka_gain = 0;
+		return 0.0f;
+	}
+	if (d->quiet < (unsigned long)(KEEPALIVE_AFTER * rate))
+		d->quiet++;
+	double target = d->quiet >= (unsigned long)(KEEPALIVE_AFTER * rate)
+				? pow(10.0, d->p.keepalive_db / 20.0)
+				: 0.0;
+	d->ka_gain += (target - d->ka_gain) * (1.0 - exp(-1.0 / (KEEPALIVE_FADE * rate)));
+	if (d->ka_gain < 1e-9)
+		return 0.0f;
+	double v = d->ka_gain * sin(d->ka_phase);
+	d->ka_phase += 2.0 * M_PI * KEEPALIVE_HZ / rate;
+	if (d->ka_phase > 2.0 * M_PI)
+		d->ka_phase -= 2.0 * M_PI;
+	return (float)v;
+}
+
 static snd_pcm_sframes_t fsdsp_transfer(snd_pcm_extplug_t *ext,
 					const snd_pcm_channel_area_t *dst, snd_pcm_uframes_t doff,
 					const snd_pcm_channel_area_t *src, snd_pcm_uframes_t soff,
@@ -272,9 +319,10 @@ static snd_pcm_sframes_t fsdsp_transfer(snd_pcm_extplug_t *ext,
 	snd_pcm_uframes_t i;
 	for (i = 0; i < size; i++) {
 		float xl = *(const float *)sp[0], xr = *(const float *)sp[1];
+		float ka = keepalive(d, xl, xr);
 		if (flat) {
-			*(float *)dp[0] = xl;
-			*(float *)dp[1] = xr;
+			*(float *)dp[0] = xl + ka;
+			*(float *)dp[1] = xr + ka;
 		} else {
 			double yl = process(d, 0, xl, d->ramp);
 			double yr = process(d, 1, xr, d->ramp);
@@ -290,8 +338,8 @@ static snd_pcm_sframes_t fsdsp_transfer(snd_pcm_extplug_t *ext,
 				d->lim = 1.0;
 			if (peak * d->lim > CEILING) /* never above the ceiling */
 				d->lim = CEILING / peak;
-			*(float *)dp[0] = (float)(yl * d->lim);
-			*(float *)dp[1] = (float)(yr * d->lim);
+			*(float *)dp[0] = (float)(yl * d->lim) + ka;
+			*(float *)dp[1] = (float)(yr * d->lim) + ka;
 		}
 		sp[0] += sstep[0];
 		sp[1] += sstep[1];
@@ -306,6 +354,9 @@ static int fsdsp_init(snd_pcm_extplug_t *ext)
 	fsdsp_t *d = ext->private_data;
 	d->rate = ext->rate;
 	d->lim = 1.0;
+	d->quiet = 0;
+	d->ka_gain = 0;
+	d->ka_phase = 0;
 	/* ~80 ms time constant back to unity. */
 	d->lim_release = 1.0 - exp(-1.0 / (0.080 * (d->rate ? d->rate : 44100)));
 	memset(d->st, 0, sizeof d->st);

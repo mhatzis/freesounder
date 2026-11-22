@@ -51,6 +51,17 @@ BRING_UP_EVERY = 30.0  # s: how often a missing adapter triggers a bring-up atte
 CONTROLLER_UNIT = "bluetooth.service"
 ADAPTER_LOOKUP_WAIT = 3.0  # s: GET /bluetooth answers fast even if BlueZ hangs
 BRING_UP_STEP_WAIT = 20.0  # s: each background bring-up step
+# bluealsa --sbc-quality per setting. "robust" (medium bitpool) needs
+# about a third less airtime than "high" (237 vs 345 kbps) and holds up
+# better on a weak or busy link.
+SBC_QUALITY = {"high": "high", "robust": "medium"}
+BLUEALSA_ENV = Path("/run/freesounder/bluealsa.env")
+
+
+def render_bluealsa_env(quality: str) -> str:
+    return f"BLUEALSA_SBC=--sbc-quality={SBC_QUALITY.get(quality, 'high')}\n"
+
+
 # A scan keeps discovering this much longer while a speaker still has no name:
 # BlueZ only learns a name from the speaker's reply to a name request, which
 # often lands after the first few seconds (the app then showed MACs).
@@ -172,6 +183,10 @@ def read_config(path: Path = BT_OUTPUT_FILE) -> dict[str, Any]:
         "name": None,
         "enabled": False,
         "latency_ms": DEFAULT_LATENCY_MS,
+        # 0.6.19: keep the speaker from sleeping while nothing plays, and the
+        # SBC quality ("high", or "robust" = about a third less airtime (237 vs 345 kbps)).
+        "keepalive": True,
+        "quality": "high",
     }
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -190,6 +205,10 @@ def read_config(path: Path = BT_OUTPUT_FILE) -> dict[str, Any]:
         elif key == "latency_ms":
             with contextlib.suppress(ValueError):
                 cfg["latency_ms"] = max(0, min(MAX_LATENCY_MS, int(value)))
+        elif key == "keepalive":
+            cfg["keepalive"] = value != "0"
+        elif key == "quality":
+            cfg["quality"] = value if value in SBC_QUALITY else "high"
     return cfg
 
 
@@ -205,6 +224,8 @@ def write_config(cfg: dict[str, Any], path: Path = BT_OUTPUT_FILE) -> None:
         f"name={_clean_name(cfg.get('name'))}\n"
         f"enabled={1 if cfg.get('enabled') else 0}\n"
         f"latency_ms={int(cfg.get('latency_ms', DEFAULT_LATENCY_MS))}\n"
+        f"keepalive={0 if cfg.get('keepalive') is False else 1}\n"
+        f"quality={cfg.get('quality') if cfg.get('quality') in SBC_QUALITY else 'high'}\n"
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
@@ -495,8 +516,10 @@ class BtOutput:
         net: Callable[[], str] = lambda: "unknown",
         clock: Callable[[], float] = time.monotonic,
         bring_up: Callable[[], Awaitable[None]] | None = None,
+        env_path: Path | None = None,
     ) -> None:
         self.backend = backend
+        self.env_path = env_path
         self.bring_up = bring_up
         self._bring_up_at = 0.0
         self._bring_up_task: asyncio.Task[None] | None = None
@@ -632,6 +655,8 @@ class BtOutput:
             "codec": self.codec if self.ready else None,
             "latency_ms": cfg["latency_ms"],
             "default_latency_ms": DEFAULT_LATENCY_MS,
+            "keepalive": bool(cfg.get("keepalive", True)),
+            "quality": cfg.get("quality", "high"),
             "busy": self.busy,
             "last_error": self.last_error,
             "warning": shared_radio_warning(self.model, self.net()),
@@ -743,6 +768,52 @@ class BtOutput:
             self.on_change()
         return await self.status()
 
+    def write_env(self) -> None:
+        """bluealsa's SBC quality, read by its unit (EnvironmentFile)."""
+
+        if self.env_path is None:
+            return
+        text = render_bluealsa_env(self.config().get("quality", "high"))
+        with contextlib.suppress(OSError):
+            if self.env_path.read_text(encoding="utf-8") == text:
+                return
+        with contextlib.suppress(OSError):
+            self.env_path.parent.mkdir(parents=True, exist_ok=True)
+            self.env_path.write_text(text, encoding="utf-8")
+
+    async def set_keepalive(self, enabled: bool) -> dict[str, Any]:
+        """Keep the speaker awake while nothing plays (fsdsp adds a quiet
+        30 Hz tone after 20 s of silence). Applied by re-picking the output,
+        which rewrites the DSP params; no restart, no reconnect."""
+
+        cfg = self.config()
+        cfg["keepalive"] = bool(enabled)
+        write_config(cfg, self.config_path)
+        await self._reselect()
+        return await self.status()
+
+    async def set_quality(self, quality: str) -> dict[str, Any]:
+        """SBC quality: "high" or "robust". bluealsa restarts, so the speaker
+        reconnects (a few seconds of silence)."""
+
+        if quality not in SBC_QUALITY:
+            raise BtError("Quality must be high or robust")
+        cfg = self.config()
+        if cfg.get("quality") == quality:
+            return await self.status()
+        cfg["quality"] = quality
+        write_config(cfg, self.config_path)
+        self.write_env()
+        if cfg["mac"] and cfg["enabled"]:
+            await self._unit("restart")
+            self._retry, self._retry_at = RETRY_MIN, 0.0
+            for _ in range(20):
+                await self.check(force=True)
+                if self.ready:
+                    break
+                await asyncio.sleep(0.5)
+        return await self.status()
+
     async def forget(self) -> dict[str, Any]:
         cfg = self.config()
         async with self.lock:
@@ -818,6 +889,7 @@ class BtOutput:
             await asyncio.sleep(WATCH_CONFIGURED if self.config()["mac"] else WATCH_IDLE)
 
     def start(self) -> None:
+        self.write_env()  # /run is empty after a reboot
         if self._task is None:
             self._task = asyncio.create_task(self.run())
 

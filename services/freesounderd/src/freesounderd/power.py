@@ -306,3 +306,32 @@ def run_heartbeat(argv: list[str]) -> int:
     with contextlib.suppress(OSError):
         watch.beat(clean=True, shutdown=kind)
     return 0
+
+
+# A Pi 5 needs about 5.0 V; below this the radios and the SD card misbehave.
+LOW_VOLTS = 4.8
+
+
+def power_warning(state: Path = STATE) -> str | None:
+    """A plain warning for the app when this player's supply is too weak
+    (0.6.19): under-voltage now or since boot, or the input dipped low.
+    From the power watch's heartbeat; None when all is well or unknown."""
+
+    beat = read_json(state / "heartbeat.json")
+    if not isinstance(beat, dict):
+        return None
+    flags = beat.get("throttled")
+    try:
+        value = int(str(flags), 16) if isinstance(flags, str) else int(flags or 0)
+    except ValueError:
+        value = 0
+    low = beat.get("min_ext5v")
+    dipped = isinstance(low, int | float) and 0 < low < LOW_VOLTS
+    if not (value & 0x1 or value & 0x10000 or dipped):
+        return None
+    where = f" (it dropped to {low:.2f} V)" if isinstance(low, int | float) and low > 0 else ""
+    return (
+        f"This player's power supply is too weak{where}. Audio and Bluetooth may drop "
+        "out. Use a 5 V supply with a short, thick cable (for a Pi 5, the official "
+        "27 W supply)."
+    )

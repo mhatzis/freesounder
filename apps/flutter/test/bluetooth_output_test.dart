@@ -20,6 +20,18 @@ class FakeApi implements BtOutputApi {
   }
 
   @override
+  Future<BtOutputStatus> keepalive({required bool enabled}) async {
+    calls.add('keepalive $enabled');
+    return current;
+  }
+
+  @override
+  Future<BtOutputStatus> quality(String quality) async {
+    calls.add('quality $quality');
+    return current;
+  }
+
+  @override
   Future<List<BtSpeaker>> scan() async {
     calls.add('scan');
     return [speaker];
