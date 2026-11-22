@@ -296,3 +296,67 @@ def test_bass_and_loudness_boost_bass_and_leave_mids_alone(tmp_path, fsdsp_so) -
     assert gain[("bass", 60)] > 4.5 and gain[("bass", 100)] > 3.5, gain
     assert gain[("loud", 60)] > 4.0 and gain[("loud", 100)] > 2.0, gain
     assert gain[("cut", 60)] < -4.5, gain
+
+
+@pytest.fixture(scope="module")
+def fsdsp_fast_keepalive(tmp_path_factory) -> Path:
+    """fsdsp with the keep-alive starting after 0.2 s of silence (not 20 s)."""
+
+    if shutil.which("gcc") is None or shutil.which("aplay") is None or not _alsa_headers():
+        pytest.skip("needs gcc, ALSA headers and aplay")
+    out = tmp_path_factory.mktemp("fsdsp_ka") / "libasound_module_pcm_fsdsp.so"
+    cflags = os.environ.get("ALSA_CFLAGS", "").split()
+    libs = os.environ.get("ALSA_LIBS", "-lasound").split()
+    cmd = ["gcc", "-O2", "-Wall", "-Wextra", "-Werror", "-fPIC", "-DPIC", "-shared", *cflags]
+    cmd.append("-DKEEPALIVE_AFTER=0.2")
+    subprocess.run([*cmd, "-o", str(out), str(FSDSP_C), *libs, "-lm"], check=True)
+    return out
+
+
+def _play_through(tmp_path: Path, so: Path, params_line: str, pcm_bytes: bytes) -> list[int]:
+    params = tmp_path / "dsp-params"
+    params.write_text(params_line)
+    raw = tmp_path / "out.raw"
+    conf = render_alsa_conf(slave_pcm="capture", kind="card", params_path=params)
+    conf += f"""
+pcm_type.fsdsp {{ lib "{so}" }}
+pcm.capture {{ type plug slave {{ pcm "capture_file" format S16_LE }} }}
+pcm.capture_file {{ type file slave.pcm "null" file "{raw}" format "raw" }}
+"""
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    (home / ".asoundrc").write_text(conf)
+    env = {**os.environ, "HOME": str(home)}
+    done = subprocess.run(
+        ["aplay", "-q", "-D", "freesounder", "-t", "raw", "-f", "S16_LE", "-r", "44100", "-c", "2"],
+        input=pcm_bytes,
+        env=env,
+        capture_output=True,
+        check=False,
+    )
+    assert done.returncode == 0, done.stderr.decode()
+    data = raw.read_bytes()
+    return list(struct.unpack(f"<{len(data) // 2}h", data[: len(data) // 2 * 2]))[0::2]
+
+
+def test_keepalive_fills_long_silence_and_never_touches_music(tmp_path, fsdsp_fast_keepalive):
+    """0.6.19: a Bluetooth speaker is kept awake by a quiet 30 Hz tone after
+    silence; music passes untouched (and the tone stops at once)."""
+
+    rate = 44100
+    silence = b"\0" * (rate * 4 * 2)  # 2 s
+    left = _play_through(tmp_path, fsdsp_fast_keepalive, "fsdsp1 0 0 0 0 -50\n", silence)
+    tail = left[int(rate * 1.0) :]  # well after 0.2 s + fade
+    peak = max(abs(v) for v in tail)
+    expected = 32767 * 10 ** (-50 / 20)  # about 104
+    assert 0.8 * expected < peak < 1.2 * expected, peak
+    # Keep-alive off (wired output, or switched off): silence stays silent.
+    (tmp_path / "home").mkdir(exist_ok=True)
+    off = _play_through(tmp_path, fsdsp_fast_keepalive, "fsdsp1 0 0 0 0\n", silence)
+    assert max(abs(v) for v in off) == 0
+    # Music after silence: the tone is gone from the first music sample.
+    music = _tone(1000, 0, rate)
+    mixed = _play_through(tmp_path, fsdsp_fast_keepalive, "fsdsp1 0 0 0 0 -50\n", silence + music)
+    plain = _play_through(tmp_path, fsdsp_fast_keepalive, "fsdsp1 0 0 0 0\n", silence + music)
+    start = len(silence) // 4
+    assert mixed[start + 10 : start + rate - 10] == plain[start + 10 : start + rate - 10]

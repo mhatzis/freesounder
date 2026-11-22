@@ -36,7 +36,9 @@
 #define NBQ 4         /* low shelf, high shelf, loudness low, loudness air */
 #define RAMP 2048     /* frames to crossfade filters and gains */
 #define CHECK_EVERY 2048 /* frames between params file checks */
-#define KEEPALIVE_AFTER 20.0 /* s of silence before the keep-alive starts */
+#ifndef KEEPALIVE_AFTER
+#define KEEPALIVE_AFTER 20.0 /* s of silence before the keep-alive starts (tests: -D) */
+#endif
 #define KEEPALIVE_HZ 30.0
 #define KEEPALIVE_FADE 0.3   /* s, fade-in time constant */
 #define SILENT 1e-5f         /* about -100 dBFS */
