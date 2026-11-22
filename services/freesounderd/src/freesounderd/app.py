@@ -49,7 +49,7 @@ from freesounderd.models import (
 )
 from freesounderd.mpd import MpdError
 from freesounderd.podcasts import PodcastError
-from freesounderd.ssh import ssh_set, ssh_status
+from freesounderd.ssh import SshHelperError, ssh_set, ssh_status
 from freesounderd.store import Store, detected_hat, hostname
 
 logger = logging.getLogger(__name__)
@@ -794,20 +794,24 @@ def create_app(
     async def set_ssh(rid: str, body: SshDeveloperBody) -> Any:
         if rid != engine.id:
             return await engine.forward(
-                rid, "POST", f"/api/v2/rooms/{rid}/developer/ssh", body.model_dump()
+                rid, "POST", f"/api/v2/rooms/{rid}/developer/ssh", body.model_dump(), wait=45
             )
         if body.enabled and not body.confirm:
             raise HTTPException(
                 status_code=400,
                 detail="Set confirm=true to enable developer SSH. The API has no authentication.",
             )
-        return await asyncio.to_thread(
-            ssh_set,
-            settings.ssh_command,
-            hostname(),
-            enabled=body.enabled,
-            public_key=body.public_key,
-        )
+        try:
+            return await asyncio.to_thread(
+                ssh_set,
+                settings.ssh_command,
+                hostname(),
+                enabled=body.enabled,
+                public_key=body.public_key,
+            )
+        except SshHelperError as exc:
+            action = "turn on" if body.enabled else "turn off"
+            raise HTTPException(status_code=500, detail=f"Could not {action} SSH: {exc}") from exc
 
     @app.get("/api/v2/doctor")
     async def doctor() -> dict[str, Any]:

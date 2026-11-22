@@ -87,9 +87,23 @@ def _adapter_lines() -> list[str]:
                     lines.append(f"hci0 {name}: {path.read_text(encoding='utf-8').strip()}")
                 except OSError:
                     pass
-    if shutil.which("bluetoothctl"):
-        lines.extend(_cmd_lines(["bluetoothctl", "show"], empty="bluetoothctl show: (no adapter)"))
+    # Read the adapter over D-Bus rather than with `bluetoothctl show`: every
+    # bluetoothctl run registers (and drops) an advertisement monitor with
+    # bluetoothd, which is not a read-only operation.
     if shutil.which("busctl"):
+        lines.extend(
+            _cmd_lines(
+                [
+                    "busctl",
+                    "--system",
+                    "introspect",
+                    "org.bluez",
+                    "/org/bluez/hci0",
+                    "org.bluez.Adapter1",
+                ],
+                empty="busctl: no org.bluez.Adapter1 on /org/bluez/hci0",
+            )
+        )
         lines.extend(
             _cmd_lines(
                 [

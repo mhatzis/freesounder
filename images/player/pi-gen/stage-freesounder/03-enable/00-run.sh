@@ -22,3 +22,19 @@ printf '%s\n' "$HASH" > "${ROOTFS_DIR}/etc/freesounder/.fsadmin-hash"
 chmod 0600 "${ROOTFS_DIR}/etc/freesounder/.fsadmin-hash"
 # Avoid leaving the hash in this shell's environment dump.
 unset HASH
+
+# Optional fixed developer SSH password (crypt hash from the build secret).
+DEV_HASH="${DEVELOPER_PASSWORD_HASH:-}"
+rm -f "${ROOTFS_DIR}/etc/freesounder/developer-password.hash"
+if [[ -n "$DEV_HASH" ]]; then
+	case "$DEV_HASH" in
+		\$5\$*|\$6\$*|\$y\$*|\$gy\$*|\$2*) ;;
+		*)
+			echo "DEVELOPER_PASSWORD_HASH is not a recognised crypt hash." >&2
+			exit 1
+			;;
+	esac
+	printf '%s\n' "$DEV_HASH" > "${ROOTFS_DIR}/etc/freesounder/developer-password.hash"
+	chmod 0600 "${ROOTFS_DIR}/etc/freesounder/developer-password.hash"
+fi
+unset DEV_HASH
