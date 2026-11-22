@@ -116,6 +116,8 @@ export FLUSH_BOOTFS_MTOOLS="$PI_GEN_DIR/export-image/flush-bootfs-mtools.sh"
 install -m 0755 "$SCRIPT_DIR/pi-gen/patches/rehash-rootfs-unsigned.sh" \
 	"$PI_GEN_DIR/export-image/05-finalise/rehash-rootfs-unsigned.sh"
 export REHASH_ROOTFS_UNSIGNED="$PI_GEN_DIR/export-image/05-finalise/rehash-rootfs-unsigned.sh"
+install -m 0755 "$SCRIPT_DIR/pi-gen/patches/export-drop-apt-lists.sh" \
+	"$PI_GEN_DIR/export-image/02-set-sources/02-run.sh"
 export PATH="/usr/local/sbin:/usr/sbin:/sbin:${PATH}"
 
 
