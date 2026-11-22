@@ -79,8 +79,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             Text(state.error!, style: text.bodySmall?.copyWith(color: scheme.error)),
           ],
           // 0.6.19: picking a player by address is a developer tool now; it
-          // also shows when the app cannot find the home, to recover.
-          if (ref.watch(developerModeProvider) || (!state.connected && !state.mockMode)) ...[
+          // also shows in demo mode and when the app cannot reach the home.
+          if (ref.watch(developerModeProvider) || !state.connected || state.mockMode) ...[
           const SizedBox(height: 24),
           Text('Connect', style: text.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
           const SizedBox(height: 4),
