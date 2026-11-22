@@ -112,8 +112,13 @@ jobs:
           Flash with Raspberry Pi Imager (Use custom → \`${out}\`). Check: \`sha256sum -c ${out}.sha256\`.
           EOF
           sed -i 's/^          //' notes.md
-          gh release create "$tag" "$out" "$out.sha256" \
-            -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
-            --title "FreeSounder player image ${version} (alpha, ${tag})" \
-            --notes-file notes.md
+          if gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # Made by hand on the Releases page: keep its text, add the files.
+            gh release upload "$tag" "$out" "$out.sha256" -R "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$tag" "$out" "$out.sha256" \
+              -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+              --title "FreeSounder player image ${version} (alpha, ${tag})" \
+              --notes-file notes.md
+          fi
           echo "::notice::Published $tag with $out"
