@@ -54,6 +54,9 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.13"
+          # The build runs uv as root, so the runner's uv cache stays empty;
+          # saving it would fail the job after a good build.
+          enable-cache: false
 
       - name: Install pi-gen host tools
         run: |
