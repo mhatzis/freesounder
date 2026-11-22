@@ -67,6 +67,13 @@ class ControlApiClient {
   /// This player's identity (`state` is `unclaimed` or `ready`).
   Future<Map<String, dynamic>> info() async => await _getJson('/api/v2/info') as Map<String, dynamic>;
 
+  /// The home's join code, for a phone that has joined to show (0.6.19).
+  Future<String> joinCode() async =>
+      (await _getJson('/api/v2/household/join-code') as Map<String, dynamic>)['code'] as String;
+
+  /// Check a code typed on a phone that has not joined this home yet.
+  Future<void> joinHousehold(String code) => _send('POST', '/api/v2/household/join', {'code': code});
+
   Future<List<Room>> listRooms() async {
     final data = await _getJson('/api/v2/rooms') as List<dynamic>;
     return [for (final item in data) Room.fromJson(item as Map<String, dynamic>)];
@@ -258,7 +265,7 @@ class ControlApiClient {
 
   /// Pair (if needed), trust, connect and use the speaker as the room's output.
   Future<BtOutputStatus> bluetoothConnect(String playerId, BtSpeaker speaker) async => BtOutputStatus.fromJson(
-        await _send('POST', '/api/v2/rooms/$playerId/bluetooth/connect', {'mac': speaker.mac, 'name': speaker.name}, true)
+        await _send('POST', '/api/v2/rooms/$playerId/bluetooth/connect', {'mac': speaker.mac, if (speaker.hasName) 'name': speaker.name}, true)
             as Map<String, dynamic>,
       );
 
@@ -269,6 +276,17 @@ class ControlApiClient {
 
   Future<BtOutputStatus> bluetoothLatency(String playerId, int latencyMs) async => BtOutputStatus.fromJson(
         await _send('POST', '/api/v2/rooms/$playerId/bluetooth/latency', {'latency_ms': latencyMs})
+            as Map<String, dynamic>,
+      );
+
+  Future<BtOutputStatus> bluetoothKeepalive(String playerId, {required bool enabled}) async =>
+      BtOutputStatus.fromJson(
+        await _send('POST', '/api/v2/rooms/$playerId/bluetooth/keepalive', {'enabled': enabled})
+            as Map<String, dynamic>,
+      );
+
+  Future<BtOutputStatus> bluetoothQuality(String playerId, String quality) async => BtOutputStatus.fromJson(
+        await _send('POST', '/api/v2/rooms/$playerId/bluetooth/quality', {'quality': quality}, true)
             as Map<String, dynamic>,
       );
 
@@ -287,6 +305,16 @@ class ControlApiClient {
 
   /// Sign the group's Spotify device in with the app's token (used once; the
   /// player keeps go-librespot's own stored credentials, not the token).
+  /// Start (or look at) a spotify.com/pair sign-in on the group's speaker.
+  Future<PlayerSpotify> spotifyPair(String roomOrGroupId) async => PlayerSpotify.fromJson(
+        await _send('POST', '/api/v2/groups/$roomOrGroupId/spotify/pair', const <String, dynamic>{}, true)
+            as Map<String, dynamic>,
+      );
+
+  Future<PlayerSpotify> spotifyPairCancel(String roomOrGroupId) async => PlayerSpotify.fromJson(
+        await _send('POST', '/api/v2/groups/$roomOrGroupId/spotify/pair/cancel') as Map<String, dynamic>,
+      );
+
   Future<PlayerSpotify> spotifyLogin(String roomOrGroupId, {required String username, required String accessToken}) async {
     final data = await _send(
       'POST',
@@ -358,11 +386,17 @@ class ControlApiClient {
     bool confirm = false,
     String? publicKey,
   }) async {
-    final data = await _send('POST', '/api/v2/rooms/$playerId/developer/ssh', {
-      'enabled': enabled,
-      'confirm': confirm,
-      if (publicKey != null && publicKey.isNotEmpty) 'public_key': publicKey,
-    });
+    // Slow: the first enable may create SSH host keys (seconds on a Pi Zero).
+    final data = await _send(
+      'POST',
+      '/api/v2/rooms/$playerId/developer/ssh',
+      {
+        'enabled': enabled,
+        'confirm': confirm,
+        if (publicKey != null && publicKey.isNotEmpty) 'public_key': publicKey,
+      },
+      true,
+    );
     return SshDeveloperStatus.fromJson(data as Map<String, dynamic>);
   }
 
@@ -514,6 +548,7 @@ class PlayerSpotify {
     this.deviceName,
     this.loggedIn = false,
     this.username,
+    this.pairing,
   });
 
   final String leaderId;
@@ -522,12 +557,34 @@ class PlayerSpotify {
   final bool loggedIn;
   final String? username;
 
-  factory PlayerSpotify.fromJson(Map<String, dynamic> json) => PlayerSpotify(
-        leaderId: json['leader_id'] as String? ?? '',
-        deviceId: json['device_id'] as String?,
-        deviceName: json['device_name'] as String?,
-        loggedIn: json['logged_in'] as bool? ?? false,
-        username: json['username'] as String?,
+  /// While the speaker waits for approval at spotify.com/pair (0.6.19).
+  final SpotifyPairing? pairing;
+
+  factory PlayerSpotify.fromJson(Map<String, dynamic> json) {
+    final pairing = json['pairing'];
+    return PlayerSpotify(
+      leaderId: json['leader_id'] as String? ?? '',
+      deviceId: json['device_id'] as String?,
+      deviceName: json['device_name'] as String?,
+      loggedIn: json['logged_in'] as bool? ?? false,
+      username: json['username'] as String?,
+      pairing: pairing is Map<String, dynamic> ? SpotifyPairing.fromJson(pairing) : null,
+    );
+  }
+}
+
+/// A pairing code for a speaker's Spotify sign-in (go-librespot device_auth).
+class SpotifyPairing {
+  const SpotifyPairing({required this.code, required this.url});
+
+  final String code;
+
+  /// Usually already carries the code, so the user only confirms there.
+  final String url;
+
+  factory SpotifyPairing.fromJson(Map<String, dynamic> json) => SpotifyPairing(
+        code: json['code'] as String? ?? '',
+        url: json['url'] as String? ?? 'https://www.spotify.com/pair',
       );
 }
 

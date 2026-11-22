@@ -20,6 +20,18 @@ class FakeApi implements BtOutputApi {
   }
 
   @override
+  Future<BtOutputStatus> keepalive({required bool enabled}) async {
+    calls.add('keepalive $enabled');
+    return current;
+  }
+
+  @override
+  Future<BtOutputStatus> quality(String quality) async {
+    calls.add('quality $quality');
+    return current;
+  }
+
+  @override
   Future<List<BtSpeaker>> scan() async {
     calls.add('scan');
     return [speaker];
@@ -149,7 +161,7 @@ void main() {
       ),
     );
     await pump(tester, api);
-    expect(find.text('Not connected — wired output plays until it is back'), findsOneWidget);
+    expect(find.text('Not connected — nothing plays here until it is back (trying every 10 s)'), findsOneWidget);
     await tester.tap(find.byKey(const Key('bt-output-wired')));
     await tester.pumpAndSettle();
     expect(api.calls, ['use false']);
@@ -188,8 +200,10 @@ void main() {
       'latency_ms': 180,
       'warning': null,
     });
-    expect(s.speaker!.name, 'AA:BB:CC:DD:EE:01');
+    expect(s.speaker!.name, 'Bluetooth speaker (EE:01)');
+    expect(s.speaker!.hasName, isFalse);
     expect(s.latencyMs, 180);
     expect(s.summary, 'Connected, starting…');
   });
 }
+

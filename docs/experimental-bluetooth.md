@@ -17,9 +17,11 @@ It lives only on `exp/bt-transmitter`, so it can be dropped easily.
 - **freesounderd (`bluetooth.py`):**
   - Scans BR/EDR only, and pairs with a one-shot agent that accepts just
     the chosen speaker.
-  - Trusts and connects the speaker, then reconnects with backoff
-    (10 s → 2 min) on boot or when the speaker comes back.
-  - Falls back to wired while the speaker is away.
+  - Trusts and connects the speaker, then tries to reconnect every 10 s
+    while it is away (boot, speaker switched off or out of range).
+  - While the speaker is away the room plays nothing: it never falls back to
+    the DAC/HDMI (0.6.18). A room uses Bluetooth or its wired output, never
+    both. Choose **Wired output** in Room settings to play through the DAC.
 - **Opening the speaker (0.6.9):**
   - The output is chosen only once bluealsa's PCM for the speaker has a
     configured transport. select-audio-output waits up to 6 s for it.
@@ -45,6 +47,13 @@ It lives only on `exp/bt-transmitter`, so it can be dropped easily.
   default 80 ms is too short for the Bluetooth link's stalls.
 - bluealsa runs its IO threads real-time (`--io-rt-priority=40`).
 - Wi-Fi power saving is off (`/etc/NetworkManager/conf.d/20-freesounder-wifi-powersave.conf`).
+- Nothing on the player polls Bluetooth while it plays. Up to 0.6.16 the
+  BLE setup service rebuilt its boot-partition doctor report every 2 s, even
+  when online. That ran `bluetoothctl show` (which registers an advertisement
+  monitor with bluetoothd each time) and rewrote a file on the SD card, and
+  it broke up speaker audio every few seconds. Since 0.6.17 the report is only
+  rebuilt when the network or advertising state changes (and at most once a
+  minute while offline), and it reads the adapter over D-Bus instead.
 - Wi-Fi on 2.4 GHz shares the Pi's radio with Bluetooth. Use 5 GHz Wi-Fi or
   Ethernet where you can.
 - Diagnostics → `audio.link`: Wi-Fi band/signal/power save, the Bluetooth

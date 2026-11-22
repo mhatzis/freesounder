@@ -34,6 +34,34 @@ class PeripheralHandle:
 
 PeripheralFactory = Callable[[], Awaitable[PeripheralHandle] | PeripheralHandle]
 
+# The bootfs doctor report runs Bluetooth and network tools and rewrites a
+# file on the boot partition. Doing that on every 2 s poll kept the shared
+# Bluetooth/Wi-Fi radio busy and broke up A2DP audio to Bluetooth speakers
+# every few seconds (0.6.17). Now it is rewritten when the state changes and,
+# while offline (when the boot partition is the only way to read it), at most
+# once per OFFLINE_DOCTOR_SECONDS. While online it is never rewritten on a timer.
+OFFLINE_DOCTOR_SECONDS = 60.0
+
+
+class DoctorThrottle:
+    """Decide when the bootfs doctor report should be rewritten."""
+
+    def __init__(self, offline_interval: float = OFFLINE_DOCTOR_SECONDS) -> None:
+        self.offline_interval = offline_interval
+        self._last_state: tuple[object, ...] | None = None
+        self._last_written: float | None = None
+
+    def due(self, state: tuple[object, ...], *, online: bool, now: float) -> bool:
+        if state != self._last_state or self._last_written is None:
+            return True
+        if online:
+            return False
+        return now - self._last_written >= self.offline_interval
+
+    def mark(self, state: tuple[object, ...], *, now: float) -> None:
+        self._last_state = state
+        self._last_written = now
+
 
 async def run_forever(
     *,
@@ -90,6 +118,7 @@ async def run_forever(
         advertising = False
 
     _logged_online: bool | None = None
+    doctor_throttle = DoctorThrottle()
 
     def _describe_network() -> str:
         try:
@@ -141,8 +170,13 @@ async def run_forever(
                 }
             )
             # Keep a copy on the boot partition so it can be read without a
-            # keyboard or a network.
-            try_write_bootfs_doctor(collect_report())
+            # keyboard or a network, but only when something changed (see
+            # DoctorThrottle): it must not poll the radio every 2 s.
+            state = (online, reason, advertising)
+            now = time.monotonic()
+            if doctor_throttle.due(state, online=online, now=now):
+                doctor_throttle.mark(state, now=now)
+                try_write_bootfs_doctor(collect_report())
         except Exception:  # noqa: BLE001
             logger.debug("could not publish ble status", exc_info=True)
 

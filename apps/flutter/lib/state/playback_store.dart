@@ -15,6 +15,7 @@ import '../spotify/spotify_store.dart';
 import '../models/player_settings.dart';
 import '../models/radio_station.dart';
 import '../models/room.dart';
+import 'join_home.dart';
 import '../ui/artwork.dart' show artworkGeneration;
 
 class AppConfig {
@@ -535,7 +536,22 @@ class PlaybackStore extends Notifier<PlaybackState> {
       final info = await client.info().timeout(const Duration(seconds: 4));
       final hh = info['household'];
       if (identical(client, _client) && hh is Map && hh['id'] is String) {
-        _householdId = hh['id'] as String;
+        final id = hh['id'] as String;
+        _householdId = id;
+        final prefs = ref.read(connectionPrefsProvider);
+        if (prefs != null && !prefs.joinedHouseholds.contains(id)) {
+          // 0.6.19: a phone joins a home once, with the code shown in the
+          // Settings of a phone that has. The phone that set the home up,
+          // and one that used it before codes existed, count as joined.
+          if (_justSetUp || prefs.householdId == id) {
+            await prefs.addJoinedHousehold(id);
+          } else {
+            ref.read(joinHomeProvider.notifier).show(
+                  JoinPrompt(householdId: id, name: hh['name'] as String? ?? 'Home'),
+                );
+            return;
+          }
+        }
         if (_persistHome) {
           await _rememberHome(client);
         }
@@ -543,6 +559,30 @@ class PlaybackStore extends Notifier<PlaybackState> {
     } on Object {
       // Optional: only used to spot players that belong to another home.
     }
+  }
+
+  /// Set while this phone sets up a new home, so it counts as joined.
+  bool _justSetUp = false;
+
+  /// Join the home the app found, with its code (0.6.19).
+  Future<void> joinHome(String code) async {
+    final client = _client;
+    final prompt = ref.read(joinHomeProvider);
+    if (client == null || prompt == null) {
+      throw ControlApiException('Not connected to a player');
+    }
+    await client.joinHousehold(code.trim());
+    await ref.read(connectionPrefsProvider)?.addJoinedHousehold(prompt.householdId);
+    ref.read(joinHomeProvider.notifier).clear();
+    await _rememberHome(client);
+  }
+
+  /// This home's join code, to show in Settings.
+  Future<String?> homeJoinCode() async {
+    if (state.mockMode || _client == null) {
+      return null;
+    }
+    return _client!.joinCode();
   }
 
   /// Players on this network that are set up in a *different* home (for
@@ -598,10 +638,17 @@ class PlaybackStore extends Notifier<PlaybackState> {
     // can never leave an old song and cover showing.
     _npRefresh?.cancel();
     _npRefresh = Timer.periodic(ref.read(linkTimingsProvider).nowPlayingRefresh, (_) {
+      if (state.reconnecting || state.mockMode) {
+        return;
+      }
       final active = state.activeRoomId;
-      if (active != null && !state.reconnecting && !state.mockMode) {
+      if (active != null) {
         unawaited(_refreshNowPlaying(active));
       }
+      // 0.6.19: the rooms list too. A player that was unplugged and came back
+      // showed up only after restarting the app when the event stream had
+      // gone quiet without closing.
+      unawaited(_reloadRooms());
     });
   }
 
@@ -1031,6 +1078,24 @@ class PlaybackStore extends Notifier<PlaybackState> {
     _refreshSoon(room.id);
   }
 
+  /// Mute or unmute one room (shown at once, then confirmed by the player).
+  Future<void> setMuted(String roomId, bool muted) async {
+    state = state.copyWith(
+      rooms: [
+        for (final room in state.rooms)
+          if (room.id == roomId) room.copyWith(muted: muted) else room,
+      ],
+    );
+    if (state.mockMode) {
+      _mock.rooms = [
+        for (final room in _mock.rooms)
+          if (room.id == roomId) room.copyWith(muted: muted) else room,
+      ];
+      return;
+    }
+    await _client?.setMuted(roomId, muted);
+  }
+
   /// Volume for the whole group the room is in (every room moves together).
   Future<void> setGroupVolume(String roomId, int level) async {
     if (state.mockMode) {
@@ -1058,11 +1123,23 @@ class PlaybackStore extends Notifier<PlaybackState> {
     if (client == null) {
       throw ControlApiException('Not connected to a player');
     }
+    final oldLeader = room.leaderId ?? room.groupId ?? roomId;
+    final wasSpotify = room.source == 'spotify';
+    final wasPlaying = room.state == 'playing';
+    // The first room in [memberIds] is the one the user is on: if the leader
+    // is taken out, it leads what remains and keeps the music (0.6.18).
     await client.setGroupMembers(room.groupId ?? roomId, memberIds);
     await _reloadRooms();
+    if (wasSpotify && !memberIds.contains(oldLeader)) {
+      final staying = memberIds.where((m) => m != oldLeader).firstOrNull;
+      if (staying != null) {
+        await _moveSpotify(staying, play: wasPlaying);
+      }
+    }
   }
 
-  /// Take one room out of its group.
+  /// Take one room out of its group. That room turns off; the others keep
+  /// playing (if it led a Spotify group, Spotify moves to the new leader).
   Future<void> leaveGroup(String roomId) async {
     if (state.mockMode) {
       _mock.ungroup(roomId);
@@ -1070,8 +1147,29 @@ class PlaybackStore extends Notifier<PlaybackState> {
       return;
     }
     final room = state.rooms.where((r) => r.id == roomId).firstOrNull;
+    final ledSpotify = room != null && room.source == 'spotify' && (room.leaderId ?? room.groupId) == roomId;
+    final others = room == null ? const <String>[] : room.memberIds.where((m) => m != roomId).toList();
     await _client?.leaveGroup(room?.groupId ?? roomId, roomId);
     await _reloadRooms();
+    if (ledSpotify && others.isNotEmpty) {
+      await _moveSpotify(others.first, play: room.state == 'playing');
+    }
+  }
+
+  /// Spotify belongs to a player's own Connect device, so when a Spotify
+  /// group's leader is taken out the app moves playback to the room that now
+  /// leads ([stayingRoomId]'s group).
+  Future<void> _moveSpotify(String stayingRoomId, {required bool play}) async {
+    final now = state.rooms.where((r) => r.id == stayingRoomId).firstOrNull;
+    final target = now?.leaderId ?? now?.groupId ?? stayingRoomId;
+    try {
+      await ref.read(spotifyProvider.notifier).transferTo(target, play: play);
+    } on Object {
+      throw ControlApiException(
+        'The rooms were regrouped, but Spotify could not move to ${now?.name ?? 'the remaining rooms'}. '
+        'Pick it in Spotify or play again from FreeSounder.',
+      );
+    }
   }
 
   Future<void> _reloadRooms() async {
@@ -1081,7 +1179,12 @@ class PlaybackStore extends Notifier<PlaybackState> {
     }
     try {
       final rooms = await client.listRooms().timeout(const Duration(seconds: 5));
-      state = state.copyWith(rooms: rooms);
+      if (!identical(client, _client) || _disposed) {
+        return;
+      }
+      if (!_sameRooms(rooms, state.rooms)) {
+        state = state.copyWith(rooms: rooms);
+      }
     } on Object {
       // The event stream brings the new rooms shortly anyway.
     }
@@ -1512,6 +1615,9 @@ class PlaybackStore extends Notifier<PlaybackState> {
     }
     final connectedHost = client == null ? null : Uri.tryParse(client.baseUrl)?.host;
     final createSystem = client == null || (address != null && address == connectedHost);
+    if (createSystem) {
+      _justSetUp = true;
+    }
     if (!createSystem) {
       var playerId = id;
       if (address != null && !resetFirst) {
@@ -1879,4 +1985,27 @@ List<String> describeRoomAudio(Map<String, dynamic> audio) {
       'Player: ${snap['connected'] == true ? 'connected' : 'not connected'}, volume ${snap['volume'] ?? '?'}${snap['muted'] == true ? ', muted' : ''}',
     if (stream != null) 'Stream: ${stream['id']} ${stream['status'] ?? ''}'.trim(),
   ];
+}
+
+/// The fields the rooms list shows; an unchanged list is not re-applied, so a
+/// periodic refresh never fights a slider being dragged.
+bool _sameRooms(List<Room> a, List<Room> b) {
+  if (a.length != b.length) {
+    return false;
+  }
+  for (var i = 0; i < a.length; i++) {
+    final x = a[i], y = b[i];
+    if (x.id != y.id ||
+        x.name != y.name ||
+        x.available != y.available ||
+        x.groupId != y.groupId ||
+        x.state != y.state ||
+        x.source != y.source ||
+        x.url != y.url ||
+        x.powerWarning != y.powerWarning ||
+        x.memberIds.join(',') != y.memberIds.join(',')) {
+      return false;
+    }
+  }
+  return true;
 }

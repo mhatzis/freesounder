@@ -70,3 +70,15 @@ def token(key: str, purpose: str, value: str) -> str:
 
 def token_ok(key: str, purpose: str, value: str, given: str) -> bool:
     return hmac.compare_digest(token(key, purpose, value), given or "")
+
+
+def join_code(key: str) -> str:
+    """The home's 6-digit join code (0.6.19), the same on every player of the
+    household and fixed for its lifetime: derived from the household key,
+    which never leaves the players."""
+
+    import hashlib
+    import hmac as _hmac
+
+    digest = _hmac.new(key.encode(), b"freesounder-join-code", hashlib.sha256).digest()
+    return f"{int.from_bytes(digest[:8], 'big') % 1_000_000:06d}"

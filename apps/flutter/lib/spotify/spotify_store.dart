@@ -177,6 +177,9 @@ class SpotifyController extends Notifier<SpotifyState> {
 
   Future<List<SpotifySection>> search(String query) => _api.search(query);
 
+  Future<({List<SpotifyItem> items, bool more})> searchType(String query, String type, {int offset = 0}) =>
+      _api.searchType(query, type, offset: offset);
+
   Future<SpotifyPage> page(SpotifyItem item) async {
     switch (item.type) {
       case 'album':
@@ -292,24 +295,57 @@ class SpotifyController extends Notifier<SpotifyState> {
 
   Future<PlayerSpotify> _ensureSpeaker(ControlApiClient client, String targetId, {bool force = false}) async {
     final info = await client.spotifyInfo(targetId);
-    final user = await _api.username();
-    if (!force && info.loggedIn && info.username == user) {
+    if (!force && info.loggedIn) {
       return info;
     }
-    final token = await _auth.accessToken(forceRefresh: true);
+    // 0.6.19: Spotify no longer accepts this app's token on a speaker, so the
+    // speaker signs in itself with a code approved at spotify.com/pair.
     try {
-      return await client.spotifyLogin(targetId, username: user, accessToken: token);
-    } on ControlApiException catch (err) {
-      final detail = err.detail ?? err.message;
-      if (detail.toLowerCase().contains('premium')) {
-        throw ControlApiException(
-          'Spotify did not accept the speaker sign-in. Playing on speakers needs Spotify Premium.',
-          statusCode: err.statusCode,
-          detail: detail,
-        );
+      final paired = await client.spotifyPair(targetId);
+      if (paired.loggedIn) {
+        return paired;
       }
-      rethrow;
+      final pairing = paired.pairing;
+      if (pairing != null) {
+        throw SpotifyPairingRequired(targetId, pairing, paired.deviceName);
+      }
+    } on ControlApiException catch (err) {
+      if (err.statusCode != 404 && err.statusCode != 405) {
+        rethrow;
+      }
+      // Player older than 0.6.19: the old token sign-in.
     }
+    final user = await _api.username();
+    final token = await _auth.accessToken(forceRefresh: true);
+    return client.spotifyLogin(targetId, username: user, accessToken: token);
+  }
+
+  /// Wait until the speaker is signed in (after the user approved the code).
+  Future<bool> waitForSpeaker(String targetId, {Duration timeout = const Duration(minutes: 10)}) async {
+    final client = ref.read(playbackProvider.notifier).client;
+    if (client == null) {
+      return false;
+    }
+    final until = DateTime.now().add(timeout);
+    while (DateTime.now().isBefore(until)) {
+      try {
+        final info = await client.spotifyInfo(targetId);
+        if (info.loggedIn) {
+          return true;
+        }
+        if (info.pairing == null) {
+          return false; // declined, expired or cancelled
+        }
+      } on Object {
+        // Try again in a moment.
+      }
+      await Future<void>.delayed(const Duration(seconds: 2));
+    }
+    return false;
+  }
+
+  Future<void> cancelPairing(String targetId) async {
+    await ref.read(playbackProvider.notifier).client?.spotifyPairCancel(targetId);
   }
 
   /// Fallback: find the speaker in Spotify's device list and play there.
@@ -349,6 +385,30 @@ class SpotifyController extends Notifier<SpotifyState> {
   }
 
   /// Transport through the Web API when the player could not do it.
+  /// Move Spotify playback to [targetId]'s Connect device, keeping the song
+  /// and position. Used when a group's leader is taken out of the group: the
+  /// rooms that remain keep the music (0.6.18).
+  Future<void> transferTo(String targetId, {bool play = true}) async {
+    final client = ref.read(playbackProvider.notifier).client;
+    if (client == null || !state.signedIn) {
+      return;
+    }
+    final info = await _ensureSpeaker(client, targetId);
+    // The new leader's Connect device can take a moment to show up.
+    for (var attempt = 0; ; attempt++) {
+      try {
+        final device = await _findDevice(info);
+        await _api.transfer(device, play: play);
+        return;
+      } on SpotifyApiException {
+        if (attempt >= 4) {
+          rethrow;
+        }
+        await Future<void>.delayed(const Duration(seconds: 1));
+      }
+    }
+  }
+
   Future<void> webControl(String targetId, String action, {int? positionMs}) async {
     final client = ref.read(playbackProvider.notifier).client;
     PlayerSpotify? info;
@@ -373,4 +433,16 @@ class SpotifyController extends Notifier<SpotifyState> {
         await _api.seek(device, positionMs ?? 0);
     }
   }
+}
+
+/// The speaker needs a one-time Spotify approval at spotify.com/pair.
+class SpotifyPairingRequired implements Exception {
+  SpotifyPairingRequired(this.targetId, this.pairing, this.speakerName);
+
+  final String targetId;
+  final SpotifyPairing pairing;
+  final String? speakerName;
+
+  @override
+  String toString() => 'Approve ${speakerName ?? 'this speaker'} at spotify.com/pair (code ${pairing.code}).';
 }

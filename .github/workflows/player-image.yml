@@ -1,0 +1,127 @@
+name: Player image
+
+# Builds the Raspberry Pi player image (pi-gen, Raspberry Pi OS trixie arm64)
+# on a native arm64 runner and attaches it to a GitHub pre-release.
+#
+# Start it by pushing a tag that ends in -image, for example:
+#   git tag v0.6.17-alpha-v2-image && git push origin v0.6.17-alpha-v2-image
+# or from the Actions tab (Run workflow) once this file is on the default
+# branch; a manual run makes a tag v<version>-<short sha>-image.
+#
+# Repository secrets (Settings → Secrets and variables → Actions):
+#   FSADMIN_PASSWORD    console account password (required)
+#   DEVELOPER_PASSWORD  fixed password for developer SSH from the app
+#                       (optional; without it each enable shows a one-time one)
+# Plain passwords are hashed during the build and never stored in the repo.
+
+on:
+  push:
+    tags: ["v*-image"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: player-image-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 240
+    env:
+      WORK_ROOT: /home/runner/fsbuild
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check secrets
+        env:
+          FSADMIN_PASSWORD: ${{ secrets.FSADMIN_PASSWORD }}
+        run: |
+          if [[ -z "$FSADMIN_PASSWORD" ]]; then
+            echo "::error::Add the FSADMIN_PASSWORD repository secret (Settings → Secrets and variables → Actions)."
+            exit 1
+          fi
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
+          df -h /
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+          # The build runs uv as root, so the runner's uv cache stays empty;
+          # saving it would fail the job after a good build.
+          enable-cache: false
+
+      - name: Install pi-gen host tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            coreutils quilt parted qemu-user qemu-user-binfmt debootstrap zerofree zip \
+            dosfstools e2fsprogs libcap2-bin grep rsync xz-utils curl xxd file git kmod \
+            bc gpg pigz arch-test mtools debian-archive-keyring openssl
+
+      - name: Fetch AirPlay 2 packages (latest deps-airplay2 run)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          run_id=$(gh run list -R "$GITHUB_REPOSITORY" --workflow deps-airplay2.yml \
+            --status success -L 1 --json databaseId -q '.[0].databaseId' || true)
+          if [[ -n "$run_id" ]]; then
+            mkdir -p images/player/.cache/deps/airplay2
+            gh run download "$run_id" -R "$GITHUB_REPOSITORY" -n airplay2-trixie-arm64 \
+              -D images/player/.cache/deps/airplay2 \
+              || echo "::warning::AirPlay 2 artifact not available; the image uses the fallback."
+          else
+            echo "::warning::No deps-airplay2 run found; the image uses the AirPlay fallback."
+          fi
+          ls -l images/player/.cache/deps/airplay2 2>/dev/null || true
+
+      - name: Build image
+        env:
+          FSADMIN_PASSWORD: ${{ secrets.FSADMIN_PASSWORD }}
+          DEVELOPER_PASSWORD: ${{ secrets.DEVELOPER_PASSWORD }}
+        run: |
+          # Run as root with the runner's PATH (uv), so build.sh does not
+          # re-exec through sudo's secure_path.
+          sudo --preserve-env=FSADMIN_PASSWORD,DEVELOPER_PASSWORD,WORK_ROOT \
+            env "PATH=$PATH" bash images/player/build.sh
+          ls -l "$WORK_ROOT/deploy"
+
+      - name: Publish pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' services/freesounderd/pyproject.toml)
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            tag=$GITHUB_REF_NAME
+          else
+            tag="v${version}-${GITHUB_SHA::7}-image"
+          fi
+          img=$(ls "$WORK_ROOT"/deploy/*.img.xz | head -1)
+          out="freesounder-v${version}-arm64.img.xz"
+          sudo cp "$img" "$out"
+          sudo chown "$(id -u):$(id -g)" "$out"
+          sha256sum "$out" > "$out.sha256"
+          cat > notes.md <<EOF
+          FreeSounder player image **${version}** (alpha, pre-release), built by GitHub Actions from \`${GITHUB_SHA::7}\` (${GITHUB_REF_NAME}).
+          Raspberry Pi OS (Trixie) arm64 for Pi 5, Pi 4, Pi 3 and Pi Zero 2 W. Console login is \`fsadmin\`; the hostname is \`fs-new\` until the player is set up.
+
+          Flash with Raspberry Pi Imager (Use custom → \`${out}\`). Check: \`sha256sum -c ${out}.sha256\`.
+          EOF
+          sed -i 's/^          //' notes.md
+          if gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # Made by hand on the Releases page: keep its text, add the files.
+            gh release upload "$tag" "$out" "$out.sha256" -R "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$tag" "$out" "$out.sha256" \
+              -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+              --title "FreeSounder player image ${version} (alpha, ${tag})" \
+              --notes-file notes.md
+          fi
+          echo "::notice::Published $tag with $out"

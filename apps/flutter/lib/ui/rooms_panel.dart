@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../api/errors.dart';
 import '../models/room.dart';
 import '../state/playback_store.dart';
 import '../theme/tokens.dart';
@@ -198,6 +199,26 @@ class _RoomTile extends ConsumerWidget {
                           style: Theme.of(context).textTheme.titleSmall
                               ?.copyWith(fontWeight: selected ? FontWeight.w600 : FontWeight.w500),
                         ),
+                        if (room.powerWarning != null && !offline)
+                          Tooltip(
+                            message: room.powerWarning!,
+                            triggerMode: TooltipTriggerMode.tap,
+                            child: Row(
+                              key: Key('room-power-${room.id}'),
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.power_off_outlined, size: 14, color: scheme.error),
+                                const SizedBox(width: 4),
+                                Flexible(
+                                  child: Text(
+                                    'Power supply too weak',
+                                    overflow: TextOverflow.ellipsis,
+                                    style: Theme.of(context).textTheme.labelSmall?.copyWith(color: scheme.error),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
                         if (status.isNotEmpty)
                           Text(
                             status,
@@ -381,7 +402,7 @@ class _GroupSheetState extends ConsumerState<_GroupSheet> {
         Navigator.of(context).pop();
       }
     } on Object catch (err) {
-      setState(() => _error = err.toString());
+      setState(() => _error = userMessageFor(err));
     } finally {
       if (mounted) {
         setState(() => _busy = false);
@@ -406,7 +427,8 @@ class _GroupSheetState extends ConsumerState<_GroupSheet> {
             Text('Play together', style: text.titleLarge),
             const SizedBox(height: 4),
             Text(
-              'Spotify and AirPlay show this group as "$title".',
+              'Spotify and AirPlay show this group as "$title". '
+              'Rooms you untick stop playing; the others carry on.',
               key: const Key('group-sheet-name'),
               style: text.bodySmall,
             ),
