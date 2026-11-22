@@ -186,21 +186,22 @@ async def test_pair_connect_and_choose_as_output(tmp_path: Path) -> None:
     assert "pair" not in [c[0] for c in fake.calls]
 
 
-async def test_disconnect_falls_back_then_reconnects_with_backoff(tmp_path: Path) -> None:
+async def test_speaker_away_is_retried_every_10_seconds(tmp_path: Path) -> None:
     out, fake, events, _units, clock = make_output(tmp_path)
     await out.use(SPEAKER)
     events.clear()
     fake.drop(SPEAKER)
     fake.reachable = False
-    await out.check()  # notices the drop, tries once, re-picks the wired output
+    await out.check()  # notices the drop, tries once, re-picks the output
     assert not out.active() and events == ["reselect"]
     tries = sum(1 for c in fake.calls if c == ("connect", SPEAKER))
-    await out.check()  # still inside the backoff window: no new page attempt
+    await out.check()  # within 10 s: no new page attempt
     assert sum(1 for c in fake.calls if c == ("connect", SPEAKER)) == tries
-    clock.now += bt.RETRY_MIN
-    await out.check()
-    assert sum(1 for c in fake.calls if c == ("connect", SPEAKER)) == tries + 1
-    assert out._retry == bt.RETRY_MIN * 4  # 10 -> 20 -> 40 s
+    for n in range(1, 7):  # every 10 s, never backing off further
+        clock.now += 10
+        await out.check()
+        assert sum(1 for c in fake.calls if c == ("connect", SPEAKER)) == tries + n
+    assert out._retry == 10
     # The speaker comes back.
     fake.reachable = True
     clock.now += 60
@@ -359,10 +360,15 @@ def test_select_gives_snapclient_a_bigger_buffer_for_bluetooth(tmp_path: Path) -
 
 
 @needs_bash
-def test_select_falls_back_to_wired_when_speaker_is_away(tmp_path: Path) -> None:
+def test_select_plays_nothing_while_the_speaker_is_away(tmp_path: Path) -> None:
+    """A room set to Bluetooth never plays through the DAC (0.6.18)."""
+
     got = _select(tmp_path, f"mac={SPEAKER}\nname=Patio Boom\nenabled=1\n", "")
-    assert got["pcm"] == "hw:CARD=sndrpihifiberry,DEV=0" and got["kind"] == "card"
-    assert "Patio Boom not connected" in got["reason"]
+    assert got["pcm"] == "null" and got["kind"] == "null"
+    assert got["bt_waiting"] == "1"
+    assert "Patio Boom not connected" in got["reason"] and "wired output stays off" in got["reason"]
+    env = (tmp_path / "player.env").read_text()
+    assert env == "SNAPCLIENT_PLAYER=\n"
 
 
 @needs_bash

@@ -118,6 +118,6 @@ class BtOutputStatus {
     if (!enabled) return 'Paired, using the wired output';
     if (active) return 'Playing${codec != null ? ' · $codec' : ''}';
     if (s.connected) return 'Connected, starting…';
-    return 'Not connected — wired output plays until it is back';
+    return 'Not connected — nothing plays here until it is back (trying every 10 s)';
   }
 }

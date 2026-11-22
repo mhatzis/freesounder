@@ -17,9 +17,11 @@ It lives only on `exp/bt-transmitter`, so it can be dropped easily.
 - **freesounderd (`bluetooth.py`):**
   - Scans BR/EDR only, and pairs with a one-shot agent that accepts just
     the chosen speaker.
-  - Trusts and connects the speaker, then reconnects with backoff
-    (10 s → 2 min) on boot or when the speaker comes back.
-  - Falls back to wired while the speaker is away.
+  - Trusts and connects the speaker, then tries to reconnect every 10 s
+    while it is away (boot, speaker switched off or out of range).
+  - While the speaker is away the room plays nothing: it never falls back to
+    the DAC/HDMI (0.6.18). A room uses Bluetooth or its wired output, never
+    both. Choose **Wired output** in Room settings to play through the DAC.
 - **Opening the speaker (0.6.9):**
   - The output is chosen only once bluealsa's PCM for the speaker has a
     configured transport. select-audio-output waits up to 6 s for it.

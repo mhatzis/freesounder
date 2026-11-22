@@ -8,9 +8,10 @@ through it:
 
     snapclient -> plug -> fsdsp -> plug -> bluealsa:DEV=<mac>,PROFILE=a2dp
 
-select-audio-output picks the speaker only while bluealsa has its A2DP PCM
-(the speaker is connected); otherwise the wired output (DAC, HDMI, null) is
-used, so a speaker that goes away falls back by itself.
+select-audio-output picks the speaker while bluealsa has its A2DP PCM (the
+speaker is connected). While it is away the room plays to the null sink, not
+the wired output (a room uses Bluetooth or its DAC/HDMI, never both; 0.6.18),
+and the speaker is tried every 10 s until it is back.
 
 Coexistence with the Improv BLE setup service:
 * only BR/EDR (classic) is used: discovery is filtered to Transport=bredr,
@@ -55,8 +56,11 @@ BRING_UP_STEP_WAIT = 20.0  # s: each background bring-up step
 # often lands after the first few seconds (the app then showed MACs).
 NAME_WAIT = 8.0
 NAME_ROUND = 2.0
-RETRY_MIN = 10.0  # s: first reconnect retry, doubling up to RETRY_MAX
-RETRY_MAX = 120.0
+# While Bluetooth is a room's output and the speaker is away, try to connect
+# every 10 s until it is back (0.6.18: it backed off to 2 min). The room plays
+# nothing meanwhile; it never falls back to the wired output.
+RETRY_MIN = 10.0
+RETRY_MAX = 10.0
 WATCH_CONFIGURED = 5.0  # s between connection checks with a speaker set up
 WATCH_IDLE = 30.0
 

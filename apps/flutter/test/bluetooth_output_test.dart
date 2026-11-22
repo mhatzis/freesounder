@@ -149,7 +149,7 @@ void main() {
       ),
     );
     await pump(tester, api);
-    expect(find.text('Not connected — wired output plays until it is back'), findsOneWidget);
+    expect(find.text('Not connected — nothing plays here until it is back (trying every 10 s)'), findsOneWidget);
     await tester.tap(find.byKey(const Key('bt-output-wired')));
     await tester.pumpAndSettle();
     expect(api.calls, ['use false']);
