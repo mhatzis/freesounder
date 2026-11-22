@@ -188,6 +188,7 @@ class Engine:
         self.clock_offset: dict[str, float] = {}
         self.source = "none"
         self.np: dict[str, Any] = {}
+        self._np_held: tuple[str, dict[str, Any]] | None = None
         self._prev_playing = {
             "spotify": False,
             "airplay": False,
@@ -1051,6 +1052,7 @@ class Engine:
                 await self._switch_source(others[0])
         await self._refresh_upnp_meta()
         np = self._now_playing(airplay)
+        np = self._hold_while_paused(np)
         if np:
             song = tuple(np.get(k) for k in ("title", "artist", "album", "image_url"))
             if song != self._np_song:
@@ -1169,6 +1171,37 @@ class Engine:
             await self.media.release()
         self.source = new
         self._airplay_paused_since = None
+
+    # What a paused room keeps showing (0.6.18): while nothing plays, the song
+    # and cover stay as they were; a radio station's next song title, a
+    # Spotify status read without its track for a moment or a new AirPlay art
+    # tag no longer swap the cover under a paused room.
+    _HELD_KEYS = (
+        "title",
+        "artist",
+        "album",
+        "image_url",
+        "station_image_url",
+        "stream_title",
+        "context_name",
+    )
+
+    def _hold_while_paused(self, np: dict[str, Any]) -> dict[str, Any]:
+        source = self.source
+        held = self._np_held
+        if not np or self.play_state() == "playing" or source == "none":
+            self._np_held = (source, np) if np and source != "none" else None
+            return np
+        key = np.get("uri") or np.get("station_name") or np.get("title")
+        if held is not None and held[0] == source:
+            old = held[1]
+            old_key = old.get("uri") or old.get("station_name") or old.get("title")
+            # Same track (or same station), or the source briefly lost it.
+            if key is None or key == old_key:
+                np = {**np, **{k: old[k] for k in self._HELD_KEYS if k in old}}
+                return np
+        self._np_held = (source, np)
+        return np
 
     def _now_playing(self, airplay: dict[str, Any]) -> dict[str, Any]:
         if self.source == "spotify" and self._spotify_status:
