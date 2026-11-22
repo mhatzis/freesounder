@@ -3,7 +3,10 @@
 Decisions agreed on 23 November 2026 (Australia/Melbourne). Order within a
 release is priority order.
 
-## 0.6.19
+## 0.6.19 (built)
+
+Done: 1 (pairing code), 2 (Robust quality; the Diagnostics-based suggestion
+is still to do), 3, 4, 5, 6, 7, 9, 10, 11. Moved to 0.6.20: 8.
 
 1. **Spotify sign-in with a pairing code.** Spotify no longer accepts a
    speaker sign-in with a token from the app's own Spotify client id
@@ -34,6 +37,12 @@ release is priority order.
    1 minute.
 10. **Low-voltage warning** on the room when the player reports under-voltage.
 11. **Image:** apt lists dropped after pi-gen's export `apt-get update` (done).
+
+## 0.6.20
+
+- **Now playing outside the app** (Android media notification, iOS Live
+  Activity).
+- App suggests Robust when Diagnostics shows Bluetooth-side gaps.
 
 ## Next (0.7.x)
 
