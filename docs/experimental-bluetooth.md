@@ -45,6 +45,13 @@ It lives only on `exp/bt-transmitter`, so it can be dropped easily.
   default 80 ms is too short for the Bluetooth link's stalls.
 - bluealsa runs its IO threads real-time (`--io-rt-priority=40`).
 - Wi-Fi power saving is off (`/etc/NetworkManager/conf.d/20-freesounder-wifi-powersave.conf`).
+- Nothing on the player polls Bluetooth while it plays. Up to 0.6.16 the
+  BLE setup service rebuilt its boot-partition doctor report every 2 s, even
+  when online. That ran `bluetoothctl show` (which registers an advertisement
+  monitor with bluetoothd each time) and rewrote a file on the SD card, and
+  it broke up speaker audio every few seconds. Since 0.6.17 the report is only
+  rebuilt when the network or advertising state changes (and at most once a
+  minute while offline), and it reads the adapter over D-Bus instead.
 - Wi-Fi on 2.4 GHz shares the Pi's radio with Bluetooth. Use 5 GHz Wi-Fi or
   Ethernet where you can.
 - Diagnostics → `audio.link`: Wi-Fi band/signal/power save, the Bluetooth

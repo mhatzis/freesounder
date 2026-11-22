@@ -102,3 +102,47 @@ async def test_run_forever_advertises_only_while_offline(
     stop.set()
     await task
     assert events[-1] == "stop"
+
+
+@pytest.mark.asyncio
+async def test_run_forever_does_not_rebuild_doctor_every_poll_while_online(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """0.6.17: rebuilding the doctor report (Bluetooth + network tools, a
+    boot-partition write) on every poll broke up Bluetooth speaker audio."""
+    monkeypatch.setattr(
+        "freesounder_ble_provisioning.service.load_identity",
+        lambda: load_identity(tmp_path),
+    )
+    monkeypatch.setattr(
+        "freesounder_ble_provisioning.service.advertise_name",
+        lambda: "FreeSounder-TEST",
+    )
+    reports: list[int] = []
+    monkeypatch.setattr(
+        "freesounder_ble_provisioning.doctor.collect_report",
+        lambda: reports.append(1) or "report",
+    )
+    monkeypatch.setattr(
+        "freesounder_ble_provisioning.status.try_write_bootfs_doctor",
+        lambda text: None,
+    )
+    monkeypatch.setattr(
+        "freesounder_ble_provisioning.status.write_status",
+        lambda update: None,
+    )
+    net = FakeNet()
+    net.online = True
+    events: list[str] = []
+    stop = asyncio.Event()
+
+    async def factory() -> FakePeripheral:
+        return FakePeripheral(events)
+
+    task = asyncio.create_task(
+        run_forever(network=net, peripheral_factory=factory, poll_seconds=0.01, stop_event=stop)
+    )
+    await asyncio.sleep(0.3)  # ~30 polls
+    stop.set()
+    await task
+    assert len(reports) <= 2, f"doctor rebuilt {len(reports)} times while online"
