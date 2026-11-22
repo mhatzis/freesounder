@@ -155,6 +155,7 @@ class _RoomTile extends ConsumerWidget {
     final status = offline
         ? 'Offline'
         : [
+            if (room.isSonos) 'Sonos',
             if (room.volume != null) '${room.volume}',
             if (room.isGrouped) room.groupName ?? 'Grouped',
             if (room.relayingFor != null) 'Playing for ${room.relayingFor}',
@@ -165,7 +166,9 @@ class _RoomTile extends ConsumerWidget {
       child: InkWell(
         borderRadius: BorderRadius.circular(16),
         onTap: () => ref.read(playbackProvider.notifier).selectRoom(room.id),
-        onLongPress: offline ? null : () => showRoomSettingsSheet(context, roomId: room.id, roomName: room.name),
+        onLongPress: offline || room.isSonos
+            ? null
+            : () => showRoomSettingsSheet(context, roomId: room.id, roomName: room.name),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(12, 10, 8, 6),
           child: Column(
@@ -253,7 +256,7 @@ class _RoomTile extends ConsumerWidget {
                       icon: Icon(room.isGrouped ? Icons.link : Icons.add_link, size: 20),
                       onPressed: () => showGroupSheet(context, room),
                     ),
-                  if (!offline)
+                  if (!offline && !room.isSonos)
                     IconButton(
                       key: Key('room-settings-${room.id}'),
                       tooltip: 'Room settings',
@@ -414,7 +417,8 @@ class _GroupSheetState extends ConsumerState<_GroupSheet> {
   Widget build(BuildContext context) {
     final rooms = ref.watch(playbackProvider).rooms;
     final text = Theme.of(context).textTheme;
-    final others = rooms.where((r) => r.id != widget.room.id).toList();
+    // Sonos speakers keep their own timing: they group only with each other.
+    final others = rooms.where((r) => r.id != widget.room.id && r.isSonos == widget.room.isSonos).toList();
     final count = _selected.length;
     final title = count > 1 ? '${widget.room.name} + ${count - 1}' : widget.room.name;
     return SafeArea(

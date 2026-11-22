@@ -40,6 +40,13 @@ is still to do), 3, 4, 5, 6, 7, 9, 10, 11. Moved to 0.6.20: 8.
 
 ## 0.6.20
 
+- **Sonos speakers as rooms** (done): found on the LAN (SSDP + the Sonos
+  topology), volume/mute, play/pause/next/seek, now playing, radio, library
+  and podcasts played on them by URL, Sonos-with-Sonos grouping. Sonos rooms
+  do not group with FreeSounder players (own timing). Spotify on Sonos goes
+  through the Spotify or Sonos app.
+- Grouping keeps the music; Spotify one-stream prompt (done).
+
 - **Now playing outside the app** (Android media notification, iOS Live
   Activity).
 - App suggests Robust when Diagnostics shows Bluetooth-side gaps.
@@ -47,9 +54,6 @@ is still to do), 3, 4, 5, 6, 7, 9, 10, 11. Moved to 0.6.20: 8.
 ## Next (0.7.x)
 
 - **OTA updates** (from the `feat/ota` branch). Needed before licensing.
-- **Sonos speakers as rooms:** control Sonos players from FreeSounder (local
-  UPnP or the Sonos Control API). FreeSounder cannot join a Sonos system as a
-  Sonos player: Sonos does not allow third-party players.
 - **Licensing** (below), after OTA.
 - YouTube Music and Amazon Music: no supported playback API (YouTube Music
   only through the unofficial ytmusicapi; Amazon Music playback is limited to

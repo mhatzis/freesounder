@@ -552,7 +552,8 @@ List<PlayTarget> playTargets(List<Room> rooms) {
   final seen = <String>{};
   final out = <PlayTarget>[];
   for (final room in rooms) {
-    if (!room.available) {
+    // Spotify on Sonos goes through the Spotify or Sonos app (0.6.20).
+    if (!room.available || room.isSonos) {
       continue;
     }
     final key = room.isGrouped ? (room.groupId ?? room.id) : room.id;

@@ -53,6 +53,7 @@ from freesounderd.models import (
 )
 from freesounderd.mpd import MpdError
 from freesounderd.podcasts import PodcastError
+from freesounderd.sonos import SonosError, is_sonos
 from freesounderd.ssh import SshHelperError, ssh_set, ssh_status
 from freesounderd.store import Store, detected_hat, hostname
 
@@ -109,6 +110,10 @@ def create_app(
 
     @app.exception_handler(LibraryError)
     async def _library_error(_request: Request, exc: LibraryError) -> JSONResponse:
+        return JSONResponse(status_code=exc.status, content={"detail": exc.detail})
+
+    @app.exception_handler(SonosError)
+    async def _sonos_error(_request: Request, exc: SonosError) -> JSONResponse:
         return JSONResponse(status_code=exc.status, content={"detail": exc.detail})
 
     @app.exception_handler(PodcastError)
@@ -416,6 +421,8 @@ def create_app(
 
     @app.get("/api/v2/groups/{gid}/now-playing")
     async def group_now_playing(gid: str) -> dict[str, Any]:
+        if is_sonos(gid):
+            return engine.sonos.now_playing(gid)
         group = next((g for g in engine.groups() if g["id"] == gid), None)
         if group is None:
             raise HTTPException(status_code=404, detail="Unknown group")

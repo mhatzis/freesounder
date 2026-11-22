@@ -225,7 +225,8 @@ class _NowPlayingCanvas extends ConsumerWidget {
                               const SizedBox(height: 4),
                               TextButton.icon(
                                 key: const Key('now-playing-room-settings'),
-                                onPressed: () => showRoomSettingsSheet(
+                                // Sonos speakers have no FreeSounder settings.
+                                onPressed: state.activeRoom!.isSonos ? null : () => showRoomSettingsSheet(
                                   context,
                                   roomId: state.activeRoom!.id,
                                   roomName: state.activeRoom!.name,
@@ -404,6 +405,7 @@ String? sourceLabel(String? source) {
     'library' => 'Music library',
     'podcast' => 'Podcasts',
     'upnp' => 'UPnP / DLNA',
+    'sonos' => 'Sonos',
     _ => null,
   };
 }

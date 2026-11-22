@@ -42,6 +42,7 @@ from freesounderd.snapcast import (
     render_snapserver_conf,
     stream_status,
 )
+from freesounderd.sonos import SonosError, SonosManager, is_sonos
 from freesounderd.spotify import (
     UNIT as SPOTIFY_UNIT,
 )
@@ -244,6 +245,9 @@ class Engine:
         self._tone_active = False
         self.snap_local = SnapcastRpc(settings.snapserver_rpc, self.http)
         self.spotify = LibrespotClient(settings.librespot_api, self.http)
+        # Sonos speakers on the LAN as rooms (0.6.20).
+        self.sonos = SonosManager(self.http, watching=lambda: bool(self._listeners))
+        self.sonos.on_change = self.broadcast_if_changed
         self.radio = RadioPlayer(
             settings.ffmpeg_bin, str(settings.run_dir / "radio.fifo"), settings.manage_system
         )
@@ -493,10 +497,13 @@ class Engine:
                     },
                 }
             )
+        out.extend(self.sonos.rooms())
         out.sort(key=lambda r: r["name"].lower())
         return out
 
     def now_playing_for_room(self, room_id: str) -> dict[str, Any]:
+        if is_sonos(room_id):
+            return self.sonos.now_playing(room_id)
         group = self.group_for_room(room_id)
         if group is None:
             return {"player_id": room_id, "group_id": room_id, "source": "none", "state": "idle"}
@@ -615,6 +622,8 @@ class Engine:
             )
         if self.bt is not None:
             self.bt.start()
+        if self.settings.manage_system:
+            self.sonos.start()
         self._task = asyncio.create_task(self._loop())
         if self.library.shares():
             self._mount_task = asyncio.create_task(self._mount_library())
@@ -675,6 +684,7 @@ class Engine:
         return 0
 
     async def stop(self) -> None:
+        await self.sonos.stop()
         if self.bt is not None:
             await self.bt.stop()
         if self._task:
@@ -1752,6 +1762,9 @@ class Engine:
         return rec.get("follow") or rec["id"]
 
     async def join(self, room_id: str, target: str) -> None:
+        if is_sonos(room_id) or is_sonos(target):
+            await self.sonos.join(room_id, target)
+            return
         leader = self.resolve_leader(target)
         if room_id == self.id:
             async with self._lock:
@@ -1777,6 +1790,9 @@ class Engine:
     async def leave(self, room_id: str, keep: str | None = None) -> dict[str, Any]:
         """Take a room out of its group. The room turns off; the others keep
         the music. [keep] is the room that should lead what remains."""
+        if is_sonos(room_id):
+            await self.sonos.leave(room_id)
+            return {}
 
         if room_id != self.id:
             res = await self.forward(
@@ -1795,6 +1811,9 @@ class Engine:
         """Make the group exactly [members]. Rooms taken out turn off; if the
         leader itself is taken out, the first listed room that stays takes the
         group and its music (see _leave_as_leader)."""
+        if is_sonos(gid) or any(is_sonos(m) for m in members):
+            await self.sonos.set_members(gid, members)
+            return {}
 
         old_leader = self.resolve_leader(gid)
         group = next((g for g in self.groups() if g["id"] == old_leader), None)
@@ -1837,6 +1856,10 @@ class Engine:
         return result
 
     async def set_room_volume(self, room_id: str, volume: int | None, muted: bool | None) -> None:
+        if is_sonos(room_id):
+            await self.sonos.set_volume(room_id, volume, muted)
+            self.broadcast_if_changed()
+            return
         if room_id != self.id:
             await self.forward(
                 room_id,
@@ -1910,6 +1933,10 @@ class Engine:
         await asyncio.shield(self._volume_task)
 
     async def set_group_volume(self, gid: str, volume: int | None, muted: bool | None) -> None:
+        if is_sonos(gid):
+            await self.sonos.set_group_volume(gid, volume, muted)
+            self.broadcast_if_changed()
+            return
         leader = self.resolve_leader(gid)
         group = next((g for g in self.groups() if g["id"] == leader), None)
         if group is None:
@@ -1930,6 +1957,10 @@ class Engine:
             raise errors[0]
 
     async def control(self, gid: str, action: str) -> None:
+        if is_sonos(gid):
+            await self.sonos.control(gid, action)
+            self.broadcast_if_changed()
+            return
         leader = self.resolve_leader(gid)
         if gid.endswith(SOLO_SUFFIX) and action == "play":
             raise EngineError(409, "This room is still playing for its old group.")
@@ -2072,6 +2103,11 @@ class Engine:
         return self.resolve_leader(gid)
 
     async def spotify_info(self, gid: str) -> dict[str, Any]:
+        if is_sonos(gid):
+            raise SonosError(
+                409,
+                "For Spotify on a Sonos speaker, pick it in the Spotify app or the Sonos app.",
+            )
         leader = self._spotify_leader(gid)
         if leader != self.id:
             return await self.forward(leader, "POST", f"/api/v2/groups/{leader}/spotify", {})
@@ -2093,6 +2129,11 @@ class Engine:
         }
 
     async def spotify_login(self, gid: str, body: dict[str, Any]) -> dict[str, Any]:
+        if is_sonos(gid):
+            raise SonosError(
+                409,
+                "For Spotify on a Sonos speaker, pick it in the Spotify app or the Sonos app.",
+            )
         leader = self._spotify_leader(gid)
         if leader != self.id:
             return await self.forward(
@@ -2193,6 +2234,11 @@ class Engine:
         "pairing": {code, url, expires_at} while it waits; the speaker keeps
         the login afterwards (state.json, reused by the normal config).
         """
+        if is_sonos(gid):
+            raise SonosError(
+                409,
+                "For Spotify on a Sonos speaker, pick it in the Spotify app or the Sonos app.",
+            )
 
         leader = self._spotify_leader(gid)
         if leader != self.id:
@@ -2283,9 +2329,7 @@ class Engine:
                 logger.info("Spotify pairing ended without approval on %s", self.room_name())
                 await self._end_spotify_pair(backup, name, fifo)
 
-    async def _end_spotify_pair(
-        self, restore: dict[str, Any] | None, name: str, fifo: str
-    ) -> None:
+    async def _end_spotify_pair(self, restore: dict[str, Any] | None, name: str, fifo: str) -> None:
         if restore and not saved_credentials(self.settings.spotify_dir):
             restore_credentials(self.settings.spotify_dir, restore)
         self.system.write_if_changed(
@@ -2309,6 +2353,11 @@ class Engine:
         return False
 
     async def spotify_play(self, gid: str, body: dict[str, Any]) -> dict[str, Any]:
+        if is_sonos(gid):
+            raise SonosError(
+                409,
+                "For Spotify on a Sonos speaker, pick it in the Spotify app or the Sonos app.",
+            )
         leader = self._spotify_leader(gid)
         if leader != self.id:
             return await self.forward(
@@ -2332,6 +2381,11 @@ class Engine:
         return {"ok": True, **(await self._spotify_info_local())}
 
     async def spotify_context_tracks(self, gid: str, uri: str) -> dict[str, Any]:
+        if is_sonos(gid):
+            raise SonosError(
+                409,
+                "For Spotify on a Sonos speaker, pick it in the Spotify app or the Sonos app.",
+            )
         leader = self._spotify_leader(gid)
         if leader != self.id:
             return await self.forward(
@@ -2343,6 +2397,9 @@ class Engine:
         return data
 
     async def seek(self, gid: str, position_ms: int) -> None:
+        if is_sonos(gid):
+            await self.sonos.seek(gid, position_ms)
+            return
         leader = self.resolve_leader(gid)
         if leader != self.id:
             await self.forward(
@@ -2365,6 +2422,15 @@ class Engine:
         self.kick()
 
     async def play_radio(self, gid: str, body: dict[str, Any]) -> dict[str, Any]:
+        if is_sonos(gid):
+            url = str(body.get("url") or "")
+            if not url.startswith(("http://", "https://")):
+                raise EngineError(400, "That station has no stream address.")
+            await self.sonos.play_stream(
+                gid, url, str(body.get("name") or "Radio"), body.get("favicon") or None
+            )
+            self.broadcast_if_changed()
+            return {"ok": True}
         leader = self.resolve_leader(gid)
         if gid.endswith(SOLO_SUFFIX):
             async with self._lock:
@@ -2425,6 +2491,17 @@ class Engine:
         )
 
     async def play_library(self, gid: str, body: dict[str, Any]) -> dict[str, Any]:
+        if is_sonos(gid):
+            host = str(body.get("host") or self.library_host())
+            tracks = []
+            for item in [
+                t for t in body.get("tracks") or [] if isinstance(t, dict) and t.get("uri")
+            ][:200]:
+                url, art = self.library_urls(host, str(item["uri"]))
+                tracks.append({**item, "url": url, "image_url": art})
+            await self.sonos.play_tracks(gid, tracks, int(body.get("start") or 0))
+            self.broadcast_if_changed()
+            return {"ok": True, "tracks": len(tracks)}
         leader = self._media_leader(gid)
         if leader != self.id:
             return await self.forward(leader, "POST", f"/api/v2/groups/{leader}/library/play", body)
@@ -2453,6 +2530,21 @@ class Engine:
         return {"ok": True, "tracks": len(tracks)}
 
     async def play_podcast(self, gid: str, body: dict[str, Any]) -> dict[str, Any]:
+        if is_sonos(gid):
+            ep = body.get("episode") or {}
+            pod = body.get("podcast") or {}
+            url = str(ep.get("url") or "")
+            if not url.startswith(("http://", "https://")):
+                raise EngineError(400, "That episode has no audio address.")
+            track = {
+                "url": url,
+                "title": ep.get("title"),
+                "artist": pod.get("title"),
+                "image_url": ep.get("image") or pod.get("image"),
+            }
+            await self.sonos.play_tracks(gid, [track], 0, float(body.get("position") or 0))
+            self.broadcast_if_changed()
+            return {"ok": True}
         leader = self._media_leader(gid)
         if leader != self.id:
             return await self.forward(leader, "POST", f"/api/v2/groups/{leader}/podcast/play", body)
