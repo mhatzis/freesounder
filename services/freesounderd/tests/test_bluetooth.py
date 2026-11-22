@@ -706,3 +706,23 @@ async def test_use_replaces_a_mac_shaped_name_with_the_real_one(tmp_path: Path) 
     await out.scan(4)
     await out.use(SPEAKER, SPEAKER)  # older app: sent the MAC it was showing
     assert bt.read_config(tmp_path / "bt-output")["name"] == "Patio Boom"
+
+
+async def test_wired_output_never_scans_or_pages(tmp_path: Path) -> None:
+    """DAC/HDMI in use: no Bluetooth radio activity at all (0.6.18 check)."""
+
+    out, fake, _events, units, clock = make_output(tmp_path)
+    for _ in range(5):  # no speaker set up
+        await out.check()
+        clock.now += 60
+    assert fake.calls == [] and units == []
+    await out.use(SPEAKER)
+    await out.set_enabled(False)  # back to the wired output
+    fake.calls.clear()
+    units.clear()
+    fake.drop(SPEAKER)
+    for _ in range(10):
+        await out.check()
+        clock.now += 60
+    assert not [c for c in fake.calls if c[0] in ("discover", "connect", "pair")]
+    assert ("start", bt.BLUEALSA_UNIT) not in units

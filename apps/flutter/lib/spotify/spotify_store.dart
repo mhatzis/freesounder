@@ -297,19 +297,9 @@ class SpotifyController extends Notifier<SpotifyState> {
       return info;
     }
     final token = await _auth.accessToken(forceRefresh: true);
-    try {
-      return await client.spotifyLogin(targetId, username: user, accessToken: token);
-    } on ControlApiException catch (err) {
-      final detail = err.detail ?? err.message;
-      if (detail.toLowerCase().contains('premium')) {
-        throw ControlApiException(
-          'Spotify did not accept the speaker sign-in. Playing on speakers needs Spotify Premium.',
-          statusCode: err.statusCode,
-          detail: detail,
-        );
-      }
-      rethrow;
-    }
+    // The player says why a sign-in failed (Premium only when Spotify said
+    // so; before 0.6.18 every failure read as "needs Premium").
+    return client.spotifyLogin(targetId, username: user, accessToken: token);
   }
 
   /// Fallback: find the speaker in Spotify's device list and play there.

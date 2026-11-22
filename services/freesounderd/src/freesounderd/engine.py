@@ -49,9 +49,12 @@ from freesounderd.spotify import (
     clear_credentials,
     is_paused,
     is_playing,
+    login_failure_reason,
     now_playing_fields,
     read_state,
     render_config,
+    restore_credentials,
+    saved_credentials,
     stored_username,
 )
 from freesounderd.store import Store, apply_amp_default, board_model, detected_hat, hostname
@@ -2061,7 +2064,7 @@ class Engine:
         leader = self._spotify_leader(gid)
         if leader != self.id:
             return await self.forward(
-                leader, "POST", f"/api/v2/groups/{leader}/spotify/login", body, wait=75
+                leader, "POST", f"/api/v2/groups/{leader}/spotify/login", body, wait=88
             )
         username = str(body.get("username") or "").strip()
         token = str(body.get("access_token") or "").strip()
@@ -2077,17 +2080,36 @@ class Engine:
             spot_path = self.settings.spotify_dir / "config.yml"
             name = self.my_group_name()
             fifo = str(self.settings.run_dir / "spotify.fifo")
+            started = time.time()
             ok = False
             try:
-                await self.system.systemctl("stop", SPOTIFY_UNIT)
-                clear_credentials(self.settings.spotify_dir)
-                self.system.write_if_changed(
-                    spot_path,
-                    render_config(device_name=name, fifo=fifo, token_login=(username, token)),
-                    0o600,
-                )
-                await self.system.systemctl("start", SPOTIFY_UNIT)
-                ok = await self._wait_spotify_user(username, 25)
+                # 1. This speaker already has a stored login for this account
+                #    (its session was only down, e.g. after a regroup): start
+                #    it again with that login instead of a new sign-in.
+                if stored_username(self.settings.spotify_dir) == username:
+                    self.system.write_if_changed(
+                        spot_path, render_config(device_name=name, fifo=fifo), 0o600
+                    )
+                    await self.system.systemctl("restart", SPOTIFY_UNIT)
+                    ok = await self._wait_spotify_user(username, 12)
+                # 2. A new sign-in with the app's token, twice if need be. The
+                #    old login is kept aside and put back if this fails, so a
+                #    failed attempt never leaves the speaker signed out.
+                backup = saved_credentials(self.settings.spotify_dir)
+                for _attempt in range(2):
+                    if ok:
+                        break
+                    await self.system.systemctl("stop", SPOTIFY_UNIT)
+                    clear_credentials(self.settings.spotify_dir)
+                    self.system.write_if_changed(
+                        spot_path,
+                        render_config(device_name=name, fifo=fifo, token_login=(username, token)),
+                        0o600,
+                    )
+                    await self.system.systemctl("start", SPOTIFY_UNIT)
+                    ok = await self._wait_spotify_user(username, 22)
+                if not ok and backup and not saved_credentials(self.settings.spotify_dir):
+                    restore_credentials(self.settings.spotify_dir, backup)
             finally:
                 # Never leave the token on disk: back to the normal config,
                 # which reuses the credentials go-librespot just stored.
@@ -2101,12 +2123,31 @@ class Engine:
         self.kick()
         info = await self._spotify_info_local()
         if not ok:
-            raise EngineError(
-                502,
-                "Spotify did not accept the sign-in on this player. Spotify Connect "
-                "needs a Premium account; check the account is Premium and try again.",
-            )
+            log = await self._unit_log(SPOTIFY_UNIT, since=started)
+            logger.warning("Spotify sign-in failed; go-librespot said: %s", log[-600:])
+            raise EngineError(502, login_failure_reason(log, self.room_name()))
         return info
+
+    async def _unit_log(self, unit: str, *, since: float) -> str:
+        """A unit's journal since [since] (epoch seconds), for error reasons."""
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "journalctl",
+                "-u",
+                unit,
+                f"--since=@{int(since)}",
+                "-o",
+                "cat",
+                "--no-pager",
+                "-q",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+        except (OSError, TimeoutError):
+            return ""
+        return out.decode(errors="replace")
 
     async def _wait_spotify_user(self, username: str, seconds: float) -> bool:
         deadline = time.monotonic() + seconds
