@@ -133,6 +133,12 @@ class GroupMembersBody(BaseModel):
     members: list[str]
 
 
+class LeaveBody(BaseModel):
+    """Leave a group. [keep]: the room that should lead what remains."""
+
+    keep: str | None = None
+
+
 class JoinBody(BaseModel):
     """Join a group: the target is a group id or any room id in that group."""
 
@@ -262,6 +268,9 @@ class SshDeveloperStatus(BaseModel):
     port: int = 22
     command: str | None = None
     password: str | None = None
+    # True when the image has a fixed developer password (set from a build
+    # secret); the password is then not sent, the app says so instead.
+    password_fixed: bool = False
     expires: str = "reboot"
     warning: str = SSH_API_WARNING
 

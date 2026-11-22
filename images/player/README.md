@@ -14,6 +14,27 @@ role (snapclient + control API only). Override with `freesounder-setup`.
 This image is **not** boot-tested on real Pi 4/Pi 5 hardware in the environment
 that first built it. Treat early builds as alpha.
 
+## Build on GitHub Actions
+
+`.github/workflows/player-image.yml` builds the image on a native arm64 runner
+and attaches `freesounder-v<version>-arm64.img.xz` (and its `.sha256`) to a
+GitHub pre-release. Push a tag ending in `-image` to start it:
+
+```
+git tag v0.6.17-alpha-v2-image && git push origin v0.6.17-alpha-v2-image
+```
+
+It takes about an hour. It needs these repository secrets
+(Settings → Secrets and variables → Actions):
+
+| Secret | Use |
+|---|---|
+| `FSADMIN_PASSWORD` | Console account password (required) |
+| `DEVELOPER_PASSWORD` | Fixed password for developer SSH turned on from the app (optional; without it each enable shows a one-time password) |
+
+Both are hashed during the build; the plain passwords are never written into
+the image or the repo. A local `build.sh` run takes the same variables.
+
 ## Flash with Raspberry Pi Imager
 
 Players are locked-down appliances. You should not set a username, password,

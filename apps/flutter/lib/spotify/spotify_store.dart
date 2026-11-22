@@ -177,6 +177,9 @@ class SpotifyController extends Notifier<SpotifyState> {
 
   Future<List<SpotifySection>> search(String query) => _api.search(query);
 
+  Future<({List<SpotifyItem> items, bool more})> searchType(String query, String type, {int offset = 0}) =>
+      _api.searchType(query, type, offset: offset);
+
   Future<SpotifyPage> page(SpotifyItem item) async {
     switch (item.type) {
       case 'album':
@@ -297,19 +300,9 @@ class SpotifyController extends Notifier<SpotifyState> {
       return info;
     }
     final token = await _auth.accessToken(forceRefresh: true);
-    try {
-      return await client.spotifyLogin(targetId, username: user, accessToken: token);
-    } on ControlApiException catch (err) {
-      final detail = err.detail ?? err.message;
-      if (detail.toLowerCase().contains('premium')) {
-        throw ControlApiException(
-          'Spotify did not accept the speaker sign-in. Playing on speakers needs Spotify Premium.',
-          statusCode: err.statusCode,
-          detail: detail,
-        );
-      }
-      rethrow;
-    }
+    // The player says why a sign-in failed (Premium only when Spotify said
+    // so; before 0.6.18 every failure read as "needs Premium").
+    return client.spotifyLogin(targetId, username: user, accessToken: token);
   }
 
   /// Fallback: find the speaker in Spotify's device list and play there.
@@ -349,6 +342,30 @@ class SpotifyController extends Notifier<SpotifyState> {
   }
 
   /// Transport through the Web API when the player could not do it.
+  /// Move Spotify playback to [targetId]'s Connect device, keeping the song
+  /// and position. Used when a group's leader is taken out of the group: the
+  /// rooms that remain keep the music (0.6.18).
+  Future<void> transferTo(String targetId, {bool play = true}) async {
+    final client = ref.read(playbackProvider.notifier).client;
+    if (client == null || !state.signedIn) {
+      return;
+    }
+    final info = await _ensureSpeaker(client, targetId);
+    // The new leader's Connect device can take a moment to show up.
+    for (var attempt = 0; ; attempt++) {
+      try {
+        final device = await _findDevice(info);
+        await _api.transfer(device, play: play);
+        return;
+      } on SpotifyApiException {
+        if (attempt >= 4) {
+          rethrow;
+        }
+        await Future<void>.delayed(const Duration(seconds: 1));
+      }
+    }
+  }
+
   Future<void> webControl(String targetId, String action, {int? positionMs}) async {
     final client = ref.read(playbackProvider.notifier).client;
     PlayerSpotify? info;

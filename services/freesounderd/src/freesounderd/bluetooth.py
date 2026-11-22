@@ -8,9 +8,10 @@ through it:
 
     snapclient -> plug -> fsdsp -> plug -> bluealsa:DEV=<mac>,PROFILE=a2dp
 
-select-audio-output picks the speaker only while bluealsa has its A2DP PCM
-(the speaker is connected); otherwise the wired output (DAC, HDMI, null) is
-used, so a speaker that goes away falls back by itself.
+select-audio-output picks the speaker while bluealsa has its A2DP PCM (the
+speaker is connected). While it is away the room plays to the null sink, not
+the wired output (a room uses Bluetooth or its DAC/HDMI, never both; 0.6.18),
+and the speaker is tried every 10 s until it is back.
 
 Coexistence with the Improv BLE setup service:
 * only BR/EDR (classic) is used: discovery is filtered to Transport=bredr,
@@ -50,8 +51,16 @@ BRING_UP_EVERY = 30.0  # s: how often a missing adapter triggers a bring-up atte
 CONTROLLER_UNIT = "bluetooth.service"
 ADAPTER_LOOKUP_WAIT = 3.0  # s: GET /bluetooth answers fast even if BlueZ hangs
 BRING_UP_STEP_WAIT = 20.0  # s: each background bring-up step
-RETRY_MIN = 10.0  # s: first reconnect retry, doubling up to RETRY_MAX
-RETRY_MAX = 120.0
+# A scan keeps discovering this much longer while a speaker still has no name:
+# BlueZ only learns a name from the speaker's reply to a name request, which
+# often lands after the first few seconds (the app then showed MACs).
+NAME_WAIT = 8.0
+NAME_ROUND = 2.0
+# While Bluetooth is a room's output and the speaker is away, try to connect
+# every 10 s until it is back (0.6.18: it backed off to 2 min). The room plays
+# nothing meanwhile; it never falls back to the wired output.
+RETRY_MIN = 10.0
+RETRY_MAX = 10.0
 WATCH_CONFIGURED = 5.0  # s between connection checks with a speaker set up
 WATCH_IDLE = 30.0
 
@@ -79,6 +88,52 @@ def mac_from_path(path: str) -> str | None:
     return match.group(1).replace("_", ":").upper() if match else None
 
 
+_MAC_LIKE = re.compile(r"^([0-9A-F]{2}[-:_]){5}[0-9A-F]{2}$", re.I)
+
+
+def device_name(name: Any, alias: Any) -> str | None:
+    """The speaker's real name, or None while BlueZ has not learned it.
+
+    BlueZ's Alias falls back to the address with dashes (18-66-96-C3-7A-28)
+    until the name is known, so an address-shaped alias is not a name.
+    """
+
+    for value in (alias, name):
+        text = str(value or "").strip()
+        if text and not _MAC_LIKE.match(text):
+            return text
+    return None
+
+
+def speaker_kind(dev: dict[str, Any]) -> str:
+    """headphones / speaker / car / other, for the app's icon."""
+
+    cls = dev.get("class")
+    icon = str(dev.get("icon") or "")
+    if isinstance(cls, int) and (cls >> 8) & 0x1F == 0x04:
+        minor = (cls >> 2) & 0x3F
+        if minor in (0x01, 0x06):  # wearable headset, headphones
+            return "headphones"
+        if minor == 0x08:  # car audio
+            return "car"
+        return "speaker"
+    if "headphone" in icon or "headset" in icon:
+        return "headphones"
+    return "speaker" if icon.startswith("audio-") else "other"
+
+
+def signal_label(rssi: Any) -> str | None:
+    """A rough, human label for RSSI (dBm)."""
+
+    if not isinstance(rssi, int | float):
+        return None
+    if rssi >= -60:
+        return "strong"
+    if rssi >= -75:
+        return "good"
+    return "weak"
+
+
 def is_audio_sink(dev: dict[str, Any]) -> bool:
     """A speaker/headphones: advertises A2DP sink, or its class says audio."""
 
@@ -89,6 +144,10 @@ def is_audio_sink(dev: dict[str, Any]) -> bool:
     if isinstance(cls, int) and (cls >> 8) & 0x1F == 0x04:  # major class Audio/Video
         return True
     return str(dev.get("icon") or "").startswith("audio-")
+
+
+def _is_speaker(dev: dict[str, Any]) -> bool:
+    return not dev.get("le_only") and is_audio_sink(dev)
 
 
 def shared_radio_warning(model: str, net: str) -> str | None:
@@ -284,7 +343,7 @@ class BluezBackend:
             out.append(
                 {
                     "mac": str(dev["Address"]).upper(),
-                    "name": dev.get("Alias") or dev.get("Name"),
+                    "name": device_name(dev.get("Name"), dev.get("Alias")),
                     "paired": bool(dev.get("Paired")),
                     "trusted": bool(dev.get("Trusted")),
                     "connected": bool(dev.get("Connected")),
@@ -587,16 +646,30 @@ class BtOutput:
                 await self._unit("start")
                 await self.backend.discover(max(2.0, min(20.0, seconds)))
                 devs = await self.backend.devices()
+                waited = 0.0
+                while waited < NAME_WAIT and any(
+                    not d.get("name") for d in devs if _is_speaker(d)
+                ):
+                    await self.backend.discover(NAME_ROUND)
+                    waited += NAME_ROUND
+                    devs = await self.backend.devices()
             except Exception as exc:
                 raise BtError(self._fail("scan", exc)) from exc
             finally:
                 self.busy = None
         speakers = [
-            {k: d.get(k) for k in ("mac", "name", "paired", "connected", "rssi")}
+            {
+                **{k: d.get(k) for k in ("mac", "name", "paired", "connected", "rssi")},
+                "kind": speaker_kind(d),
+                "signal": signal_label(d.get("rssi")),
+            }
             for d in devs
-            if not d.get("le_only") and is_audio_sink(d)
+            if _is_speaker(d)
         ]
-        speakers.sort(key=lambda d: (not d["paired"], -(d.get("rssi") or -999)))
+        # Paired first, then named before unnamed, then nearest first.
+        speakers.sort(
+            key=lambda d: (not d["paired"], not d["name"], -(d.get("rssi") or -999))
+        )
         return speakers
 
     async def use(self, mac: str, name: str | None = None) -> dict[str, Any]:
@@ -627,7 +700,14 @@ class BtOutput:
                 self.busy = None
             cfg = self.config()
             old = cfg["mac"]
-            cfg.update(mac=mac, name=name or dev.get("name") or cfg["name"], enabled=True)
+            # A name from the app may be the MAC it showed before the speaker's
+            # name was known; prefer BlueZ's real name (learned by now, pairing
+            # asks the speaker for it).
+            fresh = dev
+            with contextlib.suppress(Exception):
+                fresh = {d["mac"]: d for d in await self.backend.devices()}.get(mac, dev)
+            real = device_name(name, None) or fresh.get("name") or dev.get("name")
+            cfg.update(mac=mac, name=real or cfg["name"], enabled=True)
             write_config(cfg, self.config_path)
             if old and old != mac:
                 with contextlib.suppress(Exception):

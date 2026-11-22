@@ -258,7 +258,7 @@ class ControlApiClient {
 
   /// Pair (if needed), trust, connect and use the speaker as the room's output.
   Future<BtOutputStatus> bluetoothConnect(String playerId, BtSpeaker speaker) async => BtOutputStatus.fromJson(
-        await _send('POST', '/api/v2/rooms/$playerId/bluetooth/connect', {'mac': speaker.mac, 'name': speaker.name}, true)
+        await _send('POST', '/api/v2/rooms/$playerId/bluetooth/connect', {'mac': speaker.mac, if (speaker.hasName) 'name': speaker.name}, true)
             as Map<String, dynamic>,
       );
 
@@ -358,11 +358,17 @@ class ControlApiClient {
     bool confirm = false,
     String? publicKey,
   }) async {
-    final data = await _send('POST', '/api/v2/rooms/$playerId/developer/ssh', {
-      'enabled': enabled,
-      'confirm': confirm,
-      if (publicKey != null && publicKey.isNotEmpty) 'public_key': publicKey,
-    });
+    // Slow: the first enable may create SSH host keys (seconds on a Pi Zero).
+    final data = await _send(
+      'POST',
+      '/api/v2/rooms/$playerId/developer/ssh',
+      {
+        'enabled': enabled,
+        'confirm': confirm,
+        if (publicKey != null && publicKey.isNotEmpty) 'public_key': publicKey,
+      },
+      true,
+    );
     return SshDeveloperStatus.fromJson(data as Map<String, dynamic>);
   }
 

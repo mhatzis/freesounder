@@ -589,6 +589,14 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
                           SelectableText(_ssh!.command!, style: text.bodyMedium),
                           const SizedBox(height: 4),
                         ],
+                        if (_ssh?.enabled == true && _ssh?.password == null && _ssh?.passwordFixed == true) ...[
+                          Text(
+                            'Password: the developer password set when this image was built.',
+                            key: const Key('ssh-fixed-password-note'),
+                            style: text.bodyMedium,
+                          ),
+                          const SizedBox(height: 4),
+                        ],
                         if (_ssh?.password != null) ...[
                           SelectableText('Password: ${_ssh!.password}', style: text.bodyMedium),
                           TextButton(

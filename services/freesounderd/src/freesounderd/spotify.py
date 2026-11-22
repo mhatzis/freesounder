@@ -204,3 +204,47 @@ def clear_credentials(spotify_dir: Path) -> None:
 def stored_username(spotify_dir: Path) -> str | None:
     creds = read_state(spotify_dir).get("credentials") or {}
     return (creds.get("username") or None) if creds.get("data") else None
+
+
+def saved_credentials(spotify_dir: Path) -> dict[str, Any] | None:
+    """The stored login (to put back if a new sign-in fails), if any."""
+
+    creds = read_state(spotify_dir).get("credentials") or {}
+    return dict(creds) if creds.get("data") else None
+
+
+def restore_credentials(spotify_dir: Path, creds: dict[str, Any]) -> None:
+    """Put a stored login back (keeps the device id and everything else)."""
+
+    path = spotify_dir / "state.json"
+    data = read_state(spotify_dir)
+    data["credentials"] = creds
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data), encoding="utf-8")
+    tmp.replace(path)
+
+
+def login_failure_reason(log: str, room: str) -> str:
+    """A plain reason for a failed speaker sign-in, from go-librespot's log.
+
+    Up to 0.6.17 every failure (a slow start, a network hiccup, a refused
+    token) said the account needs Premium.
+    """
+
+    text = log.lower()
+    if "premium" in text:
+        return (
+            f"Spotify says this account cannot play on speakers ({room}). Spotify "
+            "Connect needs Spotify Premium; check the account you signed in with."
+        )
+    if "badcredentials" in text or "bad credentials" in text or "invalid token" in text:
+        return (
+            f"Spotify refused the sign-in for {room}. In FreeSounder, sign out of "
+            "Spotify and sign in again, then retry."
+        )
+    if any(
+        k in text
+        for k in ("tryanotherap", "no such host", "i/o timeout", "connection refused", "dial tcp")
+    ):
+        return f"{room} could not reach Spotify. Check that it is online, then try again."
+    return f"Spotify sign-in on {room} did not finish in time. Try again in a moment."

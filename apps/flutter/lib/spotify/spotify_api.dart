@@ -166,20 +166,71 @@ class SpotifyApi {
   Future<List<SpotifyItem>> topTracks() => _list('/me/top/tracks', query: {'limit': '20', 'time_range': 'short_term'});
 
   // ------------------------------------------------------------------ search
-  /// Development mode returns at most 10 per type.
-  Future<List<SpotifySection>> search(String query) async {
-    final data = await _getMap('/search', {'q': query, 'type': 'track,artist,album,playlist', 'limit': '10'});
-    List<SpotifyItem> items(String key) {
-      final block = data[key];
-      return [for (final i in (block is Map ? block['items'] as List? : null) ?? const []) ?SpotifyItem.fromJson(i)];
-    }
+  /// Spotify search types and their section titles, in display order.
+  static const searchTypes = <String, String>{
+    'track': 'Songs',
+    'artist': 'Artists',
+    'album': 'Albums',
+    'playlist': 'Playlists',
+    'show': 'Podcasts',
+    'episode': 'Episodes',
+  };
 
-    return [
-      SpotifySection('Songs', items('tracks')),
-      SpotifySection('Artists', items('artists')),
-      SpotifySection('Albums', items('albums')),
-      SpotifySection('Playlists', items('playlists')),
+  /// Everything at once: a top result, then songs, artists, albums,
+  /// playlists, podcasts and episodes. Development mode returns at most 10
+  /// per type; [searchType] pages through one type for more.
+  Future<List<SpotifySection>> search(String query) async {
+    final data = await _getMap('/search', {
+      'q': query,
+      'type': searchTypes.keys.join(','),
+      'limit': '10',
+      // Podcasts only come back for a market; the user's own is right.
+      'market': 'from_token',
+    });
+    final sections = [
+      for (final entry in searchTypes.entries) SpotifySection(entry.value, _items(data, '${entry.key}s')),
     ].where((s) => s.items.isNotEmpty).toList();
+    final top = topResult(query, sections);
+    return [if (top != null) SpotifySection('Top result', [top]), ...sections];
+  }
+
+  /// One type ('track', 'artist', …), [offset] onwards, for "Load more".
+  Future<({List<SpotifyItem> items, bool more})> searchType(String query, String type, {int offset = 0}) async {
+    final data = await _getMap('/search', {
+      'q': query,
+      'type': type,
+      'limit': '10',
+      'offset': '$offset',
+      'market': 'from_token',
+    });
+    final block = data['${type}s'];
+    final items = _items(data, '${type}s');
+    final more = block is Map && block['next'] != null && offset + 10 < 1000;
+    return (items: items, more: more);
+  }
+
+  static List<SpotifyItem> _items(Map<String, dynamic> data, String key) {
+    final block = data[key];
+    return [for (final i in (block is Map ? block['items'] as List? : null) ?? const []) ?SpotifyItem.fromJson(i)];
+  }
+
+  /// The best single match: an artist whose name is the query, else the
+  /// first song, else the first thing found.
+  static SpotifyItem? topResult(String query, List<SpotifySection> sections) {
+    final q = query.trim().toLowerCase();
+    SpotifyItem? first(String title) =>
+        sections.where((s) => s.title == title && s.items.isNotEmpty).firstOrNull?.items.first;
+    final artist = first('Artists');
+    if (artist != null && artist.name.toLowerCase() == q) {
+      return artist;
+    }
+    for (final title in const ['Albums', 'Playlists', 'Podcasts']) {
+      final item = first(title);
+      if (item != null && item.name.toLowerCase() == q) {
+        return item;
+      }
+    }
+    return first('Songs') ?? artist ?? sections.firstOrNull?.items.firstOrNull;
   }
 
   // ------------------------------------------------------------------ pages
