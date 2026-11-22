@@ -31,6 +31,7 @@ from freesounderd.models import (
     GroupMembersBody,
     Health,
     JoinBody,
+    LeaveBody,
     LibraryPlayBody,
     LibraryShareBody,
     PlayerSettings,
@@ -320,9 +321,9 @@ def create_app(
         return {"ok": True}
 
     @app.post("/api/v2/rooms/{rid}/leave")
-    async def leave(rid: str) -> dict[str, Any]:
-        await engine.leave(rid)
-        return {"ok": True}
+    async def leave(rid: str, body: LeaveBody | None = None) -> dict[str, Any]:
+        result = await engine.leave(rid, keep=body.keep if body else None)
+        return {"ok": True, **result}
 
     @app.post("/api/v2/rooms/{rid}/volume")
     async def room_volume(rid: str, body: VolumeBody) -> dict[str, Any]:

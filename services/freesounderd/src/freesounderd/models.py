@@ -133,6 +133,12 @@ class GroupMembersBody(BaseModel):
     members: list[str]
 
 
+class LeaveBody(BaseModel):
+    """Leave a group. [keep]: the room that should lead what remains."""
+
+    keep: str | None = None
+
+
 class JoinBody(BaseModel):
     """Join a group: the target is a group id or any room id in that group."""
 

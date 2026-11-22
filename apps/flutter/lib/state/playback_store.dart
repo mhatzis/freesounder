@@ -1058,11 +1058,23 @@ class PlaybackStore extends Notifier<PlaybackState> {
     if (client == null) {
       throw ControlApiException('Not connected to a player');
     }
+    final oldLeader = room.leaderId ?? room.groupId ?? roomId;
+    final wasSpotify = room.source == 'spotify';
+    final wasPlaying = room.state == 'playing';
+    // The first room in [memberIds] is the one the user is on: if the leader
+    // is taken out, it leads what remains and keeps the music (0.6.18).
     await client.setGroupMembers(room.groupId ?? roomId, memberIds);
     await _reloadRooms();
+    if (wasSpotify && !memberIds.contains(oldLeader)) {
+      final staying = memberIds.where((m) => m != oldLeader).firstOrNull;
+      if (staying != null) {
+        await _moveSpotify(staying, play: wasPlaying);
+      }
+    }
   }
 
-  /// Take one room out of its group.
+  /// Take one room out of its group. That room turns off; the others keep
+  /// playing (if it led a Spotify group, Spotify moves to the new leader).
   Future<void> leaveGroup(String roomId) async {
     if (state.mockMode) {
       _mock.ungroup(roomId);
@@ -1070,8 +1082,29 @@ class PlaybackStore extends Notifier<PlaybackState> {
       return;
     }
     final room = state.rooms.where((r) => r.id == roomId).firstOrNull;
+    final ledSpotify = room != null && room.source == 'spotify' && (room.leaderId ?? room.groupId) == roomId;
+    final others = room == null ? const <String>[] : room.memberIds.where((m) => m != roomId).toList();
     await _client?.leaveGroup(room?.groupId ?? roomId, roomId);
     await _reloadRooms();
+    if (ledSpotify && others.isNotEmpty) {
+      await _moveSpotify(others.first, play: room.state == 'playing');
+    }
+  }
+
+  /// Spotify belongs to a player's own Connect device, so when a Spotify
+  /// group's leader is taken out the app moves playback to the room that now
+  /// leads ([stayingRoomId]'s group).
+  Future<void> _moveSpotify(String stayingRoomId, {required bool play}) async {
+    final now = state.rooms.where((r) => r.id == stayingRoomId).firstOrNull;
+    final target = now?.leaderId ?? now?.groupId ?? stayingRoomId;
+    try {
+      await ref.read(spotifyProvider.notifier).transferTo(target, play: play);
+    } on Object catch (err) {
+      throw ControlApiException(
+        'The rooms were regrouped, but Spotify could not move to ${now?.name ?? 'the remaining rooms'}. '
+        'Pick it in Spotify or play again from FreeSounder.',
+      );
+    }
   }
 
   Future<void> _reloadRooms() async {

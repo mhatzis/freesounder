@@ -1377,12 +1377,21 @@ class Engine:
             logger.info("Ending relay from an older version: handing the group over")
             await self._leave_as_leader()
 
-    async def _leave_as_leader(self) -> None:
-        """I lead a group and leave it: the others carry on without me.
+    async def _leave_as_leader(self, prefer: str | None = None) -> dict[str, Any]:
+        """I lead a group and leave it: the music stays with the others.
 
-        Radio moves to the best remaining member (it starts the same station)
-        and stops here. Spotify and AirPlay belong to this player's device,
-        so they stay here and the others become independent, idle rooms.
+        Taking a room out of a group turns *that* room off; the rooms that
+        remain keep playing (0.6.18; before, Spotify, AirPlay and the library
+        stayed on the leader and the rooms that remained went silent).
+
+        - Radio: the new leader starts the same station.
+        - Library and podcasts: the new leader gets the queue and position.
+        - Spotify: the new leader takes the group; the app moves Spotify
+          playback to it (Web API transfer) using the returned hint.
+        - AirPlay and UPnP stream to this player's own device and cannot move:
+          the others become independent rooms and this one keeps playing.
+
+        [prefer] picks the new leader (the room the user was on), if it stays.
         Afterwards nobody follows me, so my room is fully on its own.
         """
 
@@ -1392,27 +1401,58 @@ class Engine:
             for r in recs.values()
             if r.get("follow") == self.id and r["id"] != self.id and r.get("available", True)
         ]
-        playing = self.play_state() == "playing"
+        state = self.play_state()
+        active = state in ("playing", "paused")
         if self.group.get("relay"):
             self._set_group(relay=False)
         if not members:
-            return
-        if playing and self.source in ("spotify", "airplay", *MEDIA_SOURCES):
+            return {}
+        if active and self.source in ("airplay", "upnp"):
             for member in members:
                 await self._peer_command(member["id"], {"op": "solo"})
             self.kick()
-            return
-        station = self.radio.station if playing and self.source == "radio" else None
-        await self._handover(members, station)
+            return {"kept": self.source}
+        station = self.radio.station if active and self.source == "radio" else None
+        media = None
+        if active and self.source in ("library", "podcast") and self.media.tracks:
+            pos = self.media.status.get("song")
+            media = {
+                "tracks": self.media.tracks,
+                "start": int(pos) if str(pos or "").isdigit() else 0,
+                "seek": float(self.media.elapsed or 0),
+                "owner": self.source,
+                "paused": state == "paused",
+            }
+        spotify = active and self.source == "spotify"
+        best = await self._handover(members, station, prefer=prefer, media=media)
+        result: dict[str, Any] = {"leader": best}
         if station:
             await self.radio.stop()
+        if media:
+            self._track_podcast(final=True)
+            await self.media.release()
+        if spotify:
+            # The app transfers Spotify playback to the new leader's Connect
+            # device; stop here so this room goes quiet straight away.
+            with contextlib.suppress(Exception):
+                await self.spotify.command("pause")
+            result["transfer"] = {"source": "spotify", "to": best, "playing": state == "playing"}
+        if station or media or spotify:
             self.source = "none"
             self.np = {}
+        return result
 
     async def _handover(
-        self, members: list[dict[str, Any]] | None = None, station: dict[str, Any] | None = None
-    ) -> None:
-        """Hand my members to the best of them (with my radio station, if any)."""
+        self,
+        members: list[dict[str, Any]] | None = None,
+        station: dict[str, Any] | None = None,
+        *,
+        prefer: str | None = None,
+        media: dict[str, Any] | None = None,
+    ) -> str | None:
+        """Hand my members to [prefer] if it is one of them, else the best of
+        them, with my radio station or media queue, if any. Returns the new
+        leader's id."""
 
         if members is None:
             recs = self.records()
@@ -1425,18 +1465,22 @@ class Engine:
         self._idle_since = None
         if not members:
             self.store.save_group(self.group)
-            return
-        best = min(members, key=score)
+            return None
+        chosen = [m for m in members if prefer and m["id"] == prefer]
+        best = chosen[0] if chosen else min(members, key=score)
         term = int(self.group.get("term", 0)) + 1
         command: dict[str, Any] = {"op": "lead", "term": term}
         if station:
             command["station"] = station
+        if media:
+            command["media"] = media
         await self._peer_command(best["id"], command)
         for member in members:
             if member["id"] != best["id"]:
                 await self._peer_command(member["id"], {"op": "follow", "leader": best["id"]})
         self.store.save_group(self.group)
         self.kick()
+        return str(best["id"])
 
     # ------------------------------------------------------------------ member
     async def _follow(self) -> None:
@@ -1615,6 +1659,7 @@ class Engine:
 
     async def handle_peer_command(self, body: dict[str, Any]) -> dict[str, Any]:
         op = body.get("op")
+        media = body.get("media") if op == "lead" else None
         async with self._lock:
             if op == "lead":
                 self._set_group(
@@ -1633,8 +1678,26 @@ class Engine:
                 await self._local_join(str(body["leader"]))
             else:
                 raise EngineError(400, f"Unknown op {op}")
+        if isinstance(media, dict) and media.get("tracks"):
+            await self._take_media(media)
         self.kick()
         return {"ok": True}
+
+    async def _take_media(self, media: dict[str, Any]) -> None:
+        """Carry on with a queue handed over by the leader that left."""
+
+        tracks = [t for t in media.get("tracks") or [] if isinstance(t, dict) and t.get("url")]
+        owner = str(media.get("owner") or "library")
+        if not tracks or owner not in ("library", "podcast"):
+            return
+        try:
+            await self._start_media(
+                tracks[:500], int(media.get("start") or 0), owner, float(media.get("seek") or 0)
+            )
+            if media.get("paused"):
+                await self.media.pause()
+        except EngineError as exc:
+            logger.warning("Could not take over the group's %s queue: %s", owner, exc)
 
     def resolve_leader(self, group_or_room: str) -> str:
         gid = group_or_room.removesuffix(SOLO_SUFFIX)
@@ -1667,26 +1730,44 @@ class Engine:
         self.source = "none"
         self._set_group(follow=leader, relay=False)
 
-    async def leave(self, room_id: str) -> None:
+    async def leave(self, room_id: str, keep: str | None = None) -> dict[str, Any]:
+        """Take a room out of its group. The room turns off; the others keep
+        the music. [keep] is the room that should lead what remains."""
+
         if room_id != self.id:
-            await self.forward(room_id, "POST", f"/api/v2/rooms/{room_id}/leave", {})
-            return
+            res = await self.forward(
+                room_id, "POST", f"/api/v2/rooms/{room_id}/leave", {"keep": keep}
+            )
+            return res if isinstance(res, dict) else {}
         async with self._lock:
             if self.group.get("follow"):
                 self._set_group(follow=None, relay=False)
-                return
-            await self._leave_as_leader()
+                return {}
+            result = await self._leave_as_leader(prefer=keep)
         self.kick()
+        return result
 
-    async def set_members(self, gid: str, members: list[str]) -> None:
-        leader = self.resolve_leader(gid)
-        group = next((g for g in self.groups() if g["id"] == leader), None)
-        current = set(group["member_ids"]) if group else {leader}
+    async def set_members(self, gid: str, members: list[str]) -> dict[str, Any]:
+        """Make the group exactly [members]. Rooms taken out turn off; if the
+        leader itself is taken out, the first listed room that stays takes the
+        group and its music (see _leave_as_leader)."""
+
+        old_leader = self.resolve_leader(gid)
+        group = next((g for g in self.groups() if g["id"] == old_leader), None)
+        current = set(group["member_ids"]) if group else {old_leader}
         wanted = set(members)
+        staying = [m for m in members if m in current and m != old_leader]
+        leader = old_leader
+        result: dict[str, Any] = {}
+        if old_leader not in wanted and staying:
+            result = await self.leave(old_leader, keep=staying[0])
+            leader = result.get("leader") or staying[0]
+            current.discard(old_leader)
         for rid in sorted(wanted - current):
             await self.join(rid, leader)
         for rid in sorted(current - wanted):
             await self.leave(rid)
+        return result
 
     async def set_room_volume(self, room_id: str, volume: int | None, muted: bool | None) -> None:
         if room_id != self.id:
