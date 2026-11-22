@@ -375,9 +375,9 @@ class _BluetoothOutputSectionState extends State<BluetoothOutputSection> {
                   key: Key('bt-found-${s.mac}'),
                   contentPadding: EdgeInsets.zero,
                   dense: true,
-                  leading: const Icon(Icons.speaker_group_outlined),
+                  leading: Icon(_kindIcon(s.kind)),
                   title: Text(s.name),
-                  subtitle: Text(s.paired ? 'Paired before' : s.mac),
+                  subtitle: Text(_foundSubtitle(s)),
                   trailing: _busy == 'connect:${s.mac}'
                       ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
                       : const Icon(Icons.chevron_right),
@@ -446,4 +446,23 @@ class _LatencySlider extends StatelessWidget {
       ],
     );
   }
+}
+
+IconData _kindIcon(String kind) => switch (kind) {
+      'headphones' => Icons.headphones_outlined,
+      'car' => Icons.directions_car_outlined,
+      _ => Icons.speaker_outlined,
+    };
+
+/// "Paired before · Strong signal", or for an unnamed speaker a hint that it
+/// may still be waking up, instead of a bare MAC address.
+String _foundSubtitle(BtSpeaker s) {
+  final parts = <String>[
+    if (s.paired) 'Paired before',
+    if (s.signal == 'strong') 'Strong signal',
+    if (s.signal == 'good') 'Good signal',
+    if (s.signal == 'weak') 'Weak signal (move it closer)',
+    if (!s.hasName) 'Name not received yet; scan again if unsure',
+  ];
+  return parts.isEmpty ? 'Tap to connect' : parts.join(' · ');
 }

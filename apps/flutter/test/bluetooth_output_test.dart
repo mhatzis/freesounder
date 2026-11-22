@@ -188,8 +188,10 @@ void main() {
       'latency_ms': 180,
       'warning': null,
     });
-    expect(s.speaker!.name, 'AA:BB:CC:DD:EE:01');
+    expect(s.speaker!.name, 'Bluetooth speaker (EE:01)');
+    expect(s.speaker!.hasName, isFalse);
     expect(s.latencyMs, 180);
     expect(s.summary, 'Connected, starting…');
   });
 }
+

@@ -1,22 +1,58 @@
 /// Experimental feature: a room's Bluetooth speaker output.
 class BtSpeaker {
-  const BtSpeaker({required this.mac, required this.name, this.paired = false, this.connected = false, this.rssi});
+  const BtSpeaker({
+    required this.mac,
+    required this.name,
+    this.paired = false,
+    this.connected = false,
+    this.rssi,
+    this.hasName = true,
+    this.kind = 'speaker',
+    this.signal,
+  });
 
   final String mac;
+
+  /// What to show: the speaker's own name, or a friendly stand-in while the
+  /// player has not learned it yet (see [hasName]).
   final String name;
   final bool paired;
   final bool connected;
   final int? rssi;
 
+  /// False when the player did not learn the speaker's name during the scan.
+  final bool hasName;
+
+  /// 'speaker', 'headphones', 'car' or 'other' (from the Bluetooth class).
+  final String kind;
+
+  /// 'strong', 'good' or 'weak' (from the signal strength), if known.
+  final String? signal;
+
+  /// The last two bytes of the address, to tell unnamed speakers apart.
+  String get shortMac {
+    final parts = mac.split(':');
+    return parts.length >= 2 ? parts.sublist(parts.length - 2).join(':') : mac;
+  }
+
   factory BtSpeaker.fromJson(Map<String, dynamic> json) {
     final mac = json['mac'] as String? ?? '';
-    final name = json['name'] as String?;
+    final raw = (json['name'] as String?)?.trim();
+    // Players before 0.6.18 sent the address (or BlueZ's dashed form of it)
+    // when the name was not known yet.
+    final looksLikeMac = raw != null && RegExp(r'^([0-9A-Fa-f]{2}[-:_]){5}[0-9A-Fa-f]{2}$').hasMatch(raw);
+    final hasName = raw != null && raw.isNotEmpty && !looksLikeMac;
+    final parts = mac.split(':');
+    final tail = parts.length >= 2 ? parts.sublist(parts.length - 2).join(':') : mac;
     return BtSpeaker(
       mac: mac,
-      name: (name == null || name.isEmpty) ? mac : name,
+      name: hasName ? raw : 'Bluetooth speaker ($tail)',
+      hasName: hasName,
       paired: json['paired'] as bool? ?? false,
       connected: json['connected'] as bool? ?? false,
       rssi: (json['rssi'] as num?)?.toInt(),
+      kind: json['kind'] as String? ?? 'speaker',
+      signal: json['signal'] as String?,
     );
   }
 }

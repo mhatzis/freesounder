@@ -650,3 +650,59 @@ async def test_bluetooth_of_a_remembered_room_is_forwarded(lan: Lan, make_player
     res = await a.client.get(f"/api/v2/rooms/{b.id}/bluetooth")
     assert res.status_code == 200, res.text
     assert res.json()["available"] is True
+
+
+# ------------------------------------------------------------------ names (0.6.18)
+def test_device_name_ignores_address_shaped_alias() -> None:
+    assert bt.device_name(None, "18-66-96-C3-7A-28") is None
+    assert bt.device_name("", "18:66:96:C3:7A:28") is None
+    assert bt.device_name("IKEA VAPPEBY", "18-66-96-C3-7A-28") == "IKEA VAPPEBY"
+    assert bt.device_name("IKEA VAPPEBY", "Kitchen speaker") == "Kitchen speaker"  # user alias
+
+
+def test_speaker_kind_and_signal() -> None:
+    assert bt.speaker_kind({"class": 0x240414}) == "speaker"
+    assert bt.speaker_kind({"class": 0x240418}) == "headphones"
+    assert bt.speaker_kind({"class": 0x240420}) == "car"
+    assert bt.speaker_kind({"icon": "audio-headset"}) == "headphones"
+    assert bt.signal_label(-50) == "strong"
+    assert bt.signal_label(-70) == "good"
+    assert bt.signal_label(-85) == "weak"
+    assert bt.signal_label(None) is None
+
+
+async def test_scan_waits_for_a_late_speaker_name(tmp_path: Path) -> None:
+    out, fake, _events, _units, _ = make_output(tmp_path)
+    late = "18:66:96:C3:7A:28"
+    fake.add(late, name=None, cls=0x240414, rssi=-55)
+    rounds = {"n": 0}
+    first_discover = fake.discover
+
+    async def discover(seconds: float) -> None:
+        await first_discover(seconds)
+        rounds["n"] += 1
+        if rounds["n"] == 2:  # the name reply arrives during the second round
+            fake.devs[late]["name"] = "IKEA VAPPEBY"
+
+    fake.discover = discover  # type: ignore[method-assign]
+    found = {d["mac"]: d for d in await out.scan(4)}
+    assert found[late]["name"] == "IKEA VAPPEBY"
+    assert found[late]["kind"] == "speaker" and found[late]["signal"] == "strong"
+    assert rounds["n"] == 2
+
+
+async def test_scan_gives_up_waiting_for_a_name(tmp_path: Path) -> None:
+    out, fake, _events, _units, _ = make_output(tmp_path)
+    fake.add("18:66:96:C3:7A:28", name=None, cls=0x240414)
+    found = await out.scan(4)
+    nameless = [d for d in found if d["mac"] == "18:66:96:C3:7A:28"]
+    assert nameless and nameless[0]["name"] is None
+    discovers = [c for c in fake.calls if c[0] == "discover"]
+    assert len(discovers) == 1 + int(bt.NAME_WAIT / bt.NAME_ROUND)
+
+
+async def test_use_replaces_a_mac_shaped_name_with_the_real_one(tmp_path: Path) -> None:
+    out, fake, _events, _units, _ = make_output(tmp_path)
+    await out.scan(4)
+    await out.use(SPEAKER, SPEAKER)  # older app: sent the MAC it was showing
+    assert bt.read_config(tmp_path / "bt-output")["name"] == "Patio Boom"
