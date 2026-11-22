@@ -8,9 +8,10 @@ through it:
 
     snapclient -> plug -> fsdsp -> plug -> bluealsa:DEV=<mac>,PROFILE=a2dp
 
-select-audio-output picks the speaker only while bluealsa has its A2DP PCM
-(the speaker is connected); otherwise the wired output (DAC, HDMI, null) is
-used, so a speaker that goes away falls back by itself.
+select-audio-output picks the speaker while bluealsa has its A2DP PCM (the
+speaker is connected). While it is away the room plays to the null sink, not
+the wired output (a room uses Bluetooth or its DAC/HDMI, never both; 0.6.18),
+and the speaker is tried every 10 s until it is back.
 
 Coexistence with the Improv BLE setup service:
 * only BR/EDR (classic) is used: discovery is filtered to Transport=bredr,
@@ -50,8 +51,27 @@ BRING_UP_EVERY = 30.0  # s: how often a missing adapter triggers a bring-up atte
 CONTROLLER_UNIT = "bluetooth.service"
 ADAPTER_LOOKUP_WAIT = 3.0  # s: GET /bluetooth answers fast even if BlueZ hangs
 BRING_UP_STEP_WAIT = 20.0  # s: each background bring-up step
-RETRY_MIN = 10.0  # s: first reconnect retry, doubling up to RETRY_MAX
-RETRY_MAX = 120.0
+# bluealsa --sbc-quality per setting. "robust" (medium bitpool) needs
+# about a third less airtime than "high" (237 vs 345 kbps) and holds up
+# better on a weak or busy link.
+SBC_QUALITY = {"high": "high", "robust": "medium"}
+BLUEALSA_ENV = Path("/run/freesounder/bluealsa.env")
+
+
+def render_bluealsa_env(quality: str) -> str:
+    return f"BLUEALSA_SBC=--sbc-quality={SBC_QUALITY.get(quality, 'high')}\n"
+
+
+# A scan keeps discovering this much longer while a speaker still has no name:
+# BlueZ only learns a name from the speaker's reply to a name request, which
+# often lands after the first few seconds (the app then showed MACs).
+NAME_WAIT = 8.0
+NAME_ROUND = 2.0
+# While Bluetooth is a room's output and the speaker is away, try to connect
+# every 10 s until it is back (0.6.18: it backed off to 2 min). The room plays
+# nothing meanwhile; it never falls back to the wired output.
+RETRY_MIN = 10.0
+RETRY_MAX = 10.0
 WATCH_CONFIGURED = 5.0  # s between connection checks with a speaker set up
 WATCH_IDLE = 30.0
 
@@ -79,6 +99,52 @@ def mac_from_path(path: str) -> str | None:
     return match.group(1).replace("_", ":").upper() if match else None
 
 
+_MAC_LIKE = re.compile(r"^([0-9A-F]{2}[-:_]){5}[0-9A-F]{2}$", re.I)
+
+
+def device_name(name: Any, alias: Any) -> str | None:
+    """The speaker's real name, or None while BlueZ has not learned it.
+
+    BlueZ's Alias falls back to the address with dashes (18-66-96-C3-7A-28)
+    until the name is known, so an address-shaped alias is not a name.
+    """
+
+    for value in (alias, name):
+        text = str(value or "").strip()
+        if text and not _MAC_LIKE.match(text):
+            return text
+    return None
+
+
+def speaker_kind(dev: dict[str, Any]) -> str:
+    """headphones / speaker / car / other, for the app's icon."""
+
+    cls = dev.get("class")
+    icon = str(dev.get("icon") or "")
+    if isinstance(cls, int) and (cls >> 8) & 0x1F == 0x04:
+        minor = (cls >> 2) & 0x3F
+        if minor in (0x01, 0x06):  # wearable headset, headphones
+            return "headphones"
+        if minor == 0x08:  # car audio
+            return "car"
+        return "speaker"
+    if "headphone" in icon or "headset" in icon:
+        return "headphones"
+    return "speaker" if icon.startswith("audio-") else "other"
+
+
+def signal_label(rssi: Any) -> str | None:
+    """A rough, human label for RSSI (dBm)."""
+
+    if not isinstance(rssi, int | float):
+        return None
+    if rssi >= -60:
+        return "strong"
+    if rssi >= -75:
+        return "good"
+    return "weak"
+
+
 def is_audio_sink(dev: dict[str, Any]) -> bool:
     """A speaker/headphones: advertises A2DP sink, or its class says audio."""
 
@@ -89,6 +155,10 @@ def is_audio_sink(dev: dict[str, Any]) -> bool:
     if isinstance(cls, int) and (cls >> 8) & 0x1F == 0x04:  # major class Audio/Video
         return True
     return str(dev.get("icon") or "").startswith("audio-")
+
+
+def _is_speaker(dev: dict[str, Any]) -> bool:
+    return not dev.get("le_only") and is_audio_sink(dev)
 
 
 def shared_radio_warning(model: str, net: str) -> str | None:
@@ -113,6 +183,10 @@ def read_config(path: Path = BT_OUTPUT_FILE) -> dict[str, Any]:
         "name": None,
         "enabled": False,
         "latency_ms": DEFAULT_LATENCY_MS,
+        # 0.6.19: keep the speaker from sleeping while nothing plays, and the
+        # SBC quality ("high", or "robust" = about a third less airtime (237 vs 345 kbps)).
+        "keepalive": True,
+        "quality": "high",
     }
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -131,6 +205,10 @@ def read_config(path: Path = BT_OUTPUT_FILE) -> dict[str, Any]:
         elif key == "latency_ms":
             with contextlib.suppress(ValueError):
                 cfg["latency_ms"] = max(0, min(MAX_LATENCY_MS, int(value)))
+        elif key == "keepalive":
+            cfg["keepalive"] = value != "0"
+        elif key == "quality":
+            cfg["quality"] = value if value in SBC_QUALITY else "high"
     return cfg
 
 
@@ -146,6 +224,8 @@ def write_config(cfg: dict[str, Any], path: Path = BT_OUTPUT_FILE) -> None:
         f"name={_clean_name(cfg.get('name'))}\n"
         f"enabled={1 if cfg.get('enabled') else 0}\n"
         f"latency_ms={int(cfg.get('latency_ms', DEFAULT_LATENCY_MS))}\n"
+        f"keepalive={0 if cfg.get('keepalive') is False else 1}\n"
+        f"quality={cfg.get('quality') if cfg.get('quality') in SBC_QUALITY else 'high'}\n"
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
@@ -284,7 +364,7 @@ class BluezBackend:
             out.append(
                 {
                     "mac": str(dev["Address"]).upper(),
-                    "name": dev.get("Alias") or dev.get("Name"),
+                    "name": device_name(dev.get("Name"), dev.get("Alias")),
                     "paired": bool(dev.get("Paired")),
                     "trusted": bool(dev.get("Trusted")),
                     "connected": bool(dev.get("Connected")),
@@ -436,8 +516,10 @@ class BtOutput:
         net: Callable[[], str] = lambda: "unknown",
         clock: Callable[[], float] = time.monotonic,
         bring_up: Callable[[], Awaitable[None]] | None = None,
+        env_path: Path | None = None,
     ) -> None:
         self.backend = backend
+        self.env_path = env_path
         self.bring_up = bring_up
         self._bring_up_at = 0.0
         self._bring_up_task: asyncio.Task[None] | None = None
@@ -573,6 +655,8 @@ class BtOutput:
             "codec": self.codec if self.ready else None,
             "latency_ms": cfg["latency_ms"],
             "default_latency_ms": DEFAULT_LATENCY_MS,
+            "keepalive": bool(cfg.get("keepalive", True)),
+            "quality": cfg.get("quality", "high"),
             "busy": self.busy,
             "last_error": self.last_error,
             "warning": shared_radio_warning(self.model, self.net()),
@@ -587,16 +671,30 @@ class BtOutput:
                 await self._unit("start")
                 await self.backend.discover(max(2.0, min(20.0, seconds)))
                 devs = await self.backend.devices()
+                waited = 0.0
+                while waited < NAME_WAIT and any(
+                    not d.get("name") for d in devs if _is_speaker(d)
+                ):
+                    await self.backend.discover(NAME_ROUND)
+                    waited += NAME_ROUND
+                    devs = await self.backend.devices()
             except Exception as exc:
                 raise BtError(self._fail("scan", exc)) from exc
             finally:
                 self.busy = None
         speakers = [
-            {k: d.get(k) for k in ("mac", "name", "paired", "connected", "rssi")}
+            {
+                **{k: d.get(k) for k in ("mac", "name", "paired", "connected", "rssi")},
+                "kind": speaker_kind(d),
+                "signal": signal_label(d.get("rssi")),
+            }
             for d in devs
-            if not d.get("le_only") and is_audio_sink(d)
+            if _is_speaker(d)
         ]
-        speakers.sort(key=lambda d: (not d["paired"], -(d.get("rssi") or -999)))
+        # Paired first, then named before unnamed, then nearest first.
+        speakers.sort(
+            key=lambda d: (not d["paired"], not d["name"], -(d.get("rssi") or -999))
+        )
         return speakers
 
     async def use(self, mac: str, name: str | None = None) -> dict[str, Any]:
@@ -627,7 +725,14 @@ class BtOutput:
                 self.busy = None
             cfg = self.config()
             old = cfg["mac"]
-            cfg.update(mac=mac, name=name or dev.get("name") or cfg["name"], enabled=True)
+            # A name from the app may be the MAC it showed before the speaker's
+            # name was known; prefer BlueZ's real name (learned by now, pairing
+            # asks the speaker for it).
+            fresh = dev
+            with contextlib.suppress(Exception):
+                fresh = {d["mac"]: d for d in await self.backend.devices()}.get(mac, dev)
+            real = device_name(name, None) or fresh.get("name") or dev.get("name")
+            cfg.update(mac=mac, name=real or cfg["name"], enabled=True)
             write_config(cfg, self.config_path)
             if old and old != mac:
                 with contextlib.suppress(Exception):
@@ -661,6 +766,52 @@ class BtOutput:
         write_config(cfg, self.config_path)
         if self.on_change is not None:
             self.on_change()
+        return await self.status()
+
+    def write_env(self) -> None:
+        """bluealsa's SBC quality, read by its unit (EnvironmentFile)."""
+
+        if self.env_path is None:
+            return
+        text = render_bluealsa_env(self.config().get("quality", "high"))
+        with contextlib.suppress(OSError):
+            if self.env_path.read_text(encoding="utf-8") == text:
+                return
+        with contextlib.suppress(OSError):
+            self.env_path.parent.mkdir(parents=True, exist_ok=True)
+            self.env_path.write_text(text, encoding="utf-8")
+
+    async def set_keepalive(self, enabled: bool) -> dict[str, Any]:
+        """Keep the speaker awake while nothing plays (fsdsp adds a quiet
+        30 Hz tone after 20 s of silence). Applied by re-picking the output,
+        which rewrites the DSP params; no restart, no reconnect."""
+
+        cfg = self.config()
+        cfg["keepalive"] = bool(enabled)
+        write_config(cfg, self.config_path)
+        await self._reselect()
+        return await self.status()
+
+    async def set_quality(self, quality: str) -> dict[str, Any]:
+        """SBC quality: "high" or "robust". bluealsa restarts, so the speaker
+        reconnects (a few seconds of silence)."""
+
+        if quality not in SBC_QUALITY:
+            raise BtError("Quality must be high or robust")
+        cfg = self.config()
+        if cfg.get("quality") == quality:
+            return await self.status()
+        cfg["quality"] = quality
+        write_config(cfg, self.config_path)
+        self.write_env()
+        if cfg["mac"] and cfg["enabled"]:
+            await self._unit("restart")
+            self._retry, self._retry_at = RETRY_MIN, 0.0
+            for _ in range(20):
+                await self.check(force=True)
+                if self.ready:
+                    break
+                await asyncio.sleep(0.5)
         return await self.status()
 
     async def forget(self) -> dict[str, Any]:
@@ -738,6 +889,7 @@ class BtOutput:
             await asyncio.sleep(WATCH_CONFIGURED if self.config()["mac"] else WATCH_IDLE)
 
     def start(self) -> None:
+        self.write_env()  # /run is empty after a reboot
         if self._task is None:
             self._task = asyncio.create_task(self.run())
 

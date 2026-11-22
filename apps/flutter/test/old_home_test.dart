@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:freesounder/api/connection_prefs.dart';
 import 'package:freesounder/api/first_player.dart';
 import 'package:freesounder/models/player_settings.dart';
+import 'package:freesounder/state/join_home.dart';
 import 'package:freesounder/state/playback_store.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -90,7 +91,7 @@ void main() {
     expect(lan.to('/api/v2/setup'), isEmpty);
   });
 
-  test('old home gone, another set-up home on the network: connect to it and remember it', () async {
+  test('old home gone, another set-up home on the network: ask for its code (0.6.19)', () async {
     final lan = FakeLan()
       ..down.add('192.168.1.27')
       ..ready.add('192.168.1.24')
@@ -100,6 +101,29 @@ void main() {
     ]);
     expect(c.read(playbackProvider).hostUrl, 'http://192.168.1.24:8080');
     await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(c.read(joinHomeProvider)?.householdId, 'home-new', reason: 'a home this phone has not joined');
+    expect(prefs.householdId, 'home-old', reason: 'not remembered until joined');
+  });
+
+  test('old home gone, another home this phone already joined: connect and remember it', () async {
+    final lan = FakeLan()
+      ..down.add('192.168.1.27')
+      ..ready.add('192.168.1.24')
+      ..households['192.168.1.24'] = 'home-new';
+    final (c, prefs) = await start(
+      lan,
+      mdns: const [
+        DiscoveredHost(url: 'http://192.168.1.24:8080', name: 'Patio', state: 'ready', household: 'home-new'),
+      ],
+      saved: const {
+        'host_url': oldHost,
+        'household_id': 'home-old',
+        'joined_households': ['home-new'],
+      },
+    );
+    expect(c.read(playbackProvider).hostUrl, 'http://192.168.1.24:8080');
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(c.read(joinHomeProvider), isNull);
     expect(prefs.householdId, 'home-new');
     expect(prefs.savedHost, 'http://192.168.1.24:8080');
   });

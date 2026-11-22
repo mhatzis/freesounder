@@ -140,8 +140,15 @@ def test_mac_and_config_round_trip(tmp_path: Path) -> None:
         {"mac": SPEAKER, "name": 'Boom "$(reboot)"\nx', "enabled": True, "latency_ms": 180}, path
     )
     cfg = bt.read_config(path)
-    assert cfg == {"mac": SPEAKER, "name": "Boom (reboot) x", "enabled": True, "latency_ms": 180}
-    assert "$" not in path.read_text() and path.read_text().count("\n") == 4
+    assert cfg == {
+        "mac": SPEAKER,
+        "name": "Boom (reboot) x",
+        "enabled": True,
+        "latency_ms": 180,
+        "keepalive": True,
+        "quality": "high",
+    }
+    assert "$" not in path.read_text() and path.read_text().count("\n") == 6
 
 
 def test_audio_sink_detection() -> None:
@@ -186,21 +193,22 @@ async def test_pair_connect_and_choose_as_output(tmp_path: Path) -> None:
     assert "pair" not in [c[0] for c in fake.calls]
 
 
-async def test_disconnect_falls_back_then_reconnects_with_backoff(tmp_path: Path) -> None:
+async def test_speaker_away_is_retried_every_10_seconds(tmp_path: Path) -> None:
     out, fake, events, _units, clock = make_output(tmp_path)
     await out.use(SPEAKER)
     events.clear()
     fake.drop(SPEAKER)
     fake.reachable = False
-    await out.check()  # notices the drop, tries once, re-picks the wired output
+    await out.check()  # notices the drop, tries once, re-picks the output
     assert not out.active() and events == ["reselect"]
     tries = sum(1 for c in fake.calls if c == ("connect", SPEAKER))
-    await out.check()  # still inside the backoff window: no new page attempt
+    await out.check()  # within 10 s: no new page attempt
     assert sum(1 for c in fake.calls if c == ("connect", SPEAKER)) == tries
-    clock.now += bt.RETRY_MIN
-    await out.check()
-    assert sum(1 for c in fake.calls if c == ("connect", SPEAKER)) == tries + 1
-    assert out._retry == bt.RETRY_MIN * 4  # 10 -> 20 -> 40 s
+    for n in range(1, 7):  # every 10 s, never backing off further
+        clock.now += 10
+        await out.check()
+        assert sum(1 for c in fake.calls if c == ("connect", SPEAKER)) == tries + n
+    assert out._retry == 10
     # The speaker comes back.
     fake.reachable = True
     clock.now += 60
@@ -359,10 +367,15 @@ def test_select_gives_snapclient_a_bigger_buffer_for_bluetooth(tmp_path: Path) -
 
 
 @needs_bash
-def test_select_falls_back_to_wired_when_speaker_is_away(tmp_path: Path) -> None:
+def test_select_plays_nothing_while_the_speaker_is_away(tmp_path: Path) -> None:
+    """A room set to Bluetooth never plays through the DAC (0.6.18)."""
+
     got = _select(tmp_path, f"mac={SPEAKER}\nname=Patio Boom\nenabled=1\n", "")
-    assert got["pcm"] == "hw:CARD=sndrpihifiberry,DEV=0" and got["kind"] == "card"
-    assert "Patio Boom not connected" in got["reason"]
+    assert got["pcm"] == "null" and got["kind"] == "null"
+    assert got["bt_waiting"] == "1"
+    assert "Patio Boom not connected" in got["reason"] and "wired output stays off" in got["reason"]
+    env = (tmp_path / "player.env").read_text()
+    assert env == "SNAPCLIENT_PLAYER=\n"
 
 
 @needs_bash
@@ -650,3 +663,122 @@ async def test_bluetooth_of_a_remembered_room_is_forwarded(lan: Lan, make_player
     res = await a.client.get(f"/api/v2/rooms/{b.id}/bluetooth")
     assert res.status_code == 200, res.text
     assert res.json()["available"] is True
+
+
+# ------------------------------------------------------------------ names (0.6.18)
+def test_device_name_ignores_address_shaped_alias() -> None:
+    assert bt.device_name(None, "18-66-96-C3-7A-28") is None
+    assert bt.device_name("", "18:66:96:C3:7A:28") is None
+    assert bt.device_name("IKEA VAPPEBY", "18-66-96-C3-7A-28") == "IKEA VAPPEBY"
+    assert bt.device_name("IKEA VAPPEBY", "Kitchen speaker") == "Kitchen speaker"  # user alias
+
+
+def test_speaker_kind_and_signal() -> None:
+    assert bt.speaker_kind({"class": 0x240414}) == "speaker"
+    assert bt.speaker_kind({"class": 0x240418}) == "headphones"
+    assert bt.speaker_kind({"class": 0x240420}) == "car"
+    assert bt.speaker_kind({"icon": "audio-headset"}) == "headphones"
+    assert bt.signal_label(-50) == "strong"
+    assert bt.signal_label(-70) == "good"
+    assert bt.signal_label(-85) == "weak"
+    assert bt.signal_label(None) is None
+
+
+async def test_scan_waits_for_a_late_speaker_name(tmp_path: Path) -> None:
+    out, fake, _events, _units, _ = make_output(tmp_path)
+    late = "18:66:96:C3:7A:28"
+    fake.add(late, name=None, cls=0x240414, rssi=-55)
+    rounds = {"n": 0}
+    first_discover = fake.discover
+
+    async def discover(seconds: float) -> None:
+        await first_discover(seconds)
+        rounds["n"] += 1
+        if rounds["n"] == 2:  # the name reply arrives during the second round
+            fake.devs[late]["name"] = "IKEA VAPPEBY"
+
+    fake.discover = discover  # type: ignore[method-assign]
+    found = {d["mac"]: d for d in await out.scan(4)}
+    assert found[late]["name"] == "IKEA VAPPEBY"
+    assert found[late]["kind"] == "speaker" and found[late]["signal"] == "strong"
+    assert rounds["n"] == 2
+
+
+async def test_scan_gives_up_waiting_for_a_name(tmp_path: Path) -> None:
+    out, fake, _events, _units, _ = make_output(tmp_path)
+    fake.add("18:66:96:C3:7A:28", name=None, cls=0x240414)
+    found = await out.scan(4)
+    nameless = [d for d in found if d["mac"] == "18:66:96:C3:7A:28"]
+    assert nameless and nameless[0]["name"] is None
+    discovers = [c for c in fake.calls if c[0] == "discover"]
+    assert len(discovers) == 1 + int(bt.NAME_WAIT / bt.NAME_ROUND)
+
+
+async def test_use_replaces_a_mac_shaped_name_with_the_real_one(tmp_path: Path) -> None:
+    out, fake, _events, _units, _ = make_output(tmp_path)
+    await out.scan(4)
+    await out.use(SPEAKER, SPEAKER)  # older app: sent the MAC it was showing
+    assert bt.read_config(tmp_path / "bt-output")["name"] == "Patio Boom"
+
+
+async def test_wired_output_never_scans_or_pages(tmp_path: Path) -> None:
+    """DAC/HDMI in use: no Bluetooth radio activity at all (0.6.18 check)."""
+
+    out, fake, _events, units, clock = make_output(tmp_path)
+    for _ in range(5):  # no speaker set up
+        await out.check()
+        clock.now += 60
+    assert fake.calls == [] and units == []
+    await out.use(SPEAKER)
+    await out.set_enabled(False)  # back to the wired output
+    fake.calls.clear()
+    units.clear()
+    fake.drop(SPEAKER)
+    for _ in range(10):
+        await out.check()
+        clock.now += 60
+    assert not [c for c in fake.calls if c[0] in ("discover", "connect", "pair")]
+    assert ("start", bt.BLUEALSA_UNIT) not in units
+
+
+# ------------------------------------------------------------------ 0.6.19
+async def test_robust_quality_restarts_bluealsa_with_medium_sbc(tmp_path: Path) -> None:
+    out, fake, _events, units, _ = make_output(tmp_path)
+    out.env_path = tmp_path / "bluealsa.env"
+    out.start()
+    await out.stop()
+    assert out.env_path.read_text() == "BLUEALSA_SBC=--sbc-quality=high\n"
+    await out.use(SPEAKER)
+    units.clear()
+    st = await out.set_quality("robust")
+    assert st["quality"] == "robust"
+    assert out.env_path.read_text() == "BLUEALSA_SBC=--sbc-quality=medium\n"
+    assert ("restart", bt.BLUEALSA_UNIT) in units
+    assert bt.read_config(tmp_path / "bt-output")["quality"] == "robust"
+    with pytest.raises(bt.BtError):
+        await out.set_quality("loud")
+
+
+async def test_keepalive_toggle_re_picks_the_output_without_restarts(tmp_path: Path) -> None:
+    out, fake, events, units, _ = make_output(tmp_path)
+    await out.use(SPEAKER)
+    assert (await out.status())["keepalive"] is True  # on by default
+    events.clear()
+    units.clear()
+    st = await out.set_keepalive(False)
+    assert st["keepalive"] is False and events == ["reselect"] and units == []
+    assert bt.read_config(tmp_path / "bt-output")["keepalive"] is False
+
+
+def test_keepalive_level_only_for_a_bluetooth_output(tmp_path: Path) -> None:
+    from freesounderd.dsp import KEEPALIVE_DB, bt_keepalive_db, render_params
+    from freesounderd.models import PlayerSettings
+
+    cfg = tmp_path / "bt-output"
+    bt.write_config({"mac": SPEAKER, "enabled": True, "keepalive": True}, cfg)
+    assert bt_keepalive_db({"kind": "bluetooth"}, cfg) == KEEPALIVE_DB
+    assert bt_keepalive_db({"kind": "card"}, cfg) == 0.0
+    bt.write_config({"mac": SPEAKER, "enabled": True, "keepalive": False}, cfg)
+    assert bt_keepalive_db({"kind": "bluetooth"}, cfg) == 0.0
+    assert render_params(PlayerSettings(), -50) == "fsdsp1 0 0 0 0 -50\n"
+    assert render_params(PlayerSettings()) == "fsdsp1 0 0 0 0\n"  # wired: unchanged

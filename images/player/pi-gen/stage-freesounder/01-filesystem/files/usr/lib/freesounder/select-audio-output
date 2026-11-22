@@ -1,10 +1,12 @@
 #!/bin/bash
 # Pick the ALSA device the `freesounder` chain plays to, so snapclient can
 # always open a device:
-#   0. Bluetooth speaker output (experimental feature): the Bluetooth speaker chosen in the
-#      app (/etc/freesounder/bt-output), only while bluealsa has its A2DP PCM
-#      with a configured transport AND a real open of the chain works;
-#      otherwise the wired choice below,
+#   0. Bluetooth speaker output: the Bluetooth speaker chosen in the app
+#      (/etc/freesounder/bt-output), while bluealsa has its A2DP PCM with a
+#      configured transport AND a real open of the chain works. While the
+#      speaker is away (or will not open), the null sink: a room set to
+#      Bluetooth never plays through the DAC/HDMI (0.6.18; it used to fall
+#      back to the wired output). freesounderd retries every 10 s.
 #   1. a DAC/HAT or USB card (anything that is not vc4-hdmi),
 #   2. the HDMI port with a display connected (Pi 5: vc4hdmi0 = HDMI0,
 #      vc4hdmi1 = HDMI1; there is no analog jack),
@@ -229,14 +231,15 @@ if [[ "$bt_enabled" == 1 && "$bt_mac" =~ ^([0-9A-F]{2}:){5}[0-9A-F]{2}$ ]]; then
 		bt_rate=${bt_rate:-44100}; [[ "$bt_rate" == 0 ]] && bt_rate=44100
 		bt_channels=${bt_channels:-2}; [[ "$bt_channels" == 0 ]] && bt_channels=2
 		bt_format=${bt_format:-S16_LE}
-		w_pcm=$pcm w_card=$card w_kind=$kind w_reason=$reason
 		pcm="bluealsa:DEV=${bt_mac},PROFILE=a2dp"
 		kind=bluetooth
 		reason="Bluetooth speaker ${bt_name:-$bt_mac} (experimental, ${bt_codec:-codec ?} ${bt_rate} Hz)"
 		bt_extra=$(printf '\nrate=%s\nformat=%s\nchannels=%s\ncodec=%s' \
 			"$bt_rate" "$bt_format" "$bt_channels" "${bt_codec:-}")
 	else
-		reason="${reason}; Bluetooth speaker ${bt_name:-$bt_mac} not connected"
+		pcm=null card=0 kind=null
+		reason="Bluetooth speaker ${bt_name:-$bt_mac} not connected; nothing plays here until it is back (the wired output stays off)"
+		bt_extra=$'\n'"bt_waiting=1"
 	fi
 fi
 
@@ -287,12 +290,16 @@ if [[ $kind == bluetooth ]]; then
 		render
 		if ! bt_probe; then
 			echo "Bluetooth speaker would not open: ${first_err} / ${bt_probe_err}" >&2
-			pcm=$w_pcm card=$w_card kind=$w_kind
-			reason="${w_reason}; Bluetooth speaker ${bt_name:-$bt_mac} would not play (${bt_probe_err:-$first_err})"
-			write_output ""
+			pcm=null card=0 kind=null
+			reason="Bluetooth speaker ${bt_name:-$bt_mac} would not play (${bt_probe_err:-$first_err}); the wired output stays off"
+			write_output $'\n'"bt_waiting=1"
 			render
 		fi
 	fi
+elif [[ -n "$bt_extra" ]]; then
+	# Bluetooth is this room's output but the speaker is away: null sink.
+	write_output "$bt_extra"
+	render
 else
 	check=""
 	last_check=$(sed -n 's/^check=//p' <<<"$old_out")

@@ -20,6 +20,7 @@ def render_config(
     fifo: str,
     api_port: int = 3678,
     token_login: tuple[str, str] | None = None,
+    device_auth: bool = False,
 ) -> str:
     """go-librespot config.yml (YAML is a superset of JSON for scalars).
 
@@ -29,7 +30,14 @@ def render_config(
     """
 
     name = json.dumps(device_name)
-    if token_login:
+    zeroconf = "true"
+    if device_auth:
+        # Pairing with a code at spotify.com/pair (0.6.19): Spotify's own
+        # sign-in. go-librespot stores the login in state.json, which the
+        # normal (zeroconf, persist_credentials) config then reuses.
+        zeroconf = "false"
+        credentials = ["credentials:", "  type: device_auth"]
+    elif token_login:
         username, token = token_login
         credentials = [
             "credentials:",
@@ -57,7 +65,7 @@ def render_config(
             "volume_steps: 100",
             "initial_volume: 100",
             "external_volume: true",
-            "zeroconf_enabled: true",
+            f"zeroconf_enabled: {zeroconf}",
             "zeroconf_backend: avahi",
             *credentials,
             "metadata:",
@@ -90,6 +98,24 @@ class LibrespotClient:
             return res.json()
         except ValueError:
             return None
+
+    async def auth_code(self) -> dict[str, Any] | None:
+        """The pairing code while go-librespot waits for spotify.com/pair
+        approval ({code, url, expires_at}), else None."""
+
+        try:
+            res = await self._client.get(f"{self.base}/auth/code", timeout=2)
+        except httpx.HTTPError:
+            return None
+        if res.status_code != 200:
+            return None
+        try:
+            data = res.json()
+        except ValueError:
+            return None
+        if not isinstance(data, dict) or not (data.get("code") or data.get("url")):
+            return None
+        return {k: data.get(k) for k in ("code", "url", "expires_at")}
 
     async def set_volume(self, percent: int, steps: int = 100) -> bool:
         """Report our room volume to Spotify Connect (external_volume: no attenuation here)."""
@@ -204,3 +230,54 @@ def clear_credentials(spotify_dir: Path) -> None:
 def stored_username(spotify_dir: Path) -> str | None:
     creds = read_state(spotify_dir).get("credentials") or {}
     return (creds.get("username") or None) if creds.get("data") else None
+
+
+def saved_credentials(spotify_dir: Path) -> dict[str, Any] | None:
+    """The stored login (to put back if a new sign-in fails), if any."""
+
+    creds = read_state(spotify_dir).get("credentials") or {}
+    return dict(creds) if creds.get("data") else None
+
+
+def restore_credentials(spotify_dir: Path, creds: dict[str, Any]) -> None:
+    """Put a stored login back (keeps the device id and everything else)."""
+
+    path = spotify_dir / "state.json"
+    data = read_state(spotify_dir)
+    data["credentials"] = creds
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data), encoding="utf-8")
+    tmp.replace(path)
+
+
+def login_failure_reason(log: str, room: str) -> str:
+    """A plain reason for a failed speaker sign-in, from go-librespot's log.
+
+    Up to 0.6.17 every failure (a slow start, a network hiccup, a refused
+    token) said the account needs Premium.
+    """
+
+    text = log.lower()
+    if "premium" in text:
+        return (
+            f"Spotify says this account cannot play on speakers ({room}). Spotify "
+            "Connect needs Spotify Premium; check the account you signed in with."
+        )
+    if "invalid_credentials" in text and "login5" in text:
+        # Spotify no longer accepts a speaker sign-in with a token from the
+        # app's own Spotify client id (go-librespot issue #364).
+        return (
+            f"Spotify refused the app's sign-in for {room}. Open the Spotify app, "
+            f"tap the devices icon and pick {room} once; it stays signed in."
+        )
+    if "badcredentials" in text or "bad credentials" in text or "invalid token" in text:
+        return (
+            f"Spotify refused the sign-in for {room}. In FreeSounder, sign out of "
+            "Spotify and sign in again, then retry."
+        )
+    if any(
+        k in text
+        for k in ("tryanotherap", "no such host", "i/o timeout", "connection refused", "dial tcp")
+    ):
+        return f"{room} could not reach Spotify. Check that it is online, then try again."
+    return f"Spotify sign-in on {room} did not finish in time. Try again in a moment."

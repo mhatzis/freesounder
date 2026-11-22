@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -13,6 +15,16 @@ class ConnectionPrefs {
   static const wifiCountryKey = 'wifi_country';
   static const householdKey = 'household_id';
   static const membersKey = 'household_members';
+  static const joinedKey = 'joined_households';
+
+  /// Homes this phone has joined (0.6.19): set them up, joined with the
+  /// home's code, or used them before the code existed.
+  List<String> get joinedHouseholds => _prefs.getStringList(joinedKey) ?? const [];
+
+  Future<void> addJoinedHousehold(String id) async {
+    final joined = {...joinedHouseholds, id}.toList();
+    await _prefs.setStringList(joinedKey, joined);
+  }
 
   /// Household the saved host belonged to, and its members' last known URLs,
   /// so the app can find the home again when one player's IP changes.
@@ -80,14 +92,25 @@ final connectionPrefsProvider = Provider<ConnectionPrefs?>((ref) => null);
 
 /// Hidden developer mode (7 taps on the app version). Persisted when
 /// SharedPreferences is available. Shows raw Bluetooth step details.
+/// Developer mode (0.6.19): off every time the app starts, and seven taps on
+/// the version switch it on or off. It is no longer saved (it used to stay on
+/// for good once unlocked, showing debug lines on the home screen).
 class DeveloperModeNotifier extends Notifier<bool> {
   @override
-  bool build() => ref.read(connectionPrefsProvider)?.developerMode ?? false;
+  bool build() {
+    // Clear what older versions saved, so it is off again after an update.
+    final prefs = ref.read(connectionPrefsProvider);
+    if (prefs?.developerMode ?? false) {
+      unawaited(prefs!.setDeveloperMode(false));
+    }
+    return false;
+  }
 
   Future<void> set(bool value) async {
     state = value;
-    await ref.read(connectionPrefsProvider)?.setDeveloperMode(value);
   }
+
+  void toggle() => state = !state;
 }
 
 final developerModeProvider = NotifierProvider<DeveloperModeNotifier, bool>(DeveloperModeNotifier.new);

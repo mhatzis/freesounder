@@ -24,7 +24,7 @@ import httpx
 from freesounderd import __version__, peers
 from freesounderd.artwork import AirplayArt, ArtLookup, split_stream_title
 from freesounderd.audio import audio_state, play_tone
-from freesounderd.bluetooth import BluezBackend, BtOutput, unblock_bluetooth
+from freesounderd.bluetooth import BLUEALSA_ENV, BluezBackend, BtOutput, unblock_bluetooth
 from freesounderd.config import DaemonSettings
 from freesounderd.discovery import Discovery, local_ip
 from freesounderd.dsp import read_audio_output
@@ -32,6 +32,7 @@ from freesounderd.library import Library
 from freesounderd.media import MEDIA_SOURCES, MediaPlayer
 from freesounderd.mpd import MpdClient, MpdError
 from freesounderd.podcasts import Podcasts
+from freesounderd.power import power_warning
 from freesounderd.radio import RadioBrowser, RadioPlayer
 from freesounderd.snapcast import (
     SOURCE_STREAM,
@@ -41,6 +42,7 @@ from freesounderd.snapcast import (
     render_snapserver_conf,
     stream_status,
 )
+from freesounderd.sonos import SonosError, SonosManager, is_sonos
 from freesounderd.spotify import (
     UNIT as SPOTIFY_UNIT,
 )
@@ -49,9 +51,12 @@ from freesounderd.spotify import (
     clear_credentials,
     is_paused,
     is_playing,
+    login_failure_reason,
     now_playing_fields,
     read_state,
     render_config,
+    restore_credentials,
+    saved_credentials,
     stored_username,
 )
 from freesounderd.store import Store, apply_amp_default, board_model, detected_hat, hostname
@@ -188,6 +193,7 @@ class Engine:
         self.clock_offset: dict[str, float] = {}
         self.source = "none"
         self.np: dict[str, Any] = {}
+        self._np_held: tuple[str, dict[str, Any]] | None = None
         self._prev_playing = {
             "spotify": False,
             "airplay": False,
@@ -239,6 +245,9 @@ class Engine:
         self._tone_active = False
         self.snap_local = SnapcastRpc(settings.snapserver_rpc, self.http)
         self.spotify = LibrespotClient(settings.librespot_api, self.http)
+        # Sonos speakers on the LAN as rooms (0.6.20).
+        self.sonos = SonosManager(self.http, watching=lambda: bool(self._listeners))
+        self.sonos.on_change = self.broadcast_if_changed
         self.radio = RadioPlayer(
             settings.ffmpeg_bin, str(settings.run_dir / "radio.fifo"), settings.manage_system
         )
@@ -256,6 +265,10 @@ class Engine:
         self._np_changed_at: float | None = None
         self._spotify_login_active = False
         self._spotify_login_lock = asyncio.Lock()
+        # Pairing with spotify.com/pair (device_auth), while it waits.
+        self._spotify_pair: dict[str, Any] | None = None
+        self._spotify_pair_task: asyncio.Task[None] | None = None
+        self._spotify_pair_ctx: tuple[dict[str, Any] | None, str, str] | None = None
         # MPD: music library, podcasts and the UPnP/DLNA renderer (upmpdcli).
         self.media = MediaPlayer(MpdClient(settings.mpd_host, settings.mpd_port))
         self.library = Library(
@@ -314,6 +327,7 @@ class Engine:
             "available": True,
             "library": len(self.library.shares()),
             "pod_rev": self.podcasts.rev(),
+            "power_warning": power_warning(self.settings.state_dir),
             "known": {
                 pid: [r.get("ip"), int(r.get("port", 8080))]
                 for pid, r in self.peers.items()
@@ -475,6 +489,7 @@ class Engine:
                     "url": f"http://{ip}:{port}" if ip else None,
                     "hostname": rec.get("hostname"),
                     "version": rec.get("version"),
+                    "power_warning": rec.get("power_warning"),
                     "source": group["source"],
                     "now_playing": {
                         k: (group.get("now_playing") or {}).get(k)
@@ -482,10 +497,13 @@ class Engine:
                     },
                 }
             )
+        out.extend(self.sonos.rooms())
         out.sort(key=lambda r: r["name"].lower())
         return out
 
     def now_playing_for_room(self, room_id: str) -> dict[str, Any]:
+        if is_sonos(room_id):
+            return self.sonos.now_playing(room_id)
         group = self.group_for_room(room_id)
         if group is None:
             return {"player_id": room_id, "group_id": room_id, "source": "none", "state": "idle"}
@@ -600,9 +618,12 @@ class Engine:
                 on_change=self.kick,
                 model=self._model,
                 net=lambda: self._net,
+                env_path=BLUEALSA_ENV,
             )
         if self.bt is not None:
             self.bt.start()
+        if self.settings.manage_system:
+            self.sonos.start()
         self._task = asyncio.create_task(self._loop())
         if self.library.shares():
             self._mount_task = asyncio.create_task(self._mount_library())
@@ -663,6 +684,7 @@ class Engine:
         return 0
 
     async def stop(self) -> None:
+        await self.sonos.stop()
         if self.bt is not None:
             await self.bt.stop()
         if self._task:
@@ -1051,6 +1073,7 @@ class Engine:
                 await self._switch_source(others[0])
         await self._refresh_upnp_meta()
         np = self._now_playing(airplay)
+        np = self._hold_while_paused(np)
         if np:
             song = tuple(np.get(k) for k in ("title", "artist", "album", "image_url"))
             if song != self._np_song:
@@ -1169,6 +1192,37 @@ class Engine:
             await self.media.release()
         self.source = new
         self._airplay_paused_since = None
+
+    # What a paused room keeps showing (0.6.18): while nothing plays, the song
+    # and cover stay as they were; a radio station's next song title, a
+    # Spotify status read without its track for a moment or a new AirPlay art
+    # tag no longer swap the cover under a paused room.
+    _HELD_KEYS = (
+        "title",
+        "artist",
+        "album",
+        "image_url",
+        "station_image_url",
+        "stream_title",
+        "context_name",
+    )
+
+    def _hold_while_paused(self, np: dict[str, Any]) -> dict[str, Any]:
+        source = self.source
+        held = self._np_held
+        if not np or self.play_state() == "playing" or source == "none":
+            self._np_held = (source, np) if np and source != "none" else None
+            return np
+        key = np.get("uri") or np.get("station_name") or np.get("title")
+        if held is not None and held[0] == source:
+            old = held[1]
+            old_key = old.get("uri") or old.get("station_name") or old.get("title")
+            # Same track (or same station), or the source briefly lost it.
+            if key is None or key == old_key:
+                np = {**np, **{k: old[k] for k in self._HELD_KEYS if k in old}}
+                return np
+        self._np_held = (source, np)
+        return np
 
     def _now_playing(self, airplay: dict[str, Any]) -> dict[str, Any]:
         if self.source == "spotify" and self._spotify_status:
@@ -1377,12 +1431,21 @@ class Engine:
             logger.info("Ending relay from an older version: handing the group over")
             await self._leave_as_leader()
 
-    async def _leave_as_leader(self) -> None:
-        """I lead a group and leave it: the others carry on without me.
+    async def _leave_as_leader(self, prefer: str | None = None) -> dict[str, Any]:
+        """I lead a group and leave it: the music stays with the others.
 
-        Radio moves to the best remaining member (it starts the same station)
-        and stops here. Spotify and AirPlay belong to this player's device,
-        so they stay here and the others become independent, idle rooms.
+        Taking a room out of a group turns *that* room off; the rooms that
+        remain keep playing (0.6.18; before, Spotify, AirPlay and the library
+        stayed on the leader and the rooms that remained went silent).
+
+        - Radio: the new leader starts the same station.
+        - Library and podcasts: the new leader gets the queue and position.
+        - Spotify: the new leader takes the group; the app moves Spotify
+          playback to it (Web API transfer) using the returned hint.
+        - AirPlay and UPnP stream to this player's own device and cannot move:
+          the others become independent rooms and this one keeps playing.
+
+        [prefer] picks the new leader (the room the user was on), if it stays.
         Afterwards nobody follows me, so my room is fully on its own.
         """
 
@@ -1392,27 +1455,58 @@ class Engine:
             for r in recs.values()
             if r.get("follow") == self.id and r["id"] != self.id and r.get("available", True)
         ]
-        playing = self.play_state() == "playing"
+        state = self.play_state()
+        active = state in ("playing", "paused")
         if self.group.get("relay"):
             self._set_group(relay=False)
         if not members:
-            return
-        if playing and self.source in ("spotify", "airplay", *MEDIA_SOURCES):
+            return {}
+        if active and self.source in ("airplay", "upnp"):
             for member in members:
                 await self._peer_command(member["id"], {"op": "solo"})
             self.kick()
-            return
-        station = self.radio.station if playing and self.source == "radio" else None
-        await self._handover(members, station)
+            return {"kept": self.source}
+        station = self.radio.station if active and self.source == "radio" else None
+        media = None
+        if active and self.source in ("library", "podcast") and self.media.tracks:
+            pos = self.media.status.get("song")
+            media = {
+                "tracks": self.media.tracks,
+                "start": int(pos) if str(pos or "").isdigit() else 0,
+                "seek": float(self.media.elapsed or 0),
+                "owner": self.source,
+                "paused": state == "paused",
+            }
+        spotify = active and self.source == "spotify"
+        best = await self._handover(members, station, prefer=prefer, media=media)
+        result: dict[str, Any] = {"leader": best}
         if station:
             await self.radio.stop()
+        if media:
+            self._track_podcast(final=True)
+            await self.media.release()
+        if spotify:
+            # The app transfers Spotify playback to the new leader's Connect
+            # device; stop here so this room goes quiet straight away.
+            with contextlib.suppress(Exception):
+                await self.spotify.command("pause")
+            result["transfer"] = {"source": "spotify", "to": best, "playing": state == "playing"}
+        if station or media or spotify:
             self.source = "none"
             self.np = {}
+        return result
 
     async def _handover(
-        self, members: list[dict[str, Any]] | None = None, station: dict[str, Any] | None = None
-    ) -> None:
-        """Hand my members to the best of them (with my radio station, if any)."""
+        self,
+        members: list[dict[str, Any]] | None = None,
+        station: dict[str, Any] | None = None,
+        *,
+        prefer: str | None = None,
+        media: dict[str, Any] | None = None,
+    ) -> str | None:
+        """Hand my members to [prefer] if it is one of them, else the best of
+        them, with my radio station or media queue, if any. Returns the new
+        leader's id."""
 
         if members is None:
             recs = self.records()
@@ -1425,18 +1519,22 @@ class Engine:
         self._idle_since = None
         if not members:
             self.store.save_group(self.group)
-            return
-        best = min(members, key=score)
+            return None
+        chosen = [m for m in members if prefer and m["id"] == prefer]
+        best = chosen[0] if chosen else min(members, key=score)
         term = int(self.group.get("term", 0)) + 1
         command: dict[str, Any] = {"op": "lead", "term": term}
         if station:
             command["station"] = station
+        if media:
+            command["media"] = media
         await self._peer_command(best["id"], command)
         for member in members:
             if member["id"] != best["id"]:
                 await self._peer_command(member["id"], {"op": "follow", "leader": best["id"]})
         self.store.save_group(self.group)
         self.kick()
+        return str(best["id"])
 
     # ------------------------------------------------------------------ member
     async def _follow(self) -> None:
@@ -1615,6 +1713,7 @@ class Engine:
 
     async def handle_peer_command(self, body: dict[str, Any]) -> dict[str, Any]:
         op = body.get("op")
+        media = body.get("media") if op == "lead" else None
         async with self._lock:
             if op == "lead":
                 self._set_group(
@@ -1633,8 +1732,26 @@ class Engine:
                 await self._local_join(str(body["leader"]))
             else:
                 raise EngineError(400, f"Unknown op {op}")
+        if isinstance(media, dict) and media.get("tracks"):
+            await self._take_media(media)
         self.kick()
         return {"ok": True}
+
+    async def _take_media(self, media: dict[str, Any]) -> None:
+        """Carry on with a queue handed over by the leader that left."""
+
+        tracks = [t for t in media.get("tracks") or [] if isinstance(t, dict) and t.get("url")]
+        owner = str(media.get("owner") or "library")
+        if not tracks or owner not in ("library", "podcast"):
+            return
+        try:
+            await self._start_media(
+                tracks[:500], int(media.get("start") or 0), owner, float(media.get("seek") or 0)
+            )
+            if media.get("paused"):
+                await self.media.pause()
+        except EngineError as exc:
+            logger.warning("Could not take over the group's %s queue: %s", owner, exc)
 
     def resolve_leader(self, group_or_room: str) -> str:
         gid = group_or_room.removesuffix(SOLO_SUFFIX)
@@ -1645,6 +1762,9 @@ class Engine:
         return rec.get("follow") or rec["id"]
 
     async def join(self, room_id: str, target: str) -> None:
+        if is_sonos(room_id) or is_sonos(target):
+            await self.sonos.join(room_id, target)
+            return
         leader = self.resolve_leader(target)
         if room_id == self.id:
             async with self._lock:
@@ -1667,28 +1787,79 @@ class Engine:
         self.source = "none"
         self._set_group(follow=leader, relay=False)
 
-    async def leave(self, room_id: str) -> None:
+    async def leave(self, room_id: str, keep: str | None = None) -> dict[str, Any]:
+        """Take a room out of its group. The room turns off; the others keep
+        the music. [keep] is the room that should lead what remains."""
+        if is_sonos(room_id):
+            await self.sonos.leave(room_id)
+            return {}
+
         if room_id != self.id:
-            await self.forward(room_id, "POST", f"/api/v2/rooms/{room_id}/leave", {})
-            return
+            res = await self.forward(
+                room_id, "POST", f"/api/v2/rooms/{room_id}/leave", {"keep": keep}
+            )
+            return res if isinstance(res, dict) else {}
         async with self._lock:
             if self.group.get("follow"):
                 self._set_group(follow=None, relay=False)
-                return
-            await self._leave_as_leader()
+                return {}
+            result = await self._leave_as_leader(prefer=keep)
         self.kick()
+        return result
 
-    async def set_members(self, gid: str, members: list[str]) -> None:
-        leader = self.resolve_leader(gid)
-        group = next((g for g in self.groups() if g["id"] == leader), None)
-        current = set(group["member_ids"]) if group else {leader}
+    async def set_members(self, gid: str, members: list[str]) -> dict[str, Any]:
+        """Make the group exactly [members]. Rooms taken out turn off; if the
+        leader itself is taken out, the first listed room that stays takes the
+        group and its music (see _leave_as_leader)."""
+        if is_sonos(gid) or any(is_sonos(m) for m in members):
+            await self.sonos.set_members(gid, members)
+            return {}
+
+        old_leader = self.resolve_leader(gid)
+        group = next((g for g in self.groups() if g["id"] == old_leader), None)
+        current = set(group["member_ids"]) if group else {old_leader}
         wanted = set(members)
+        staying = [m for m in members if m in current and m != old_leader]
+        leader = old_leader
+        result: dict[str, Any] = {}
+        if old_leader not in wanted and staying:
+            result = await self.leave(old_leader, keep=staying[0])
+            leader = result.get("leader") or staying[0]
+            current.discard(old_leader)
+        # 0.6.20: grouping never stops music. If this group is not playing
+        # but a room being added is, that room's group leads and everyone
+        # joins its music (before, the playing room joined the idle group
+        # and went silent).
+        mine = self.group_for_room(leader)
+        if not mine or mine.get("state") != "playing":
+            playing = None
+            for rid in members:
+                if rid in current:
+                    continue
+                theirs = self.group_for_room(rid)
+                if theirs and theirs.get("state") == "playing":
+                    playing = theirs
+                    break
+            if playing is not None:
+                target = str(playing["id"])
+                already = set(playing.get("member_ids") or [target])
+                for rid in sorted(current - wanted):
+                    await self.leave(rid)
+                for rid in members:
+                    if rid not in already:
+                        await self.join(rid, target)
+                return {**result, "leader": target}
         for rid in sorted(wanted - current):
             await self.join(rid, leader)
         for rid in sorted(current - wanted):
             await self.leave(rid)
+        return result
 
     async def set_room_volume(self, room_id: str, volume: int | None, muted: bool | None) -> None:
+        if is_sonos(room_id):
+            await self.sonos.set_volume(room_id, volume, muted)
+            self.broadcast_if_changed()
+            return
         if room_id != self.id:
             await self.forward(
                 room_id,
@@ -1762,6 +1933,10 @@ class Engine:
         await asyncio.shield(self._volume_task)
 
     async def set_group_volume(self, gid: str, volume: int | None, muted: bool | None) -> None:
+        if is_sonos(gid):
+            await self.sonos.set_group_volume(gid, volume, muted)
+            self.broadcast_if_changed()
+            return
         leader = self.resolve_leader(gid)
         group = next((g for g in self.groups() if g["id"] == leader), None)
         if group is None:
@@ -1782,6 +1957,10 @@ class Engine:
             raise errors[0]
 
     async def control(self, gid: str, action: str) -> None:
+        if is_sonos(gid):
+            await self.sonos.control(gid, action)
+            self.broadcast_if_changed()
+            return
         leader = self.resolve_leader(gid)
         if gid.endswith(SOLO_SUFFIX) and action == "play":
             raise EngineError(409, "This room is still playing for its old group.")
@@ -1924,6 +2103,11 @@ class Engine:
         return self.resolve_leader(gid)
 
     async def spotify_info(self, gid: str) -> dict[str, Any]:
+        if is_sonos(gid):
+            raise SonosError(
+                409,
+                "For Spotify on a Sonos speaker, pick it in the Spotify app or the Sonos app.",
+            )
         leader = self._spotify_leader(gid)
         if leader != self.id:
             return await self.forward(leader, "POST", f"/api/v2/groups/{leader}/spotify", {})
@@ -1941,13 +2125,19 @@ class Engine:
             "username": (status or {}).get("username")
             or stored_username(self.settings.spotify_dir),
             "signing_in": self._spotify_login_active,
+            "pairing": self._spotify_pair,
         }
 
     async def spotify_login(self, gid: str, body: dict[str, Any]) -> dict[str, Any]:
+        if is_sonos(gid):
+            raise SonosError(
+                409,
+                "For Spotify on a Sonos speaker, pick it in the Spotify app or the Sonos app.",
+            )
         leader = self._spotify_leader(gid)
         if leader != self.id:
             return await self.forward(
-                leader, "POST", f"/api/v2/groups/{leader}/spotify/login", body, wait=75
+                leader, "POST", f"/api/v2/groups/{leader}/spotify/login", body, wait=88
             )
         username = str(body.get("username") or "").strip()
         token = str(body.get("access_token") or "").strip()
@@ -1963,17 +2153,36 @@ class Engine:
             spot_path = self.settings.spotify_dir / "config.yml"
             name = self.my_group_name()
             fifo = str(self.settings.run_dir / "spotify.fifo")
+            started = time.time()
             ok = False
             try:
-                await self.system.systemctl("stop", SPOTIFY_UNIT)
-                clear_credentials(self.settings.spotify_dir)
-                self.system.write_if_changed(
-                    spot_path,
-                    render_config(device_name=name, fifo=fifo, token_login=(username, token)),
-                    0o600,
-                )
-                await self.system.systemctl("start", SPOTIFY_UNIT)
-                ok = await self._wait_spotify_user(username, 25)
+                # 1. This speaker already has a stored login for this account
+                #    (its session was only down, e.g. after a regroup): start
+                #    it again with that login instead of a new sign-in.
+                if stored_username(self.settings.spotify_dir) == username:
+                    self.system.write_if_changed(
+                        spot_path, render_config(device_name=name, fifo=fifo), 0o600
+                    )
+                    await self.system.systemctl("restart", SPOTIFY_UNIT)
+                    ok = await self._wait_spotify_user(username, 12)
+                # 2. A new sign-in with the app's token, twice if need be. The
+                #    old login is kept aside and put back if this fails, so a
+                #    failed attempt never leaves the speaker signed out.
+                backup = saved_credentials(self.settings.spotify_dir)
+                for _attempt in range(2):
+                    if ok:
+                        break
+                    await self.system.systemctl("stop", SPOTIFY_UNIT)
+                    clear_credentials(self.settings.spotify_dir)
+                    self.system.write_if_changed(
+                        spot_path,
+                        render_config(device_name=name, fifo=fifo, token_login=(username, token)),
+                        0o600,
+                    )
+                    await self.system.systemctl("start", SPOTIFY_UNIT)
+                    ok = await self._wait_spotify_user(username, 22)
+                if not ok and backup and not saved_credentials(self.settings.spotify_dir):
+                    restore_credentials(self.settings.spotify_dir, backup)
             finally:
                 # Never leave the token on disk: back to the normal config,
                 # which reuses the credentials go-librespot just stored.
@@ -1987,12 +2196,152 @@ class Engine:
         self.kick()
         info = await self._spotify_info_local()
         if not ok:
-            raise EngineError(
-                502,
-                "Spotify did not accept the sign-in on this player. Spotify Connect "
-                "needs a Premium account; check the account is Premium and try again.",
-            )
+            log = await self._unit_log(SPOTIFY_UNIT, since=started)
+            logger.warning("Spotify sign-in failed; go-librespot said: %s", log[-600:])
+            raise EngineError(502, login_failure_reason(log, self.room_name()))
         return info
+
+    async def _unit_log(self, unit: str, *, since: float) -> str:
+        """A unit's journal since [since] (epoch seconds), for error reasons."""
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "journalctl",
+                "-u",
+                unit,
+                f"--since=@{int(since)}",
+                "-o",
+                "cat",
+                "--no-pager",
+                "-q",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=5)
+        except (OSError, TimeoutError):
+            return ""
+        return out.decode(errors="replace")
+
+    # How long a pairing code is waited for (Spotify's codes last ~10 min).
+    SPOTIFY_PAIR_WAIT = 600.0
+
+    async def spotify_pair(self, gid: str) -> dict[str, Any]:
+        """Sign this group's speaker in to Spotify with a code approved at
+        spotify.com/pair (go-librespot device_auth, Spotify's own sign-in).
+
+        0.6.19: Spotify no longer accepts the app's own token for a speaker
+        (login5 INVALID_CREDENTIALS). Returns the Spotify info with
+        "pairing": {code, url, expires_at} while it waits; the speaker keeps
+        the login afterwards (state.json, reused by the normal config).
+        """
+        if is_sonos(gid):
+            raise SonosError(
+                409,
+                "For Spotify on a Sonos speaker, pick it in the Spotify app or the Sonos app.",
+            )
+
+        leader = self._spotify_leader(gid)
+        if leader != self.id:
+            return await self.forward(
+                leader, "POST", f"/api/v2/groups/{leader}/spotify/pair", {}, wait=30
+            )
+        if not self.settings.manage_system:
+            return await self._spotify_info_local()
+        async with self._spotify_login_lock:
+            status = await self.spotify.status()
+            if status and status.get("username"):
+                return await self._spotify_info_local()
+            if self._spotify_pair_task is not None and not self._spotify_pair_task.done():
+                return await self._spotify_info_local()
+            self._spotify_login_active = True
+            spot_path = self.settings.spotify_dir / "config.yml"
+            name = self.my_group_name()
+            fifo = str(self.settings.run_dir / "spotify.fifo")
+            # go-librespot signs in with a stored login if it has one, so the
+            # old one is set aside (and put back if pairing does not finish).
+            backup = saved_credentials(self.settings.spotify_dir)
+            await self.system.systemctl("stop", SPOTIFY_UNIT)
+            clear_credentials(self.settings.spotify_dir)
+            self.system.write_if_changed(
+                spot_path, render_config(device_name=name, fifo=fifo, device_auth=True), 0o600
+            )
+            await self.system.systemctl("start", SPOTIFY_UNIT)
+            code = None
+            for _ in range(30):
+                code = await self.spotify.auth_code()
+                if code:
+                    break
+                await asyncio.sleep(0.5)
+            if not code:
+                await self._end_spotify_pair(backup, name, fifo)
+                raise EngineError(
+                    502,
+                    f"{self.room_name()} could not get a pairing code from Spotify. "
+                    "Check that it is online, then try again.",
+                )
+            self._spotify_pair = code
+            self._spotify_pair_ctx = (backup, name, fifo)
+            self._spotify_pair_task = asyncio.create_task(
+                self._finish_spotify_pair(backup, name, fifo)
+            )
+        return await self._spotify_info_local()
+
+    async def spotify_pair_cancel(self, gid: str) -> dict[str, Any]:
+        leader = self._spotify_leader(gid)
+        if leader != self.id:
+            return await self.forward(
+                leader, "POST", f"/api/v2/groups/{leader}/spotify/pair/cancel", {}
+            )
+        task = self._spotify_pair_task
+        if task is not None and not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        if self._spotify_pair is not None and self._spotify_pair_ctx is not None:
+            # Cancelled before the waiting task ever ran: tidy up here.
+            await self._end_spotify_pair(*self._spotify_pair_ctx)
+        return await self._spotify_info_local()
+
+    async def _finish_spotify_pair(
+        self, backup: dict[str, Any] | None, name: str, fifo: str
+    ) -> None:
+        """Wait for the approval, then back to the normal config (which
+        reuses the stored login). On timeout, decline or cancel: put the
+        old login back."""
+
+        ok = False
+        try:
+            deadline = time.monotonic() + self.SPOTIFY_PAIR_WAIT
+            while time.monotonic() < deadline:
+                status = await self.spotify.status()
+                if status and status.get("username"):
+                    ok = True
+                    break
+                code = await self.spotify.auth_code()
+                if code:
+                    self._spotify_pair = code
+                await asyncio.sleep(2)
+        finally:
+            if ok:
+                logger.info("Spotify pairing approved on %s", self.room_name())
+                await self._end_spotify_pair(None, name, fifo)
+            else:
+                logger.info("Spotify pairing ended without approval on %s", self.room_name())
+                await self._end_spotify_pair(backup, name, fifo)
+
+    async def _end_spotify_pair(self, restore: dict[str, Any] | None, name: str, fifo: str) -> None:
+        if restore and not saved_credentials(self.settings.spotify_dir):
+            restore_credentials(self.settings.spotify_dir, restore)
+        self.system.write_if_changed(
+            self.settings.spotify_dir / "config.yml",
+            render_config(device_name=name, fifo=fifo),
+            0o600,
+        )
+        await self.system.systemctl("restart", SPOTIFY_UNIT)
+        self._spotify_pair = None
+        self._spotify_pair_ctx = None
+        self._spotify_login_active = False
+        self.kick()
 
     async def _wait_spotify_user(self, username: str, seconds: float) -> bool:
         deadline = time.monotonic() + seconds
@@ -2004,6 +2353,11 @@ class Engine:
         return False
 
     async def spotify_play(self, gid: str, body: dict[str, Any]) -> dict[str, Any]:
+        if is_sonos(gid):
+            raise SonosError(
+                409,
+                "For Spotify on a Sonos speaker, pick it in the Spotify app or the Sonos app.",
+            )
         leader = self._spotify_leader(gid)
         if leader != self.id:
             return await self.forward(
@@ -2027,6 +2381,11 @@ class Engine:
         return {"ok": True, **(await self._spotify_info_local())}
 
     async def spotify_context_tracks(self, gid: str, uri: str) -> dict[str, Any]:
+        if is_sonos(gid):
+            raise SonosError(
+                409,
+                "For Spotify on a Sonos speaker, pick it in the Spotify app or the Sonos app.",
+            )
         leader = self._spotify_leader(gid)
         if leader != self.id:
             return await self.forward(
@@ -2038,6 +2397,9 @@ class Engine:
         return data
 
     async def seek(self, gid: str, position_ms: int) -> None:
+        if is_sonos(gid):
+            await self.sonos.seek(gid, position_ms)
+            return
         leader = self.resolve_leader(gid)
         if leader != self.id:
             await self.forward(
@@ -2060,6 +2422,15 @@ class Engine:
         self.kick()
 
     async def play_radio(self, gid: str, body: dict[str, Any]) -> dict[str, Any]:
+        if is_sonos(gid):
+            url = str(body.get("url") or "")
+            if not url.startswith(("http://", "https://")):
+                raise EngineError(400, "That station has no stream address.")
+            await self.sonos.play_stream(
+                gid, url, str(body.get("name") or "Radio"), body.get("favicon") or None
+            )
+            self.broadcast_if_changed()
+            return {"ok": True}
         leader = self.resolve_leader(gid)
         if gid.endswith(SOLO_SUFFIX):
             async with self._lock:
@@ -2120,6 +2491,17 @@ class Engine:
         )
 
     async def play_library(self, gid: str, body: dict[str, Any]) -> dict[str, Any]:
+        if is_sonos(gid):
+            host = str(body.get("host") or self.library_host())
+            tracks = []
+            for item in [
+                t for t in body.get("tracks") or [] if isinstance(t, dict) and t.get("uri")
+            ][:200]:
+                url, art = self.library_urls(host, str(item["uri"]))
+                tracks.append({**item, "url": url, "image_url": art})
+            await self.sonos.play_tracks(gid, tracks, int(body.get("start") or 0))
+            self.broadcast_if_changed()
+            return {"ok": True, "tracks": len(tracks)}
         leader = self._media_leader(gid)
         if leader != self.id:
             return await self.forward(leader, "POST", f"/api/v2/groups/{leader}/library/play", body)
@@ -2148,6 +2530,21 @@ class Engine:
         return {"ok": True, "tracks": len(tracks)}
 
     async def play_podcast(self, gid: str, body: dict[str, Any]) -> dict[str, Any]:
+        if is_sonos(gid):
+            ep = body.get("episode") or {}
+            pod = body.get("podcast") or {}
+            url = str(ep.get("url") or "")
+            if not url.startswith(("http://", "https://")):
+                raise EngineError(400, "That episode has no audio address.")
+            track = {
+                "url": url,
+                "title": ep.get("title"),
+                "artist": pod.get("title"),
+                "image_url": ep.get("image") or pod.get("image"),
+            }
+            await self.sonos.play_tracks(gid, [track], 0, float(body.get("position") or 0))
+            self.broadcast_if_changed()
+            return {"ok": True}
         leader = self._media_leader(gid)
         if leader != self.id:
             return await self.forward(leader, "POST", f"/api/v2/groups/{leader}/podcast/play", body)

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../api/errors.dart';
 import '../models/room.dart';
 import '../state/playback_store.dart';
 import '../theme/tokens.dart';
@@ -154,6 +155,7 @@ class _RoomTile extends ConsumerWidget {
     final status = offline
         ? 'Offline'
         : [
+            if (room.isSonos) 'Sonos',
             if (room.volume != null) '${room.volume}',
             if (room.isGrouped) room.groupName ?? 'Grouped',
             if (room.relayingFor != null) 'Playing for ${room.relayingFor}',
@@ -164,7 +166,9 @@ class _RoomTile extends ConsumerWidget {
       child: InkWell(
         borderRadius: BorderRadius.circular(16),
         onTap: () => ref.read(playbackProvider.notifier).selectRoom(room.id),
-        onLongPress: offline ? null : () => showRoomSettingsSheet(context, roomId: room.id, roomName: room.name),
+        onLongPress: offline || room.isSonos
+            ? null
+            : () => showRoomSettingsSheet(context, roomId: room.id, roomName: room.name),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(12, 10, 8, 6),
           child: Column(
@@ -198,6 +202,26 @@ class _RoomTile extends ConsumerWidget {
                           style: Theme.of(context).textTheme.titleSmall
                               ?.copyWith(fontWeight: selected ? FontWeight.w600 : FontWeight.w500),
                         ),
+                        if (room.powerWarning != null && !offline)
+                          Tooltip(
+                            message: room.powerWarning!,
+                            triggerMode: TooltipTriggerMode.tap,
+                            child: Row(
+                              key: Key('room-power-${room.id}'),
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(Icons.power_off_outlined, size: 14, color: scheme.error),
+                                const SizedBox(width: 4),
+                                Flexible(
+                                  child: Text(
+                                    'Power supply too weak',
+                                    overflow: TextOverflow.ellipsis,
+                                    style: Theme.of(context).textTheme.labelSmall?.copyWith(color: scheme.error),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
                         if (status.isNotEmpty)
                           Text(
                             status,
@@ -232,7 +256,7 @@ class _RoomTile extends ConsumerWidget {
                       icon: Icon(room.isGrouped ? Icons.link : Icons.add_link, size: 20),
                       onPressed: () => showGroupSheet(context, room),
                     ),
-                  if (!offline)
+                  if (!offline && !room.isSonos)
                     IconButton(
                       key: Key('room-settings-${room.id}'),
                       tooltip: 'Room settings',
@@ -381,7 +405,7 @@ class _GroupSheetState extends ConsumerState<_GroupSheet> {
         Navigator.of(context).pop();
       }
     } on Object catch (err) {
-      setState(() => _error = err.toString());
+      setState(() => _error = userMessageFor(err));
     } finally {
       if (mounted) {
         setState(() => _busy = false);
@@ -393,7 +417,8 @@ class _GroupSheetState extends ConsumerState<_GroupSheet> {
   Widget build(BuildContext context) {
     final rooms = ref.watch(playbackProvider).rooms;
     final text = Theme.of(context).textTheme;
-    final others = rooms.where((r) => r.id != widget.room.id).toList();
+    // Sonos speakers keep their own timing: they group only with each other.
+    final others = rooms.where((r) => r.id != widget.room.id && r.isSonos == widget.room.isSonos).toList();
     final count = _selected.length;
     final title = count > 1 ? '${widget.room.name} + ${count - 1}' : widget.room.name;
     return SafeArea(
@@ -406,7 +431,8 @@ class _GroupSheetState extends ConsumerState<_GroupSheet> {
             Text('Play together', style: text.titleLarge),
             const SizedBox(height: 4),
             Text(
-              'Spotify and AirPlay show this group as "$title".',
+              'Spotify and AirPlay show this group as "$title". '
+              'Rooms you untick stop playing; the others carry on.',
               key: const Key('group-sheet-name'),
               style: text.bodySmall,
             ),

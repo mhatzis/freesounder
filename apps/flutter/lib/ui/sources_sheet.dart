@@ -39,6 +39,7 @@ IconData sourceGlyph(String? source) => switch (source) {
   'upnp' => Icons.cast_connected_rounded,
   'airplay' => Icons.airplay_rounded,
   'spotify' => Icons.library_music_rounded,
+  'sonos' => Icons.speaker_rounded,
   _ => Icons.music_note_rounded,
 };
 

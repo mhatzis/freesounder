@@ -74,7 +74,6 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
   PlayerSettings? _settings;
   var _loading = true;
   var _saving = false;
-  var _developerUnlocked = false;
   var _versionTaps = 0;
   var _sshBusy = false;
   SshDeveloperStatus? _ssh;
@@ -326,15 +325,13 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
     ].join(' · ');
   }
 
+  /// Seven taps switch developer mode on or off (0.6.19: it used to only
+  /// switch on, and stayed on for good).
   void _onVersionTap() {
-    setState(() {
-      _versionTaps += 1;
-      if (_versionTaps >= 7) {
-        _developerUnlocked = true;
-      }
-    });
-    if (_developerUnlocked) {
-      ref.read(developerModeProvider.notifier).set(true);
+    setState(() => _versionTaps += 1);
+    if (_versionTaps >= 7) {
+      setState(() => _versionTaps = 0);
+      ref.read(developerModeProvider.notifier).toggle();
     }
   }
 
@@ -569,7 +566,7 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
                           style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
                         ),
                       ),
-                      if (_developerUnlocked || ref.watch(developerModeProvider)) ...[
+                      if (ref.watch(developerModeProvider)) ...[
                         const SizedBox(height: 16),
                         Text('Developer', style: text.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
                         const SizedBox(height: 4),
@@ -587,6 +584,14 @@ class _RoomSettingsSheetState extends ConsumerState<RoomSettingsSheet> {
                         ),
                         if (_ssh?.command != null) ...[
                           SelectableText(_ssh!.command!, style: text.bodyMedium),
+                          const SizedBox(height: 4),
+                        ],
+                        if (_ssh?.enabled == true && _ssh?.password == null && _ssh?.passwordFixed == true) ...[
+                          Text(
+                            'Password: the developer password set when this image was built.',
+                            key: const Key('ssh-fixed-password-note'),
+                            style: text.bodyMedium,
+                          ),
                           const SizedBox(height: 4),
                         ],
                         if (_ssh?.password != null) ...[

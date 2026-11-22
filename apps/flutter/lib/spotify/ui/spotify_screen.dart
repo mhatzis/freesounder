@@ -13,6 +13,7 @@ import '../spotify_auth.dart';
 import '../spotify_models.dart';
 import '../spotify_store.dart';
 import 'spotify_brand.dart';
+import 'spotify_pair_dialog.dart';
 import 'spotify_setup.dart';
 
 Future<void> showSpotifyScreen(BuildContext context) {
@@ -87,6 +88,10 @@ class _BrowseState extends ConsumerState<_Browse> {
   Future<List<SpotifySection>>? _results;
   Timer? _debounce;
 
+  /// 'all' or one Spotify type ('track', 'artist', …) while searching.
+  String _filter = 'all';
+  String _searched = '';
+
   @override
   void initState() {
     super.initState();
@@ -104,9 +109,18 @@ class _BrowseState extends ConsumerState<_Browse> {
     _debounce?.cancel();
     _debounce = Timer(const Duration(milliseconds: 400), () {
       setState(() {
-        _results = value.trim().isEmpty ? null : ref.read(spotifyProvider.notifier).search(value.trim());
+        _searched = value.trim();
+        _results = _searched.isEmpty ? null : ref.read(spotifyProvider.notifier).search(_searched);
+        if (_searched.isEmpty) {
+          _filter = 'all';
+        }
       });
     });
+  }
+
+  VoidCallback? _moreFor(String title) {
+    final type = SpotifyApi.searchTypes.entries.where((e) => e.value == title).firstOrNull?.key;
+    return type == null ? null : () => setState(() => _filter = type);
   }
 
   @override
@@ -122,7 +136,7 @@ class _BrowseState extends ConsumerState<_Browse> {
             textInputAction: TextInputAction.search,
             decoration: InputDecoration(
               prefixIcon: const Icon(Icons.search),
-              hintText: 'Songs, artists, albums, playlists',
+              hintText: 'Songs, artists, albums, playlists, podcasts',
               border: const OutlineInputBorder(),
               suffixIcon: _query.text.isEmpty
                   ? null
@@ -138,6 +152,36 @@ class _BrowseState extends ConsumerState<_Browse> {
             onSubmitted: _search,
           ),
         ),
+        if (_searched.isNotEmpty)
+          SizedBox(
+            height: 44,
+            child: ListView(
+              key: const Key('spotify-search-filters'),
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              children: [
+                for (final f in const {'all': 'All', ...SpotifyApi.searchTypes}.entries)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: ChoiceChip(
+                      key: Key('spotify-filter-${f.key}'),
+                      label: Text(f.value),
+                      selected: _filter == f.key,
+                      onSelected: (_) => setState(() => _filter = f.key),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        if (_searched.isNotEmpty && _filter != 'all')
+          Expanded(
+            child: SpotifyTypeResults(
+              key: ValueKey('$_filter|$_searched'),
+              query: _searched,
+              type: _filter,
+            ),
+          )
+        else
         Expanded(
           child: FutureBuilder<List<SpotifySection>>(
             future: future,
@@ -169,7 +213,17 @@ class _BrowseState extends ConsumerState<_Browse> {
                 child: ListView(
                   key: const Key('spotify-sections'),
                   padding: const EdgeInsets.only(bottom: 24),
-                  children: [for (final s in sections) SpotifyShelf(section: s, asList: _results != null && s.title == 'Songs')],
+                  children: [
+                    for (final s in sections)
+                      if (_results != null && s.title == 'Top result')
+                        SpotifyTopResult(item: s.items.first)
+                      else
+                        SpotifyShelf(
+                          section: s,
+                          asList: _results != null && s.title == 'Songs',
+                          onMore: _results == null ? null : _moreFor(s.title),
+                        ),
+                  ],
                 ),
               );
             },
@@ -206,10 +260,13 @@ class _ErrorRetry extends StatelessWidget {
 
 /// A titled row of cards, or a list for songs.
 class SpotifyShelf extends StatelessWidget {
-  const SpotifyShelf({super.key, required this.section, this.asList = false});
+  const SpotifyShelf({super.key, required this.section, this.asList = false, this.onMore});
 
   final SpotifySection section;
   final bool asList;
+
+  /// "See all" (search results): show just this kind, with more of it.
+  final VoidCallback? onMore;
 
   @override
   Widget build(BuildContext context) {
@@ -219,8 +276,20 @@ class SpotifyShelf extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-          child: Text(section.title, style: text.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
+          padding: EdgeInsets.fromLTRB(16, 16, onMore == null ? 16 : 4, onMore == null ? 8 : 0),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(section.title, style: text.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
+              ),
+              if (onMore != null)
+                TextButton(
+                  key: Key('spotify-see-all-${section.title}'),
+                  onPressed: onMore,
+                  child: const Text('See all'),
+                ),
+            ],
+          ),
         ),
         if (asList || (songs && section.items.length <= 6))
           for (final item in section.items) SpotifyTrackTile(item: item)
@@ -350,10 +419,115 @@ Future<void> playSpotifyItem(BuildContext context, SpotifyItem item) async {
   if (chosen == null || !context.mounted) {
     return;
   }
+  // 0.6.20: one Spotify account plays in one place at a time. Starting here
+  // would silently stop the other room; ask first (unless the speakers use
+  // different accounts).
+  var target = chosen;
+  final elsewhere = await spotifyPlayingElsewhere(container, chosen);
+  if (elsewhere != null) {
+    if (!context.mounted) {
+      return;
+    }
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (dialog) => AlertDialog(
+        key: const Key('spotify-one-stream'),
+        title: const Text('Spotify plays in one place at a time'),
+        content: Text(
+          'Your Spotify account is playing in ${elsewhere.name}. Spotify lets one account play on '
+          'one speaker at a time, so starting it in ${chosen.name} stops ${elsewhere.name}.\n\n'
+          'To hear it in both, group the rooms. (Each speaker can also be signed in to its own '
+          'account, for example with Spotify Family.)',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialog), child: const Text('Cancel')),
+          TextButton(
+            key: const Key('spotify-one-stream-move'),
+            onPressed: () => Navigator.pop(dialog, 'move'),
+            child: Text('Play in ${chosen.name} only'),
+          ),
+          FilledButton(
+            key: const Key('spotify-one-stream-group'),
+            onPressed: () => Navigator.pop(dialog, 'group'),
+            child: Text('Group with ${elsewhere.name}'),
+          ),
+        ],
+      ),
+    );
+    if (choice == null || !context.mounted) {
+      return;
+    }
+    if (choice == 'group') {
+      final store = container.read(playbackProvider.notifier);
+      try {
+        await store.setGroupMembers(
+          elsewhere.memberIds.first,
+          [...elsewhere.memberIds, ...chosen.memberIds.where((id) => !elsewhere.memberIds.contains(id))],
+        );
+      } on Object catch (err) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(spotifyErrorText(err))));
+        }
+        return;
+      }
+      target = PlayTarget(
+        id: elsewhere.id,
+        name: elsewhere.name,
+        memberIds: [...elsewhere.memberIds, ...chosen.memberIds],
+      );
+    }
+  }
+  if (!context.mounted) {
+    return;
+  }
+  return _startSpotify(context, container, target, item);
+}
+
+/// A room or group outside [chosen] that is playing Spotify, if any.
+PlayTarget? spotifyBusyElsewhere(List<Room> rooms, PlayTarget chosen) {
+  final busy = playTargets([
+    for (final r in rooms)
+      if (r.source == 'spotify' && r.state == 'playing' && !chosen.memberIds.contains(r.id)) r,
+  ]);
+  return busy.isEmpty ? null : busy.first;
+}
+
+/// Another room (not in [chosen]) plays Spotify on the same account, if any.
+Future<PlayTarget?> spotifyPlayingElsewhere(ProviderContainer container, PlayTarget chosen) async {
+  final other = spotifyBusyElsewhere(container.read(playbackProvider).rooms, chosen);
+  if (other == null) {
+    return null;
+  }
+  final client = container.read(playbackProvider.notifier).client;
+  if (client != null) {
+    try {
+      final here = await client.spotifyInfo(chosen.id);
+      final there = await client.spotifyInfo(other.id);
+      if (here.loggedIn && there.loggedIn && here.username != null && here.username != there.username) {
+        return null; // different accounts (e.g. Spotify Family): both can play
+      }
+    } on Object {
+      // Unknown: ask rather than stop the other room silently.
+    }
+  }
+  return other;
+}
+
+Future<void> _startSpotify(BuildContext context, ProviderContainer container, PlayTarget chosen, SpotifyItem item) async {
   final messenger = ScaffoldMessenger.of(context);
   messenger.showSnackBar(SnackBar(content: Text('Starting on ${chosen.name}…'), duration: const Duration(seconds: 20)));
   try {
-    await container.read(spotifyProvider.notifier).play(chosen.id, item);
+    try {
+      await container.read(spotifyProvider.notifier).play(chosen.id, item);
+    } on SpotifyPairingRequired catch (need) {
+      // First time on this speaker: approve it once at spotify.com/pair.
+      messenger.hideCurrentSnackBar();
+      if (!context.mounted || !await showSpotifyPairDialog(context, need)) {
+        return;
+      }
+      messenger.showSnackBar(SnackBar(content: Text('Starting on ${chosen.name}…'), duration: const Duration(seconds: 20)));
+      await container.read(spotifyProvider.notifier).play(chosen.id, item);
+    }
     messenger.hideCurrentSnackBar();
     messenger.showSnackBar(SnackBar(content: Text('Playing on ${chosen.name}')));
     container.read(playbackProvider.notifier).selectRoom(chosen.memberIds.first);
@@ -378,7 +552,8 @@ List<PlayTarget> playTargets(List<Room> rooms) {
   final seen = <String>{};
   final out = <PlayTarget>[];
   for (final room in rooms) {
-    if (!room.available) {
+    // Spotify on Sonos goes through the Spotify or Sonos app (0.6.20).
+    if (!room.available || room.isSonos) {
       continue;
     }
     final key = room.isGrouped ? (room.groupId ?? room.id) : room.id;
@@ -476,6 +651,173 @@ class _SpotifyPageScreenState extends ConsumerState<SpotifyPageScreen> {
           );
         },
       ),
+    );
+  }
+}
+
+
+/// The best match, large, with a play button (search "All").
+class SpotifyTopResult extends StatelessWidget {
+  const SpotifyTopResult({super.key, required this.item});
+
+  final SpotifyItem item;
+
+  static String kindLabel(String type) => switch (type) {
+        'track' => 'Song',
+        'artist' => 'Artist',
+        'album' => 'Album',
+        'playlist' => 'Playlist',
+        'show' => 'Podcast',
+        'episode' => 'Episode',
+        _ => type,
+      };
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    final scheme = Theme.of(context).colorScheme;
+    final round = item.type == 'artist';
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Top result', style: text.titleMedium?.copyWith(fontWeight: FontWeight.w600)),
+          const SizedBox(height: 8),
+          Material(
+            color: scheme.surfaceContainerHigh,
+            borderRadius: BorderRadius.circular(14),
+            child: InkWell(
+              key: const Key('spotify-top-result'),
+              borderRadius: BorderRadius.circular(14),
+              onTap: () => openSpotifyItem(context, item),
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Row(
+                  children: [
+                    SizedBox(
+                      width: 84,
+                      height: 84,
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(round ? 42 : 8),
+                        child: Artwork(urls: [?item.imageUrl]),
+                      ),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(item.name, maxLines: 2, overflow: TextOverflow.ellipsis, style: text.titleLarge),
+                          const SizedBox(height: 4),
+                          Text(
+                            [kindLabel(item.type), if (item.type != 'artist' && item.subtitle != null) item.subtitle!]
+                                .join(' · '),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton.filled(
+                      key: const Key('spotify-top-play'),
+                      tooltip: 'Play ${item.name}',
+                      onPressed: () => playSpotifyItem(context, item),
+                      icon: const Icon(Icons.play_arrow_rounded),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// One kind of search result (songs, artists, …) as a list, 10 at a time.
+class SpotifyTypeResults extends ConsumerStatefulWidget {
+  const SpotifyTypeResults({super.key, required this.query, required this.type});
+
+  final String query;
+  final String type;
+
+  @override
+  ConsumerState<SpotifyTypeResults> createState() => _SpotifyTypeResultsState();
+}
+
+class _SpotifyTypeResultsState extends ConsumerState<SpotifyTypeResults> {
+  final List<SpotifyItem> _items = [];
+  bool _more = false;
+  bool _loading = false;
+  Object? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final page = await ref
+          .read(spotifyProvider.notifier)
+          .searchType(widget.query, widget.type, offset: _items.length);
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        final seen = _items.map((i) => i.uri).toSet();
+        _items.addAll(page.items.where((i) => seen.add(i.uri)));
+        _more = page.more && page.items.isNotEmpty;
+      });
+    } on Object catch (err) {
+      if (mounted) {
+        setState(() => _error = err);
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _loading = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_items.isEmpty && _loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (_items.isEmpty && _error != null) {
+      return _ErrorRetry(message: spotifyErrorText(_error!), onRetry: _load);
+    }
+    if (_items.isEmpty) {
+      return const Center(child: Text('Nothing found'));
+    }
+    return ListView(
+      key: Key('spotify-type-results-${widget.type}'),
+      padding: const EdgeInsets.only(bottom: 24),
+      children: [
+        for (final item in _items) SpotifyTrackTile(item: item),
+        if (_more || _loading || _error != null)
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Center(
+              child: _loading
+                  ? const CircularProgressIndicator()
+                  : OutlinedButton(
+                      key: const Key('spotify-load-more'),
+                      onPressed: _load,
+                      child: Text(_error != null ? 'Try again' : 'Load more'),
+                    ),
+            ),
+          ),
+      ],
     );
   }
 }

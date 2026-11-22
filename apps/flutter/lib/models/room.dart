@@ -15,6 +15,8 @@ class Room {
     this.source,
     this.url,
     this.version,
+    this.powerWarning,
+    this.kind,
     this.nowTitle,
     this.nowArtist,
     this.nowImageUrl,
@@ -49,6 +51,14 @@ class Room {
   /// The player's software version (e.g. "0.6.15").
   final String? version;
 
+  /// The player's supply is too weak (0.6.19); shown on the room.
+  final String? powerWarning;
+
+  /// 'sonos' for a Sonos speaker (0.6.20); null for a FreeSounder player.
+  final String? kind;
+
+  bool get isSonos => kind == 'sonos';
+
   bool get isGrouped => memberIds.length > 1;
 
   factory Room.fromJson(Map<String, dynamic> json) {
@@ -70,6 +80,8 @@ class Room {
       source: json['source'] as String?,
       url: json['url'] as String?,
       version: json['version'] as String?,
+      powerWarning: json['power_warning'] as String?,
+      kind: json['kind'] as String?,
       nowTitle: (json['now_playing'] as Map?)?['title'] as String?,
       nowArtist: (json['now_playing'] as Map?)?['artist'] as String?,
       nowImageUrl: (json['now_playing'] as Map?)?['image_url'] as String?,
@@ -79,6 +91,7 @@ class Room {
   Room copyWith({
     String? name,
     int? volume,
+    bool? muted,
     String? groupId,
     String? state,
     List<String>? memberIds,
@@ -89,7 +102,7 @@ class Room {
       name: name ?? this.name,
       available: available,
       volume: volume ?? this.volume,
-      muted: muted,
+      muted: muted ?? this.muted,
       groupId: clearGroupId ? null : (groupId ?? this.groupId),
       isGroup: isGroup,
       memberIds: memberIds ?? this.memberIds,
@@ -100,6 +113,8 @@ class Room {
       source: source,
       url: url,
       version: version,
+      powerWarning: powerWarning,
+      kind: kind,
       nowTitle: nowTitle,
       nowArtist: nowArtist,
       nowImageUrl: nowImageUrl,

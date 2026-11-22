@@ -25,12 +25,16 @@ from freesounderd.models import (
     AdoptBody,
     AirplayVolumeBody,
     BtConnectBody,
+    BtKeepaliveBody,
     BtLatencyBody,
     BtOutputBody,
+    BtQualityBody,
     BtScanBody,
     GroupMembersBody,
     Health,
     JoinBody,
+    JoinCodeBody,
+    LeaveBody,
     LibraryPlayBody,
     LibraryShareBody,
     PlayerSettings,
@@ -49,7 +53,8 @@ from freesounderd.models import (
 )
 from freesounderd.mpd import MpdError
 from freesounderd.podcasts import PodcastError
-from freesounderd.ssh import ssh_set, ssh_status
+from freesounderd.sonos import SonosError, is_sonos
+from freesounderd.ssh import SshHelperError, ssh_set, ssh_status
 from freesounderd.store import Store, detected_hat, hostname
 
 logger = logging.getLogger(__name__)
@@ -105,6 +110,10 @@ def create_app(
 
     @app.exception_handler(LibraryError)
     async def _library_error(_request: Request, exc: LibraryError) -> JSONResponse:
+        return JSONResponse(status_code=exc.status, content={"detail": exc.detail})
+
+    @app.exception_handler(SonosError)
+    async def _sonos_error(_request: Request, exc: SonosError) -> JSONResponse:
         return JSONResponse(status_code=exc.status, content={"detail": exc.detail})
 
     @app.exception_handler(PodcastError)
@@ -199,6 +208,30 @@ def create_app(
         engine.kick()
         background.add_task(asyncio.to_thread, store.run_hook)
         return {"ok": True}
+
+    @app.get("/api/v2/household/join-code")
+    async def household_join_code() -> dict[str, Any]:
+        """The code a phone that has joined shows, so others can join too.
+        The LAN API has no authentication yet: this is a friendly gate for
+        a second phone, not security."""
+
+        hh = store.household()
+        if hh is None:
+            raise HTTPException(status_code=404, detail="Not set up yet")
+        return {"code": peers.join_code(hh.key), "name": hh.name, "id": hh.id}
+
+    @app.post("/api/v2/household/join")
+    async def household_join(body: JoinCodeBody) -> dict[str, Any]:
+        hh = store.household()
+        if hh is None:
+            raise HTTPException(status_code=404, detail="Not set up yet")
+        typed = "".join(ch for ch in body.code if ch.isdigit())
+        if typed != peers.join_code(hh.key):
+            raise HTTPException(
+                status_code=403,
+                detail="That code is not right. Ask someone in this home for the code in Settings.",
+            )
+        return {"ok": True, "id": hh.id, "name": hh.name}
 
     @app.get("/api/v2/household")
     async def household() -> dict[str, Any]:
@@ -320,9 +353,9 @@ def create_app(
         return {"ok": True}
 
     @app.post("/api/v2/rooms/{rid}/leave")
-    async def leave(rid: str) -> dict[str, Any]:
-        await engine.leave(rid)
-        return {"ok": True}
+    async def leave(rid: str, body: LeaveBody | None = None) -> dict[str, Any]:
+        result = await engine.leave(rid, keep=body.keep if body else None)
+        return {"ok": True, **result}
 
     @app.post("/api/v2/rooms/{rid}/volume")
     async def room_volume(rid: str, body: VolumeBody) -> dict[str, Any]:
@@ -357,6 +390,14 @@ def create_app(
     async def spotify_info_get(gid: str) -> dict[str, Any]:
         return await engine.spotify_info(gid)
 
+    @app.post("/api/v2/groups/{gid}/spotify/pair")
+    async def spotify_pair(gid: str) -> dict[str, Any]:
+        return await engine.spotify_pair(gid)
+
+    @app.post("/api/v2/groups/{gid}/spotify/pair/cancel")
+    async def spotify_pair_cancel(gid: str) -> dict[str, Any]:
+        return await engine.spotify_pair_cancel(gid)
+
     @app.post("/api/v2/groups/{gid}/spotify/login")
     async def spotify_login(gid: str, body: SpotifyLoginBody) -> dict[str, Any]:
         return await engine.spotify_login(gid, body.model_dump())
@@ -380,6 +421,8 @@ def create_app(
 
     @app.get("/api/v2/groups/{gid}/now-playing")
     async def group_now_playing(gid: str) -> dict[str, Any]:
+        if is_sonos(gid):
+            return engine.sonos.now_playing(gid)
         group = next((g for g in engine.groups() if g["id"] == gid), None)
         if group is None:
             raise HTTPException(status_code=404, detail="Unknown group")
@@ -778,6 +821,22 @@ def create_app(
             )
         return await _bt_call(_bt().set_latency(body.latency_ms))
 
+    @app.post("/api/v2/rooms/{rid}/bluetooth/keepalive")
+    async def bt_keepalive(rid: str, body: BtKeepaliveBody) -> Any:
+        if rid != engine.id:
+            return await engine.forward(
+                rid, "POST", f"/api/v2/rooms/{rid}/bluetooth/keepalive", body.model_dump()
+            )
+        return await _bt_call(_bt().set_keepalive(body.enabled))
+
+    @app.post("/api/v2/rooms/{rid}/bluetooth/quality")
+    async def bt_quality(rid: str, body: BtQualityBody) -> Any:
+        if rid != engine.id:
+            return await engine.forward(
+                rid, "POST", f"/api/v2/rooms/{rid}/bluetooth/quality", body.model_dump(), wait=30
+            )
+        return await _bt_call(_bt().set_quality(body.quality))
+
     @app.delete("/api/v2/rooms/{rid}/bluetooth")
     async def bt_forget(rid: str) -> Any:
         if rid != engine.id:
@@ -794,20 +853,24 @@ def create_app(
     async def set_ssh(rid: str, body: SshDeveloperBody) -> Any:
         if rid != engine.id:
             return await engine.forward(
-                rid, "POST", f"/api/v2/rooms/{rid}/developer/ssh", body.model_dump()
+                rid, "POST", f"/api/v2/rooms/{rid}/developer/ssh", body.model_dump(), wait=45
             )
         if body.enabled and not body.confirm:
             raise HTTPException(
                 status_code=400,
                 detail="Set confirm=true to enable developer SSH. The API has no authentication.",
             )
-        return await asyncio.to_thread(
-            ssh_set,
-            settings.ssh_command,
-            hostname(),
-            enabled=body.enabled,
-            public_key=body.public_key,
-        )
+        try:
+            return await asyncio.to_thread(
+                ssh_set,
+                settings.ssh_command,
+                hostname(),
+                enabled=body.enabled,
+                public_key=body.public_key,
+            )
+        except SshHelperError as exc:
+            action = "turn on" if body.enabled else "turn off"
+            raise HTTPException(status_code=500, detail=f"Could not {action} SSH: {exc}") from exc
 
     @app.get("/api/v2/doctor")
     async def doctor() -> dict[str, Any]:

@@ -244,6 +244,32 @@ void main() {
     expect(find.text('Demo'), findsWidgets);
   });
 
+  testWidgets('seven more taps switch developer mode off again (0.6.19)', (tester) async {
+    tester.view.physicalSize = const Size(400, 1000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await tester.pumpWidget(_host(const AppShell()));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('now-playing-room-settings')));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.byKey(const Key('player-version-tap')));
+    Future<void> sevenTaps() async {
+      for (var i = 0; i < 7; i++) {
+        await tester.tap(find.byKey(const Key('player-version-tap')));
+        await tester.pump();
+      }
+      await tester.pumpAndSettle();
+    }
+
+    await sevenTaps();
+    expect(find.byKey(const Key('ssh-developer-switch')), findsOneWidget);
+    await tester.ensureVisible(find.byKey(const Key('player-version-tap')));
+    await sevenTaps();
+    expect(find.byKey(const Key('ssh-developer-switch')), findsNothing);
+  });
+
   testWidgets('developer SSH is hidden until version is tapped seven times', (tester) async {
     tester.view.physicalSize = const Size(400, 1000);
     tester.view.devicePixelRatio = 1.0;

@@ -100,19 +100,43 @@ def read_audio_output(path: Path = AUDIO_OUTPUT_FILE) -> dict[str, str]:
     return out
 
 
-def render_params(settings: PlayerSettings) -> str:
-    """The line fsdsp reads: tag, bass dB, treble dB, balance, loudness."""
+# Bluetooth keep-alive level (0.6.19): a 30 Hz tone this far below full
+# scale after 20 s of silence, so a speaker's auto standby does not fire (the
+# IKEA SOLSKYDD sleeps after 1 min). Inaudible on small speakers.
+KEEPALIVE_DB = -50.0
 
-    return (
+
+def render_params(settings: PlayerSettings, keepalive_db: float = 0.0) -> str:
+    """The line fsdsp reads: tag, bass dB, treble dB, balance, loudness and,
+    when on, the Bluetooth keep-alive level (dB, negative)."""
+
+    line = (
         f"fsdsp1 {float(settings.bass):g} {float(settings.treble):g} "
-        f"{float(settings.balance):g} {1 if settings.loudness else 0}\n"
+        f"{float(settings.balance):g} {1 if settings.loudness else 0}"
     )
+    if keepalive_db < 0:
+        line += f" {float(keepalive_db):g}"
+    return line + "\n"
 
 
-def write_params(settings: PlayerSettings, path: Path = PARAMS_FILE) -> bool:
+def bt_keepalive_db(output: dict[str, str], bt_config: Path | None = None) -> float:
+    """The keep-alive level for this output: only for a Bluetooth speaker
+    with keep-alive on (the default)."""
+
+    if output.get("kind") != "bluetooth":
+        return 0.0
+    from freesounderd import bluetooth
+
+    cfg = bluetooth.read_config(bt_config or bluetooth.BT_OUTPUT_FILE)
+    return KEEPALIVE_DB if cfg.get("keepalive", True) else 0.0
+
+
+def write_params(
+    settings: PlayerSettings, path: Path = PARAMS_FILE, keepalive_db: float = 0.0
+) -> bool:
     """Atomically replace the live params file. Returns True if it changed."""
 
-    text = render_params(settings)
+    text = render_params(settings, keepalive_db)
     try:
         if path.read_text(encoding="utf-8") == text:
             return False
@@ -386,6 +410,7 @@ def write_dsp_configs(
     live: bool | None = None,
     params_path: Path = PARAMS_FILE,
     status_path: Path = CHAIN_STATUS_FILE,
+    bt_config: Path | None = None,
 ) -> bool:
     """Write the live params, and the ALSA config only if its text changed.
 
@@ -394,11 +419,11 @@ def write_dsp_configs(
 
     if live is None:
         live = chain_is_live(status_path)
+    output = read_audio_output(output_file)
     try:
-        write_params(settings, params_path)
+        write_params(settings, params_path, bt_keepalive_db(output, bt_config))
     except OSError:
         pass
-    output = read_audio_output(output_file)
     chosen_pcm = slave_pcm if slave_pcm is not None else output["pcm"]
     text = render_alsa_conf(
         settings,

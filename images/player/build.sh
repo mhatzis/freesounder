@@ -15,7 +15,7 @@ export PATH="/usr/local/sbin:/usr/sbin:/sbin:${PATH}"
 
 if [[ "$(id -u)" -ne 0 ]]; then
 	echo "Re-running under sudo..."
-	exec sudo --preserve-env=FREESOUNDER_ROOT,DEPS_CACHE,AIRPLAY2_RUN_ID,PI_GEN_REF,PI_GEN_URL,WORK_ROOT,PI_GEN_DIR,DEPLOY_DIR,PATH,FSADMIN_PASSWORD_HASH,FSADMIN_PASSWORD_HASH_FILE,FSADMIN_PASSWORD_FILE,FSADMIN_PASSWORD \
+	exec sudo --preserve-env=FREESOUNDER_ROOT,DEPS_CACHE,AIRPLAY2_RUN_ID,PI_GEN_REF,PI_GEN_URL,WORK_ROOT,PI_GEN_DIR,DEPLOY_DIR,PATH,FSADMIN_PASSWORD_HASH,FSADMIN_PASSWORD_HASH_FILE,FSADMIN_PASSWORD_FILE,FSADMIN_PASSWORD,DEVELOPER_PASSWORD_HASH,DEVELOPER_PASSWORD \
 		"$0" "$@"
 fi
 
@@ -46,6 +46,14 @@ if [[ -z "${FSADMIN_PASSWORD_HASH:-}" ]]; then
 	echo "FSADMIN_PASSWORD_HASH, FSADMIN_PASSWORD_HASH_FILE, FSADMIN_PASSWORD_FILE, or FSADMIN_PASSWORD is required to create fsadmin." >&2
 	exit 1
 fi
+
+# Optional fixed password for developer SSH (enabled from the app). Without
+# it, each enable makes a one-time password the app shows once.
+if [[ -z "${DEVELOPER_PASSWORD_HASH:-}" && -n "${DEVELOPER_PASSWORD:-}" ]]; then
+	DEVELOPER_PASSWORD_HASH="$(printf '%s' "${DEVELOPER_PASSWORD}" | openssl passwd -6 -stdin)"
+fi
+unset DEVELOPER_PASSWORD
+export DEVELOPER_PASSWORD_HASH="${DEVELOPER_PASSWORD_HASH:-}"
 
 if [[ ! -d "$PI_GEN_DIR/.git" ]]; then
 	echo "Cloning pi-gen (${PI_GEN_REF})..."
@@ -108,6 +116,8 @@ export FLUSH_BOOTFS_MTOOLS="$PI_GEN_DIR/export-image/flush-bootfs-mtools.sh"
 install -m 0755 "$SCRIPT_DIR/pi-gen/patches/rehash-rootfs-unsigned.sh" \
 	"$PI_GEN_DIR/export-image/05-finalise/rehash-rootfs-unsigned.sh"
 export REHASH_ROOTFS_UNSIGNED="$PI_GEN_DIR/export-image/05-finalise/rehash-rootfs-unsigned.sh"
+install -m 0755 "$SCRIPT_DIR/pi-gen/patches/export-drop-apt-lists.sh" \
+	"$PI_GEN_DIR/export-image/02-set-sources/02-run.sh"
 export PATH="/usr/local/sbin:/usr/sbin:/sbin:${PATH}"
 
 

@@ -6,15 +6,19 @@ import '../models/now_playing.dart';
 
 import '../state/playback_store.dart';
 import '../theme/tokens.dart';
+import '../state/join_home.dart';
 import 'add_player_sheet.dart';
+import 'join_home_screen.dart';
 import '../spotify/ui/spotify_brand.dart';
 import 'artwork.dart';
 import 'mini_player.dart';
+import 'music_shortcuts.dart';
 import 'now_playing_screen.dart';
 import 'room_settings_sheet.dart';
 import 'rooms_panel.dart';
 import 'settings_screen.dart';
 import 'sources_sheet.dart';
+import 'volume_sheet.dart';
 
 /// App shell: now-playing canvas, persistent mini-player, rooms bottom sheet
 /// on narrow widths, and a right-hand rooms rail at 900px and above.
@@ -62,6 +66,10 @@ class _AppShellState extends ConsumerState<AppShell> {
     final width = MediaQuery.sizeOf(context).width;
     final useRail = width >= FsTokens.railBreakpoint;
     final playback = ref.watch(playbackProvider);
+    final join = ref.watch(joinHomeProvider);
+    if (join != null && !playback.mockMode) {
+      return JoinHomeScreen(prompt: join);
+    }
 
     final canvas = _NowPlayingCanvas(state: playback);
 
@@ -217,7 +225,8 @@ class _NowPlayingCanvas extends ConsumerWidget {
                               const SizedBox(height: 4),
                               TextButton.icon(
                                 key: const Key('now-playing-room-settings'),
-                                onPressed: () => showRoomSettingsSheet(
+                                // Sonos speakers have no FreeSounder settings.
+                                onPressed: state.activeRoom!.isSonos ? null : () => showRoomSettingsSheet(
                                   context,
                                   roomId: state.activeRoom!.id,
                                   roomName: state.activeRoom!.name,
@@ -245,6 +254,15 @@ class _NowPlayingCanvas extends ConsumerWidget {
                                     ),
                                   ],
                                 ),
+                            ],
+                            if (state.activeRoom != null) ...[
+                              const SizedBox(height: 8),
+                              ConstrainedBox(
+                                constraints: const BoxConstraints(maxWidth: 420),
+                                child: QuickVolume(roomId: state.activeRoom!.id),
+                              ),
+                              const SizedBox(height: 8),
+                              const MusicShortcuts(),
                             ],
                             if (hasProgress) ...[
                               const SizedBox(height: 16),
@@ -387,6 +405,7 @@ String? sourceLabel(String? source) {
     'library' => 'Music library',
     'podcast' => 'Podcasts',
     'upnp' => 'UPnP / DLNA',
+    'sonos' => 'Sonos',
     _ => null,
   };
 }

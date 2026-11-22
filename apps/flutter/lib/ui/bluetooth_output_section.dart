@@ -13,6 +13,8 @@ abstract class BtOutputApi {
   Future<BtOutputStatus> connect(BtSpeaker speaker);
   Future<BtOutputStatus> use({required bool enabled});
   Future<BtOutputStatus> latency(int ms);
+  Future<BtOutputStatus> keepalive({required bool enabled});
+  Future<BtOutputStatus> quality(String quality);
   Future<BtOutputStatus> forget();
 }
 
@@ -32,6 +34,10 @@ class ClientBtOutputApi implements BtOutputApi {
   Future<BtOutputStatus> use({required bool enabled}) => client.bluetoothUse(roomId, enabled: enabled);
   @override
   Future<BtOutputStatus> latency(int ms) => client.bluetoothLatency(roomId, ms);
+  @override
+  Future<BtOutputStatus> keepalive({required bool enabled}) => client.bluetoothKeepalive(roomId, enabled: enabled);
+  @override
+  Future<BtOutputStatus> quality(String quality) => client.bluetoothQuality(roomId, quality);
   @override
   Future<BtOutputStatus> forget() => client.bluetoothForget(roomId);
 }
@@ -156,6 +162,16 @@ class _BluetoothOutputSectionState extends State<BluetoothOutputSection> {
 
   Future<void> _use(bool enabled) => _run('use', () async {
     final status = await widget.api.use(enabled: enabled);
+    if (mounted) setState(() => _status = status);
+  });
+
+  Future<void> _keepalive(bool enabled) => _run('keepalive', () async {
+    final status = await widget.api.keepalive(enabled: enabled);
+    if (mounted) setState(() => _status = status);
+  });
+
+  Future<void> _quality(String quality) => _run('quality', () async {
+    final status = await widget.api.quality(quality);
     if (mounted) setState(() => _status = status);
   });
 
@@ -333,6 +349,37 @@ class _BluetoothOutputSectionState extends State<BluetoothOutputSection> {
               'If this room sounds behind the others, raise the delay; if it sounds ahead, lower it.',
               style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
             ),
+            SwitchListTile(
+              key: const Key('bt-keepalive'),
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Keep the speaker awake'),
+              subtitle: const Text(
+                'Many speakers switch off after a minute without sound. A very quiet low tone '
+                'while nothing plays stops that; it stops as soon as music starts.',
+              ),
+              value: status.keepalive,
+              onChanged: busy ? null : _keepalive,
+            ),
+            const SizedBox(height: 4),
+            Text('Bluetooth sound', style: text.titleSmall),
+            const SizedBox(height: 6),
+            SegmentedButton<String>(
+              key: const Key('bt-quality'),
+              segments: const [
+                ButtonSegment(value: 'high', label: Text('Best'), icon: Icon(Icons.high_quality_outlined)),
+                ButtonSegment(value: 'robust', label: Text('Robust'), icon: Icon(Icons.shield_outlined)),
+              ],
+              selected: {status.quality},
+              onSelectionChanged: busy ? null : (v) => _quality(v.first),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              status.quality == 'robust'
+                  ? 'Robust uses about a third less of the radio, so it breaks up less on a weak or busy link.'
+                  : 'If the sound breaks up, try Robust (the speaker reconnects for a few seconds).',
+              key: const Key('bt-quality-hint'),
+              style: text.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
+            ),
           ],
           const SizedBox(height: 8),
           Wrap(
@@ -375,9 +422,9 @@ class _BluetoothOutputSectionState extends State<BluetoothOutputSection> {
                   key: Key('bt-found-${s.mac}'),
                   contentPadding: EdgeInsets.zero,
                   dense: true,
-                  leading: const Icon(Icons.speaker_group_outlined),
+                  leading: Icon(_kindIcon(s.kind)),
                   title: Text(s.name),
-                  subtitle: Text(s.paired ? 'Paired before' : s.mac),
+                  subtitle: Text(_foundSubtitle(s)),
                   trailing: _busy == 'connect:${s.mac}'
                       ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
                       : const Icon(Icons.chevron_right),
@@ -446,4 +493,23 @@ class _LatencySlider extends StatelessWidget {
       ],
     );
   }
+}
+
+IconData _kindIcon(String kind) => switch (kind) {
+      'headphones' => Icons.headphones_outlined,
+      'car' => Icons.directions_car_outlined,
+      _ => Icons.speaker_outlined,
+    };
+
+/// "Paired before · Strong signal", or for an unnamed speaker a hint that it
+/// may still be waking up, instead of a bare MAC address.
+String _foundSubtitle(BtSpeaker s) {
+  final parts = <String>[
+    if (s.paired) 'Paired before',
+    if (s.signal == 'strong') 'Strong signal',
+    if (s.signal == 'good') 'Good signal',
+    if (s.signal == 'weak') 'Weak signal (move it closer)',
+    if (!s.hasName) 'Name not received yet; scan again if unsure',
+  ];
+  return parts.isEmpty ? 'Tap to connect' : parts.join(' · ');
 }
