@@ -79,6 +79,7 @@ class Room {
   Room copyWith({
     String? name,
     int? volume,
+    bool? muted,
     String? groupId,
     String? state,
     List<String>? memberIds,
@@ -89,7 +90,7 @@ class Room {
       name: name ?? this.name,
       available: available,
       volume: volume ?? this.volume,
-      muted: muted,
+      muted: muted ?? this.muted,
       groupId: clearGroupId ? null : (groupId ?? this.groupId),
       isGroup: isGroup,
       memberIds: memberIds ?? this.memberIds,

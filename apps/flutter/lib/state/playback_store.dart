@@ -1031,6 +1031,24 @@ class PlaybackStore extends Notifier<PlaybackState> {
     _refreshSoon(room.id);
   }
 
+  /// Mute or unmute one room (shown at once, then confirmed by the player).
+  Future<void> setMuted(String roomId, bool muted) async {
+    state = state.copyWith(
+      rooms: [
+        for (final room in state.rooms)
+          if (room.id == roomId) room.copyWith(muted: muted) else room,
+      ],
+    );
+    if (state.mockMode) {
+      _mock.rooms = [
+        for (final room in _mock.rooms)
+          if (room.id == roomId) room.copyWith(muted: muted) else room,
+      ];
+      return;
+    }
+    await _client?.setMuted(roomId, muted);
+  }
+
   /// Volume for the whole group the room is in (every room moves together).
   Future<void> setGroupVolume(String roomId, int level) async {
     if (state.mockMode) {

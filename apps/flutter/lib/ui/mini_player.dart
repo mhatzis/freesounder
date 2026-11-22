@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../state/playback_store.dart';
 import 'artwork.dart';
 import 'now_playing_screen.dart';
+import 'volume_sheet.dart';
 
 /// Persistent mini-player: now-playing, play/pause, and a rooms chip.
 class MiniPlayer extends ConsumerWidget {
@@ -71,6 +72,18 @@ class MiniPlayer extends ConsumerWidget {
                       icon: Icon(np?.isPlaying == true ? Icons.pause_circle : Icons.play_circle, size: 36),
                       onPressed: () => ref.read(playbackProvider.notifier).togglePlayPause(),
                     ),
+                    if (room != null)
+                      IconButton(
+                        key: const Key('mini-volume'),
+                        tooltip: room.isGrouped ? 'Volume (all rooms)' : 'Volume',
+                        icon: Icon(
+                          volumeIcon(
+                            room.isGrouped ? groupLevel(groupRooms(state.rooms, room)) : (room.volume ?? 0),
+                            muted: !room.isGrouped && room.muted == true,
+                          ),
+                        ),
+                        onPressed: () => showVolumeSheet(context, room.id),
+                      ),
                     IconButton(
                       tooltip: 'Next',
                       icon: const Icon(Icons.skip_next),

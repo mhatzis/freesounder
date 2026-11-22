@@ -15,6 +15,7 @@ import 'room_settings_sheet.dart';
 import 'rooms_panel.dart';
 import 'settings_screen.dart';
 import 'sources_sheet.dart';
+import 'volume_sheet.dart';
 
 /// App shell: now-playing canvas, persistent mini-player, rooms bottom sheet
 /// on narrow widths, and a right-hand rooms rail at 900px and above.
@@ -245,6 +246,13 @@ class _NowPlayingCanvas extends ConsumerWidget {
                                     ),
                                   ],
                                 ),
+                            ],
+                            if (state.activeRoom != null) ...[
+                              const SizedBox(height: 8),
+                              ConstrainedBox(
+                                constraints: const BoxConstraints(maxWidth: 420),
+                                child: QuickVolume(roomId: state.activeRoom!.id),
+                              ),
                             ],
                             if (hasProgress) ...[
                               const SizedBox(height: 16),
