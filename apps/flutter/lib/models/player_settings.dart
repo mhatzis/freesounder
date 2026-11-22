@@ -125,6 +125,7 @@ class SshDeveloperStatus {
     this.port = 22,
     this.command,
     this.password,
+    this.passwordFixed = false,
     this.expires = 'reboot',
     this.warning,
   });
@@ -137,6 +138,7 @@ class SshDeveloperStatus {
       port: json['port'] as int? ?? 22,
       command: json['command'] as String?,
       password: json['password'] as String?,
+      passwordFixed: json['password_fixed'] as bool? ?? false,
       expires: json['expires'] as String? ?? 'reboot',
       warning: json['warning'] as String?,
     );
@@ -148,6 +150,10 @@ class SshDeveloperStatus {
   final int port;
   final String? command;
   final String? password;
+
+  /// The image has a fixed developer password (set when it was built), so the
+  /// player does not send it.
+  final bool passwordFixed;
   final String expires;
   final String? warning;
 }

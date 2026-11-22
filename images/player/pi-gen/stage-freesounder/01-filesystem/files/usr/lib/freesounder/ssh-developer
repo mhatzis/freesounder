@@ -5,8 +5,19 @@
 set -euo pipefail
 
 USER_NAME=developer
-STATE=/run/freesounder/ssh-developer.json
-install -d /run/freesounder
+STATE=${FREESOUNDER_SSH_STATE:-/run/freesounder/ssh-developer.json}
+# Optional fixed developer password, as a crypt hash installed at image build
+# time from a build secret (never stored in the repo). Without it, each enable
+# makes a one-time password that the app shows once.
+FIXED_HASH_FILE=${FREESOUNDER_DEVELOPER_HASH_FILE:-/etc/freesounder/developer-password.hash}
+install -d "$(dirname "$STATE")"
+
+# Any failure prints one line on stderr and exits non-zero, so freesounderd
+# can tell the app why (it used to turn every failure into "SSH is off").
+fail() {
+	echo "ssh-developer: $*" >&2
+	exit 1
+}
 
 host=$(hostname -s 2>/dev/null || echo freesounder)
 cmd_for() {
@@ -14,10 +25,15 @@ cmd_for() {
 }
 
 json_status() {
-	local enabled=$1 password=${2:-}
+	local enabled=$1 password=${2:-} fixed=${3:-false} pw_json=null
+	# Up to 0.6.16 this printed the password twice ("password": "abc"abc), so
+	# every enable gave invalid JSON and the app saw SSH as off.
+	if [[ -n "$password" ]]; then
+		pw_json="\"${password}\""
+	fi
 	if [[ "$enabled" == "true" ]]; then
 		cat <<JSON
-{"enabled": true, "username": "${USER_NAME}", "hostname": "${host}", "port": 22, "command": "$(cmd_for)", "password": ${password:+\"$password\"}${password:-null}, "expires": "reboot"}
+{"enabled": true, "username": "${USER_NAME}", "hostname": "${host}", "port": 22, "command": "$(cmd_for)", "password": ${pw_json}, "password_fixed": ${fixed}, "expires": "reboot"}
 JSON
 	else
 		cat <<JSON
@@ -36,6 +52,9 @@ lock_account() {
 disable_ssh() {
 	systemctl disable --now ssh.service ssh.socket >/dev/null 2>&1 || true
 	lock_account
+	# Runs at every boot (freesounder-ssh-reset). Create any missing host keys
+	# now, once, so a later enable from the app is quick.
+	ssh-keygen -A >/dev/null 2>&1 || true
 	rm -f "$STATE"
 	json_status false
 }
@@ -69,16 +88,35 @@ PY
 			keyfile=${2:-}
 		fi
 		ensure_user
-		password=$(openssl rand -base64 18 | tr -d '/+=' | head -c 20)
-		echo "${USER_NAME}:${password}" | chpasswd
-		usermod -s /bin/bash "$USER_NAME"
+		getent passwd "$USER_NAME" >/dev/null || fail "could not create the ${USER_NAME} user"
+		password="" fixed=false
+		if [[ -s "$FIXED_HASH_FILE" ]]; then
+			hash=$(tr -d '\n' < "$FIXED_HASH_FILE")
+			usermod -p "$hash" "$USER_NAME" || fail "could not set the developer password"
+			unset hash
+			fixed=true
+		else
+			password=$(openssl rand -hex 10) || fail "could not make a password"
+			echo "${USER_NAME}:${password}" | chpasswd || fail "could not set the developer password"
+		fi
+		usermod -s /bin/bash "$USER_NAME" || fail "could not give ${USER_NAME} a login shell"
 		if [[ -n "$keyfile" && -f "$keyfile" ]]; then
 			install -d -m 700 -o "$USER_NAME" -g "$USER_NAME" /home/${USER_NAME}/.ssh
 			install -m 600 -o "$USER_NAME" -g "$USER_NAME" "$keyfile" /home/${USER_NAME}/.ssh/authorized_keys
 		fi
+		# pi-gen deletes the host keys at build time and this image never
+		# starts sshd at boot, so nothing else creates them. Without keys sshd
+		# refuses to start (0.6.16: the app's SSH switch snapped back to off).
+		ssh-keygen -A >/dev/null 2>&1 || fail "could not create SSH host keys"
 		systemctl unmask ssh.service >/dev/null 2>&1 || true
-		systemctl enable --now ssh.service >/dev/null 2>&1 || systemctl start ssh.service
-		json_status true "$password" | tee "$STATE"
+		if ! systemctl enable --now ssh.service >/dev/null 2>&1; then
+			systemctl start ssh.service >/dev/null 2>&1 || true
+		fi
+		if ! systemctl is-active --quiet ssh.service; then
+			why=$(journalctl -u ssh.service -n 3 --no-pager -o cat 2>/dev/null | tail -1)
+			fail "sshd did not start${why:+: $why}"
+		fi
+		json_status true "$password" "$fixed" | tee "$STATE"
 		chmod 0600 "$STATE"
 		;;
 	disable)

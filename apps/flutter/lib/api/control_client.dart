@@ -358,11 +358,17 @@ class ControlApiClient {
     bool confirm = false,
     String? publicKey,
   }) async {
-    final data = await _send('POST', '/api/v2/rooms/$playerId/developer/ssh', {
-      'enabled': enabled,
-      'confirm': confirm,
-      if (publicKey != null && publicKey.isNotEmpty) 'public_key': publicKey,
-    });
+    // Slow: the first enable may create SSH host keys (seconds on a Pi Zero).
+    final data = await _send(
+      'POST',
+      '/api/v2/rooms/$playerId/developer/ssh',
+      {
+        'enabled': enabled,
+        'confirm': confirm,
+        if (publicKey != null && publicKey.isNotEmpty) 'public_key': publicKey,
+      },
+      true,
+    );
     return SshDeveloperStatus.fromJson(data as Map<String, dynamic>);
   }
 
