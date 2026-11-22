@@ -1807,6 +1807,29 @@ class Engine:
             result = await self.leave(old_leader, keep=staying[0])
             leader = result.get("leader") or staying[0]
             current.discard(old_leader)
+        # 0.6.20: grouping never stops music. If this group is not playing
+        # but a room being added is, that room's group leads and everyone
+        # joins its music (before, the playing room joined the idle group
+        # and went silent).
+        mine = self.group_for_room(leader)
+        if not mine or mine.get("state") != "playing":
+            playing = None
+            for rid in members:
+                if rid in current:
+                    continue
+                theirs = self.group_for_room(rid)
+                if theirs and theirs.get("state") == "playing":
+                    playing = theirs
+                    break
+            if playing is not None:
+                target = str(playing["id"])
+                already = set(playing.get("member_ids") or [target])
+                for rid in sorted(current - wanted):
+                    await self.leave(rid)
+                for rid in members:
+                    if rid not in already:
+                        await self.join(rid, target)
+                return {**result, "leader": target}
         for rid in sorted(wanted - current):
             await self.join(rid, leader)
         for rid in sorted(current - wanted):

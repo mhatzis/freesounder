@@ -419,6 +419,101 @@ Future<void> playSpotifyItem(BuildContext context, SpotifyItem item) async {
   if (chosen == null || !context.mounted) {
     return;
   }
+  // 0.6.20: one Spotify account plays in one place at a time. Starting here
+  // would silently stop the other room; ask first (unless the speakers use
+  // different accounts).
+  var target = chosen;
+  final elsewhere = await spotifyPlayingElsewhere(container, chosen);
+  if (elsewhere != null) {
+    if (!context.mounted) {
+      return;
+    }
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (dialog) => AlertDialog(
+        key: const Key('spotify-one-stream'),
+        title: const Text('Spotify plays in one place at a time'),
+        content: Text(
+          'Your Spotify account is playing in ${elsewhere.name}. Spotify lets one account play on '
+          'one speaker at a time, so starting it in ${chosen.name} stops ${elsewhere.name}.\n\n'
+          'To hear it in both, group the rooms. (Each speaker can also be signed in to its own '
+          'account, for example with Spotify Family.)',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(dialog), child: const Text('Cancel')),
+          TextButton(
+            key: const Key('spotify-one-stream-move'),
+            onPressed: () => Navigator.pop(dialog, 'move'),
+            child: Text('Play in ${chosen.name} only'),
+          ),
+          FilledButton(
+            key: const Key('spotify-one-stream-group'),
+            onPressed: () => Navigator.pop(dialog, 'group'),
+            child: Text('Group with ${elsewhere.name}'),
+          ),
+        ],
+      ),
+    );
+    if (choice == null || !context.mounted) {
+      return;
+    }
+    if (choice == 'group') {
+      final store = container.read(playbackProvider.notifier);
+      try {
+        await store.setGroupMembers(
+          elsewhere.memberIds.first,
+          [...elsewhere.memberIds, ...chosen.memberIds.where((id) => !elsewhere.memberIds.contains(id))],
+        );
+      } on Object catch (err) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(spotifyErrorText(err))));
+        }
+        return;
+      }
+      target = PlayTarget(
+        id: elsewhere.id,
+        name: elsewhere.name,
+        memberIds: [...elsewhere.memberIds, ...chosen.memberIds],
+      );
+    }
+  }
+  if (!context.mounted) {
+    return;
+  }
+  return _startSpotify(context, container, target, item);
+}
+
+/// A room or group outside [chosen] that is playing Spotify, if any.
+PlayTarget? spotifyBusyElsewhere(List<Room> rooms, PlayTarget chosen) {
+  final busy = playTargets([
+    for (final r in rooms)
+      if (r.source == 'spotify' && r.state == 'playing' && !chosen.memberIds.contains(r.id)) r,
+  ]);
+  return busy.isEmpty ? null : busy.first;
+}
+
+/// Another room (not in [chosen]) plays Spotify on the same account, if any.
+Future<PlayTarget?> spotifyPlayingElsewhere(ProviderContainer container, PlayTarget chosen) async {
+  final other = spotifyBusyElsewhere(container.read(playbackProvider).rooms, chosen);
+  if (other == null) {
+    return null;
+  }
+  final client = container.read(playbackProvider.notifier).client;
+  if (client != null) {
+    try {
+      final here = await client.spotifyInfo(chosen.id);
+      final there = await client.spotifyInfo(other.id);
+      if (here.loggedIn && there.loggedIn && here.username != null && here.username != there.username) {
+        return null; // different accounts (e.g. Spotify Family): both can play
+      }
+    } on Object {
+      // Unknown: ask rather than stop the other room silently.
+    }
+  }
+  return other;
+}
+
+Future<void> _startSpotify(BuildContext context, ProviderContainer container, PlayTarget chosen, SpotifyItem item) async {
   final messenger = ScaffoldMessenger.of(context);
   messenger.showSnackBar(SnackBar(content: Text('Starting on ${chosen.name}…'), duration: const Duration(seconds: 20)));
   try {

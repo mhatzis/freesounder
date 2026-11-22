@@ -87,3 +87,37 @@ async def test_removing_a_member_never_touches_the_leader(lan: Lan, make_player)
     await settle(lan, players)
     assert a.engine.source == "radio" and a.engine.radio.station["name"] == "G"
     assert b.engine.group["follow"] is None and b.engine.source == "none"
+
+
+async def test_adding_a_playing_room_to_an_idle_room_keeps_the_music(
+    lan: Lan, make_player
+) -> None:
+    """0.6.20: from idle room A, add playing room B: B's music plays in both."""
+
+    a, b = await setup_household(make_player, ("10.0.0.1", "Pi 5"), ("10.0.0.2", "Pi 4"))
+    players = [a, b]
+    await settle(lan, players)
+    res = await b.client.post(
+        f"/api/v2/groups/{b.id}/radio", json={"url": "http://radio.example/b", "name": "B FM"}
+    )
+    assert res.status_code == 200, res.text
+    await settle(lan, players)
+    res = await a.client.put(f"/api/v2/groups/{a.id}/members", json={"members": [a.id, b.id]})
+    assert res.status_code == 200, res.text
+    await settle(lan, players)
+    assert b.engine.group["follow"] is None and b.engine.source == "radio"
+    assert b.engine.radio.station["name"] == "B FM", "the playing room kept its music"
+    assert a.engine.group["follow"] == b.id, "the idle room joined it"
+
+
+async def test_adding_an_idle_room_to_a_playing_room_is_unchanged(lan: Lan, make_player) -> None:
+    a, b = await setup_household(make_player, ("10.0.0.1", "Pi 5"), ("10.0.0.2", "Pi 4"))
+    players = [a, b]
+    await settle(lan, players)
+    await a.client.post(
+        f"/api/v2/groups/{a.id}/radio", json={"url": "http://radio.example/a", "name": "A FM"}
+    )
+    await settle(lan, players)
+    await a.client.put(f"/api/v2/groups/{a.id}/members", json={"members": [a.id, b.id]})
+    await settle(lan, players)
+    assert a.engine.source == "radio" and b.engine.group["follow"] == a.id
