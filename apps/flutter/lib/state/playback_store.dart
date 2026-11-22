@@ -1099,7 +1099,7 @@ class PlaybackStore extends Notifier<PlaybackState> {
     final target = now?.leaderId ?? now?.groupId ?? stayingRoomId;
     try {
       await ref.read(spotifyProvider.notifier).transferTo(target, play: play);
-    } on Object catch (err) {
+    } on Object {
       throw ControlApiException(
         'The rooms were regrouped, but Spotify could not move to ${now?.name ?? 'the remaining rooms'}. '
         'Pick it in Spotify or play again from FreeSounder.',
