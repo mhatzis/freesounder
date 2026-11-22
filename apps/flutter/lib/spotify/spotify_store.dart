@@ -177,6 +177,9 @@ class SpotifyController extends Notifier<SpotifyState> {
 
   Future<List<SpotifySection>> search(String query) => _api.search(query);
 
+  Future<({List<SpotifyItem> items, bool more})> searchType(String query, String type, {int offset = 0}) =>
+      _api.searchType(query, type, offset: offset);
+
   Future<SpotifyPage> page(SpotifyItem item) async {
     switch (item.type) {
       case 'album':

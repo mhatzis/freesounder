@@ -10,6 +10,7 @@ import 'add_player_sheet.dart';
 import '../spotify/ui/spotify_brand.dart';
 import 'artwork.dart';
 import 'mini_player.dart';
+import 'music_shortcuts.dart';
 import 'now_playing_screen.dart';
 import 'room_settings_sheet.dart';
 import 'rooms_panel.dart';
@@ -253,6 +254,8 @@ class _NowPlayingCanvas extends ConsumerWidget {
                                 constraints: const BoxConstraints(maxWidth: 420),
                                 child: QuickVolume(roomId: state.activeRoom!.id),
                               ),
+                              const SizedBox(height: 8),
+                              const MusicShortcuts(),
                             ],
                             if (hasProgress) ...[
                               const SizedBox(height: 16),
